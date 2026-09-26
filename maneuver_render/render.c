@@ -211,6 +211,15 @@ float render_frame_step(void) { return g_frame_step; }
 static int g_raised = 1;
 static int g_fb_w = 640, g_fb_h = 400;
 static int g_win_w = 640, g_win_h = 400;  /* actual window buffer size (pre-SSAA) */
+/* presentation window + content rectangle (render_set_output); 0 = fill g_win. */
+static int g_out_win_w = 0, g_out_win_h = 0, g_out_x = 0, g_out_y = 0, g_out_w = 0, g_out_h = 0;
+static int g_out_opaque = 0;
+/* the platform's framebuffer size (the 328x181 layout).  On an opaque MOST output
+ * Pass 1 renders at the output's content size instead, so Pass 2 resolves the supersampled
+ * frame exactly 2:1 into it, as on a Virtual Cockpit.  A size whose render targets could
+ * not be allocated is refused and not retried. */
+static int g_base_w = 0, g_base_h = 0;
+static int g_refused_w = 0, g_refused_h = 0;
 float g_3d_offset_adjust = -0.10f;  /* extra Y offset in 3D mode (tuned) */
 static float g_z_bias = 0.0f;
 
@@ -929,15 +938,16 @@ static int build_fxaa_program(void) {
  * Multi-FBO management
  * ================================================================ */
 
+/* Mask FBO extent for a framebuffer dimension: the transition envelope, never smaller. */
+static int mask_extent(int n) {
+    int alloc = (int)ceilf((float)n * g_mask_half_h);
+    return alloc < n ? n : alloc;
+}
+
 static void fbos_init(int w, int h) {
     int i;
-    int alloc_w = (int)ceilf((float)w * g_mask_half_h);
-    int alloc_h = (int)ceilf((float)h * g_mask_half_h);
-
-    if (alloc_w < w) alloc_w = w;
-    if (alloc_h < h) alloc_h = h;
-    g_fbo_w = alloc_w;
-    g_fbo_h = alloc_h;
+    g_fbo_w = mask_extent(w);
+    g_fbo_h = mask_extent(h);
 
     /* Masks draw flat 2D with depth off (begin_mask), so they get no depth
      * buffer: at 2267x1251 each, its clear alone was 2x2.8 Mpx per re-render. */
@@ -983,12 +993,7 @@ static void fbos_shutdown(void) {
 
 
 static void fbos_resize(int w, int h) {
-    int alloc_w = (int)ceilf((float)w * g_mask_half_h);
-    int alloc_h = (int)ceilf((float)h * g_mask_half_h);
-
-    if (alloc_w < w) alloc_w = w;
-    if (alloc_h < h) alloc_h = h;
-    if (alloc_w == g_fbo_w && alloc_h == g_fbo_h) return;
+    if (mask_extent(w) == g_fbo_w && mask_extent(h) == g_fbo_h) return;
     fbos_shutdown();
     fbos_init(w, h);
     g_masks_dirty = 1;
@@ -1099,6 +1104,8 @@ int render_init(int fb_width, int fb_height) {
     /* Save actual window size for final blit, then override to 2x for pipeline */
     g_win_w = fb_width;
     g_win_h = fb_height;
+    g_base_w = fb_width;
+    g_base_h = fb_height;
     g_fb_w = g_ss_w;
     g_fb_h = g_ss_h;
 
@@ -1115,13 +1122,60 @@ int render_init(int fb_width, int fb_height) {
     return 0;
 }
 
-void render_set_viewport(int fb_width, int fb_height) {
+/* every render target is complete and nothing failed since resize_targets drained
+ * the GL error queue (an out-of-memory allocation reports GL_OUT_OF_MEMORY there). */
+static int targets_complete(void) {
+    GLuint fbos[2 + FBO_COUNT];
+    int n = 0, ok = 1, i;
+    fbos[n++] = g_ss_fbo;
+#if FXAA_ENABLED
+    if (g_fxaa_prog) fbos[n++] = g_fxaa_fbo;
+#endif
+    for (i = 0; i < FBO_COUNT; i++) fbos[n++] = g_fbos[i];
+    for (i = 0; i < n; i++) {
+        if (!fbos[i]) { ok = 0; continue; }
+        glBindFramebuffer(GL_FRAMEBUFFER, fbos[i]);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) ok = 0;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, g_default_fbo);
+    for (i = 0; i < 16; i++) {
+        if (glGetError() == GL_NO_ERROR) break;
+        ok = 0;
+    }
+    return ok;
+}
+
+/* Offscreen bytes at the current size: SSAA colour + depth16, FXAA colour, masks. */
+static double targets_mb(void) {
+    double ss = (double)g_ss_w * g_ss_h, masks = (double)g_fbo_w * g_fbo_h * FBO_COUNT;
+    return (ss * 6.0 + (FXAA_ENABLED ? ss * 4.0 : 0.0) + masks * 4.0) / (1024.0 * 1024.0);
+}
+
+/* Resize every render target for a framebuffer of fb_width x fb_height (pre-SSAA).
+ * Returns 0 when all of them are complete at that size. */
+static int resize_targets(int fb_width, int fb_height, float scale) {
+    GLint max_tex = 0, max_rb = 0;
+    int limit, i;
+
     g_win_w = fb_width;
     g_win_h = fb_height;
-    g_ss_w = (int)(fb_width * SSAA_SCALE + 0.5f);
-    g_ss_h = (int)(fb_height * SSAA_SCALE + 0.5f);
+    g_ss_w = (int)(fb_width * scale + 0.5f);
+    g_ss_h = (int)(fb_height * scale + 0.5f);
     g_fb_w = g_ss_w;
     g_fb_h = g_ss_h;
+
+    /* refuse, before allocating anything, a size the GL cannot hold (the masks are
+     * several times the supersampled frame).  An unreported limit is not a refusal. */
+    update_mask_config(g_fb_w, g_fb_h);
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_tex);
+    glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &max_rb);
+    limit = max_tex < max_rb ? max_tex : max_rb;
+    if (limit > 0 && (mask_extent(g_fb_w) > limit || mask_extent(g_fb_h) > limit)) {
+        fprintf(stderr, "render: %dx%d needs %dx%d masks, over the GL limit %d\n",
+                fb_width, fb_height, mask_extent(g_fb_w), mask_extent(g_fb_h), limit);
+        return -1;
+    }
+    for (i = 0; i < 16 && glGetError() != GL_NO_ERROR; i++) {}
 
     /* Resize SSAA texture + depth to match new supersample resolution */
     if (g_ss_tex) {
@@ -1144,9 +1198,53 @@ void render_set_viewport(int fb_width, int fb_height) {
     }
 #endif
 
-    update_mask_config(g_fb_w, g_fb_h);
     glViewport(0, 0, g_fb_w, g_fb_h);
     fbos_resize(g_fb_w, g_fb_h);
+    return targets_complete() ? 0 : -1;
+}
+
+/* bring the render targets to the size the output wants: its content size on an
+ * opaque MOST output, else the platform framebuffer.  A size that fails falls back to the
+ * platform framebuffer and is refused from then on.  Returns 1 when the targets changed. */
+static int apply_render_size(void) {
+    int w = g_base_w, h = g_base_h;
+    float scale = SSAA_SCALE;
+    if (g_out_win_w > 0 && g_out_opaque && !(g_out_w == g_refused_w && g_out_h == g_refused_h)) {
+        w = g_out_w;
+        h = g_out_h;
+        scale = 2.0f;
+    }
+    if (w == g_win_w && h == g_win_h &&
+        g_ss_w == (int)(w * scale + 0.5f) && g_ss_h == (int)(h * scale + 0.5f)) return 0;
+    if (resize_targets(w, h, scale) == 0) {
+        fprintf(stderr, "render: rendering %dx%d (SSAA %dx%d, masks %dx%d, %.1f MB offscreen)\n",
+                g_win_w, g_win_h, g_ss_w, g_ss_h, g_fbo_w, g_fbo_h, targets_mb());
+        return 1;
+    }
+    if (w != g_base_w || h != g_base_h || scale != SSAA_SCALE) {
+        g_refused_w = w;
+        g_refused_h = h;
+        fprintf(stderr, "render: %dx%d render targets failed; falling back to %dx%d\n",
+                w, h, g_base_w, g_base_h);
+        if (resize_targets(g_base_w, g_base_h, SSAA_SCALE) == 0) {
+            fprintf(stderr, "render: rendering %dx%d (SSAA %dx%d, masks %dx%d, %.1f MB offscreen)\n",
+                    g_win_w, g_win_h, g_ss_w, g_ss_h, g_fbo_w, g_fbo_h, targets_mb());
+            return 1;
+        }
+    }
+    fprintf(stderr, "render: %dx%d render targets incomplete\n", g_win_w, g_win_h);
+    return 1;
+}
+
+void render_set_viewport(int fb_width, int fb_height) {
+    g_base_w = fb_width;
+    g_base_h = fb_height;
+    apply_render_size();
+}
+
+void render_get_render_size(int *w, int *h) {
+    *w = g_win_w;
+    *h = g_win_h;
 }
 
 static void build_camera_mvp(float *mvp, float aspect, float pan_x, float pan_z,
@@ -1575,11 +1673,20 @@ void render_end_frame(void) {
     }
 #endif
 
-    /* Pass 2: Downsample (FXAA result on QNX / SSAA on macOS) → window */
+    /* Pass 2: Downsample (FXAA result on QNX / SSAA on macOS) → window.
+     * on a MOST KOMO stream the window is larger than the content; clear all
+     * of it (opaque black) and draw the content into its fitted rectangle. */
     glBindFramebuffer(GL_FRAMEBUFFER, g_default_fbo);
-    glViewport(0, 0, g_win_w, g_win_h);
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    if (g_out_win_w > 0) {
+        glViewport(0, 0, g_out_win_w, g_out_win_h);
+        glClearColor(0.0f, 0.0f, 0.0f, g_out_opaque ? 1.0f : 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glViewport(g_out_x, g_out_y, g_out_w, g_out_h);
+    } else {
+        glViewport(0, 0, g_win_w, g_win_h);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    }
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
     use_flat_program(1.0f);  /* fullscreen blit passthrough */
@@ -1594,9 +1701,84 @@ void render_end_frame(void) {
     vb_v( 1,  1, 0, 0,0,1);
     vb_v(-1,  1, 0, 0,0,1);
     vb_flush(1, 1, 1, 1);
+    if (g_out_win_w > 0 && g_out_opaque) {
+        /* The MOST encoder streams the buffer as-is: make every pixel opaque. */
+        glViewport(0, 0, g_out_win_w, g_out_win_h);
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    }
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     use_lit_program();
+}
+
+int render_set_output(int win_w, int win_h, int x, int y, int w, int h, int opaque) {
+    if (win_w <= 0 || win_h <= 0 || w <= 0 || h <= 0) {
+        g_out_win_w = g_out_win_h = g_out_x = g_out_y = g_out_w = g_out_h = 0;
+        g_out_opaque = 0;
+        return apply_render_size();
+    }
+    g_out_win_w = win_w;
+    g_out_win_h = win_h;
+    g_out_x = x;
+    g_out_y = y;
+    g_out_w = w;
+    g_out_h = h;
+    g_out_opaque = opaque;
+    return apply_render_size();
+}
+
+int render_output_is_opaque(void) {
+    return g_out_win_w > 0 && g_out_opaque;
+}
+
+/* Output diagnostics: write the frame just drawn to the window (call before the swap) as a
+ * binary PPM, top row first.  Written in place: /tmp is procnto shared memory, no rename. */
+int render_capture_output(const char *path) {
+    static unsigned char *rgba = NULL, *ppm = NULL;
+    static size_t rgba_cap = 0, ppm_cap = 0;
+    int w = g_out_win_w > 0 ? g_out_win_w : g_win_w;
+    int h = g_out_win_w > 0 ? g_out_win_h : g_win_h;
+    char header[32];
+    int header_len, row, col, ok;
+    size_t need_rgba, need_ppm;
+    FILE *f;
+
+    if (w <= 0 || h <= 0) return -1;
+    header_len = snprintf(header, sizeof(header), "P6\n%d %d\n255\n", w, h);
+    need_rgba = (size_t)w * (size_t)h * 4;
+    need_ppm = (size_t)header_len + (size_t)w * (size_t)h * 3;
+    if (need_rgba > rgba_cap) {
+        unsigned char *grown = (unsigned char *)realloc(rgba, need_rgba);
+        if (!grown) return -1;
+        rgba = grown;
+        rgba_cap = need_rgba;
+    }
+    if (need_ppm > ppm_cap) {
+        unsigned char *grown = (unsigned char *)realloc(ppm, need_ppm);
+        if (!grown) return -1;
+        ppm = grown;
+        ppm_cap = need_ppm;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, g_default_fbo);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    memcpy(ppm, header, (size_t)header_len);
+    for (row = 0; row < h; row++) {
+        const unsigned char *src = rgba + (size_t)(h - 1 - row) * (size_t)w * 4;   /* GL: bottom row first */
+        unsigned char *dst = ppm + header_len + (size_t)row * (size_t)w * 3;
+        for (col = 0; col < w; col++) {
+            dst[col * 3 + 0] = src[col * 4 + 0];
+            dst[col * 3 + 1] = src[col * 4 + 1];
+            dst[col * 3 + 2] = src[col * 4 + 2];
+        }
+    }
+    f = fopen(path, "wb");
+    if (!f) return -1;
+    ok = fwrite(ppm, 1, need_ppm, f) == need_ppm;
+    if (fclose(f) != 0) ok = 0;
+    return ok ? 0 : -1;
 }
 
 void render_set_perspective(int enabled) {

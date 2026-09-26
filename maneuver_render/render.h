@@ -47,6 +47,20 @@ void render_shutdown(void);
 /* Update viewport (call on resize). */
 void render_set_viewport(int fb_width, int fb_height);
 
+/* present the frame into (x, y, w, h) of a win_w x win_h window (GL origin
+ * bottom-left) instead of filling the window; opaque = everything else black and every
+ * pixel alpha 1 (a MOST KOMO stream).  win_w <= 0 restores "fill the window".
+ * On an opaque output the scene renders at w x h itself (2x supersampled, resolved
+ * exactly 2:1), falling back to the render_init/render_set_viewport size if those render
+ * targets cannot be allocated.  Returns 1 when the render targets changed size. */
+int render_set_output(int win_w, int win_h, int x, int y, int w, int h, int opaque);
+int render_output_is_opaque(void);
+/* The pre-SSAA size the scene currently renders at. */
+void render_get_render_size(int *w, int *h);
+/* Output diagnostics: write the window's current frame (before the swap) to path as a
+ * binary PPM, top row first.  Returns 0 on success. */
+int render_capture_output(const char *path);
+
 /* Thick line segment (rendered as quad). */
 void render_thick_line(float x0, float y0, float x1, float y1, float thickness,
                        float r, float g, float b, float a);

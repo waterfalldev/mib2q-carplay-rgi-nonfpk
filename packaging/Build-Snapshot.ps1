@@ -45,6 +45,7 @@ $ExpectedGuardNames = @(
     'upstreamRgiMessageIds'
     'nativeSourceBuild'
     'nativeArm32Elf'
+    'mostOutputHostTests'
     'javaVcTextRuntimeLoad'
     'javaHostSuites'
     'javaStockLinkage'
@@ -357,6 +358,7 @@ $env:QNX_TOOLCHAIN_IMAGE = $ToolchainImageId
 $NativeSteps = [System.Collections.Generic.List[string[]]]::new()
 $NativeSteps.Add([string[]]@((Join-Path $WorkTree 'scripts/build_hook.sh').Replace('\','/')))
 $NativeSteps.Add([string[]]@((Join-Path $WorkTree 'scripts/build_renderers.sh').Replace('\','/')))
+$NativeSteps.Add([string[]]@((Join-Path $WorkTree 'tests/most/run-native-tests.sh').Replace('\','/'), $WorkTree.Replace('\','/')))
 $nativeJob = Start-ThreadJob -ArgumentList $GitSh, $NativeSteps -ScriptBlock {
     param($GitSh, $Steps)
     foreach ($step in $Steps) {
@@ -370,7 +372,7 @@ $nativeJob = Start-ThreadJob -ArgumentList $GitSh, $NativeSteps -ScriptBlock {
 # writing build/ in the scratch tree kept for diagnosis. Stop-Job lets the step in progress
 # finish (it does not kill the native process) and starts no further step.
 try {
-$java =& "$PSScriptRoot/Build-Java.ps1" -SourceRoot $WorkTree -StockJar $LsdJar -Dependencies $Dependencies -OutputRoot $JavaWork -BuildId $BuildId -JavaHome $JavaHome
+$java = & "$PSScriptRoot/Build-Java.ps1" -SourceRoot $WorkTree -StockJar $LsdJar -Dependencies $Dependencies -OutputRoot $JavaWork -BuildId $BuildId -JavaHome $JavaHome
 $BuiltJavaJar = $java.Jar
 $JavaClassCount = $java.ClassCount
 $JavaResources = $java.Resources
@@ -394,12 +396,20 @@ foreach ($result in $NativeResults) {
     if ($result.ExitCode -ne 0) { throw "Native step failed ($($result.ExitCode)): $($result.Step)" }
 }
 if ($NativeResults.Count -ne $NativeSteps.Count) { throw 'Not every native step ran.' }
+# MOST host suites: a zero exit is not enough, each must report exactly once, with no failures.
+$mostOutput = $NativeResults[-1].Output
+$MostSuiteResults = @(foreach ($suite in @('most_output_platform_test','most_output_render_test')) {
+    $lines = @($mostOutput | Where-Object { $_ -match ('^' + $suite + ': [1-9][0-9]* checks, 0 failures$') })
+    if ($lines.Count -ne 1) { throw "Native host suite $suite did not report one passing result." }
+    [ordered]@{ name = $suite; result = $lines[0] }
+})
 $DownloadedHook = Join-Path $WorkTree 'build/libcarplay_hook.so'
 $PackagedRenderer = Join-Path $WorkTree 'build/maneuver_render'
 Assert-ElfArm32 -Path $DownloadedHook -Name 'hook'
 Assert-ElfArm32 -Path $PackagedRenderer -Name 'renderer'
 Set-Guard 'nativeSourceBuild'
 Set-Guard 'nativeArm32Elf'
+Set-Guard 'mostOutputHostTests' ('PASS (' + (($MostSuiteResults | ForEach-Object { $_.result }) -join '; ') + ')')
 # Native and shell checks consume the same source and freshly built JAR.
 Copy-Item -LiteralPath $BuiltJavaJar -Destination (Join-Path $WorkTree 'build/carplay_hook.jar')
 Invoke-Native -Exe $Docker -Arguments @('run','--rm','--network','none','--mount',('type=bind,source=' + $WorkTree + ',target=/src,readonly'),'--workdir','/src',$HostTestImageId,'bash','-c','export PATH=/usr/sbin:/usr/bin:/sbin:/bin; bash scripts/run_tests.sh')

@@ -372,6 +372,53 @@ static void engine_tick(double now) {
 
 static int g_snap_counter = 0;
 
+/* keep the presentation rectangle in step with the platform window (a MOST
+ * cluster's KOMO stream is larger than the rendered content). */
+static void apply_output(void) {
+    static unsigned applied_gen = 0;
+    int ww, wh, x, y, w, h, opaque, resized, rw, rh;
+    long free_before;
+    unsigned gen = platform_get_output(&ww, &wh, &x, &y, &w, &h, &opaque);
+    if (gen == applied_gen) return;
+    applied_gen = gen;
+    free_before = platform_free_memory_kb();
+    if (opaque) {
+        resized = render_set_output(ww, wh, x, y, w, h, 1);
+        fprintf(stderr, "maneuver_render: output %dx%d, content at (%d,%d %dx%d), opaque\n",
+                ww, wh, x, y, w, h);
+    } else {
+        resized = render_set_output(0, 0, 0, 0, 0, 0, 0);
+    }
+    if (resized) {
+        render_get_render_size(&rw, &rh);
+        fprintf(stderr, "maneuver_render: rendering %dx%d; free memory %ld KB before, %ld KB after\n",
+                rw, rh, free_before, platform_free_memory_kb());
+    }
+    g_engine.dirty = 1;
+}
+
+/* Output diagnostics: keep the latest settled maneuver frame, exactly as the MOST encoder
+ * gets it, for the log collector.  At most every CR_MOST_FRAME_INTERVAL_S seconds; call
+ * after render_end_frame() and before the swap. */
+static void capture_most_frame(const struct timespec *now) {
+    static struct timespec last = {0, 0};
+    static int logged_ok = 0, logged_fail = 0;
+    if (!render_output_is_opaque() || !g_engine.has_current || g_cleared
+            || g_engine.current.icon == ICON_NONE || g_engine.phase != ENGINE_IDLE
+            || render_is_animating()
+            || !timespec_elapsed_at_least(now, &last, CR_MOST_FRAME_INTERVAL_S, 0))
+        return;
+    last = *now;
+    if (render_capture_output(CR_MOST_FRAME_PATH) == 0) {
+        if (!logged_ok) fprintf(stderr, "maneuver_render: output frame saved to %s\n", CR_MOST_FRAME_PATH);
+        logged_ok = 1;
+    } else {
+        if (!logged_fail) fprintf(stderr, "maneuver_render: output frame could not be saved to %s\n",
+                                  CR_MOST_FRAME_PATH);
+        logged_fail = 1;
+    }
+}
+
 static void save_screenshot(int fb_w, int fb_h, const char *label) {
     unsigned char *pixels = (unsigned char *)malloc(fb_w * fb_h * 4);
     if (!pixels) return;
@@ -476,6 +523,7 @@ int main(int argc, char **argv) {
         cr_server_shutdown();
         return 1;
     }
+    apply_output();
 
     /* Runtime has one colocated asset.  Keep one relative development/deploy
      * lookup and one explicit HU production fallback — no argv/CWD guessing. */
@@ -808,6 +856,7 @@ int main(int argc, char **argv) {
             watch_stage(WATCH_SCREENSHOT);
             if (got_screenshot)
                 save_screenshot(fb_w, fb_h, screenshot_label);
+            capture_most_frame(&t_start);
 
             watch_stage(WATCH_SWAP);
             int swap_ok = platform_swap();
@@ -919,6 +968,19 @@ int main(int argc, char **argv) {
                 health_last = t_start;
                 watch_stage(WATCH_WINDOW_PROBE);
                 platform_check_and_recover_window();
+                watch_stage(WATCH_IDLE);
+            }
+        }
+
+        /* Java requests the MOST stream size at CarPlay connect; check every second
+         * so the window has it before a route can bring the arrows view up. */
+        {
+            static struct timespec output_last = {0, 0};
+            if (timespec_elapsed_at_least(&t_start, &output_last, 1, 0)) {
+                output_last = t_start;
+                watch_stage(WATCH_WINDOW_PROBE);
+                platform_check_output();
+                apply_output();
                 watch_stage(WATCH_IDLE);
             }
         }

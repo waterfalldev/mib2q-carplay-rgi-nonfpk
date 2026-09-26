@@ -112,6 +112,30 @@ typedef struct {
 #define CR_DEFAULT_HEIGHT   181 /* 180px content + 1px ECC annotation row */
 #define CR_TARGET_FPS       30
 
+/* MOST (KOMO video) cluster output.  The MOST encoder streams the leading
+ * displayable of the active cluster context as-is (CASIMostEncoder::setActiveDisplayable,
+ * no compositing), at the coding's KOMO view size: KVS_Most 800x252 on the tested MOST cluster, not the
+ * Virtual Cockpit's KVS_FPK 328x181.  On a MOST cluster Java writes "<width> <height>\n"
+ * here, in place (this unit's /tmp cannot rename), with stock KDK's measured size; the
+ * renderer then presents an opaque window of that size with its 328x181 content
+ * aspect-fitted in the centre.  No file: unchanged behaviour. */
+#define CR_MOST_OUTPUT_PATH "/tmp/carplay_most_output"
+#define CR_OUTPUT_MIN       64
+#define CR_OUTPUT_MAX       2048
+/* Once a MOST request exists, the renderer writes the window it now presents here after
+ * every successful window creation: "%04d %04d %010d.%010u\n" - size, then a token (pid and
+ * window serial) that is new for every window.  Java composes ctx 81 only once the size
+ * matches the request, and re-composes (a real 73 -> 81 switch, re-pointing the MOST
+ * encoder) whenever the token changes.  Java writes the request fixed-width too, so a
+ * rewrite is whole even without truncation. */
+#define CR_MOST_OUTPUT_READY_PATH "/tmp/carplay_most_output_ready"
+#define CR_OUTPUT_READY_LENGTH    32
+/* Diagnostics for the log collector: at most every CR_MOST_FRAME_INTERVAL_S seconds while a
+ * maneuver is settled on a MOST output, the window's frame exactly as the encoder gets it,
+ * as a binary PPM. */
+#define CR_MOST_FRAME_PATH        "/tmp/carplay_most_frame.ppm"
+#define CR_MOST_FRAME_INTERVAL_S  10
+
 /* Big-screen popup crop within the 328x180 content area (excludes ECC row).
  * Also the safe default until Java sends the active stage's visible area. */
 #define CR_POPUP_X      59
