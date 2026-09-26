@@ -20,6 +20,8 @@ PROBE_APP=/mnt/app/root/carplay-rgi-probe.$$
 PROBE_SYS=/mnt/system/etc/eso/production/carplay-rgi-probe.$$
 PROBE_MODE_SMARTPHONE=$TARGET_SMARTPHONE.carplay-rgi-probe.$$
 PROBE_MODE_DIO=$TARGET_DIO.carplay-rgi-probe.$$
+# The renderer's GL program-binary cache (common/gl_program_cache.h GLPC_DIR).
+GL_CACHE=/mnt/persist/var/app/luka_carplay_maneuver
 
 log() {
     echo "$*"
@@ -106,6 +108,39 @@ check_owned_config() {
     return 1
 }
 
+# The renderer writes its shader cache to the persist partition at runtime, so no
+# install record covers it. Only the cache's own names are removed - <16 hex>.bin and
+# the .bin.<pid> of an interrupted write - never recursively, then the directory if
+# empty. The files are inert without the renderer: a failure here is a warning, not
+# a failed rollback.
+remove_gl_cache() {
+    [ ! -e "$GL_CACHE" ] && [ ! -L "$GL_CACHE" ] && return 0
+    if [ -L "$GL_CACHE" ] || [ ! -d "$GL_CACHE" ]; then
+        log "NOTE: $GL_CACHE is not a directory and was left in place."
+        return 0
+    fi
+    for cache_file in "$GL_CACHE"/*; do
+        [ -e "$cache_file" ] || [ -L "$cache_file" ] || continue
+        case "${cache_file##*/}" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].bin|\
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].bin.[0-9]*)
+                if [ -f "$cache_file" ] && [ ! -L "$cache_file" ] &&
+                        rm -f "$cache_file" 2>> "$LOG" && [ ! -e "$cache_file" ]; then
+                    log "Removed renderer shader cache file $cache_file"
+                else
+                    log "WARNING: could not remove renderer shader cache file $cache_file"
+                fi
+                ;;
+        esac
+    done
+    if rmdir "$GL_CACHE" 2>> "$LOG"; then
+        log "Removed renderer shader cache directory $GL_CACHE"
+    else
+        log "WARNING: $GL_CACHE was left in place; it holds files this package did not create or could not remove."
+    fi
+    return 0
+}
+
 [ -f "$LOG" ] || {
     echo "Missing pre-created rollback log: $LOG"
     exit 1
@@ -156,6 +191,7 @@ rm -f "$HU_OWNER" "$HU_SMARTPHONE" "$HU_DIO" || die "Could not remove installer-
 # still modified when it is not.
 rmdir "$HU_BACKUP" 2>> "$LOG" ||
     log "NOTE: $HU_BACKUP still holds files this package did not create and was left in place."
+remove_gl_cache
 sync || die "Filesystem flush failed; preserve the log and do not reboot"
 log "Rollback verified; allowing five seconds for persistent storage to settle."
 sleep 5 || die "Storage settling delay failed"

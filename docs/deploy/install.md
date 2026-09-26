@@ -69,6 +69,10 @@ before running it again. Every unsuccessful install leaves ACTION unchanged.
 The next run captures logs before rollback, then restores verified stock configs
 and removes only recognized, installer-owned files. Rollback requires its exact
 ownership marker and verified on-unit backups. Unknown changes are refused.
+Rollback also deletes the renderer's shader cache in
+`/mnt/persist/var/app/luka_carplay_maneuver`, which the renderer creates at
+runtime. Only the cache's own file names are removed, never recursively; anything
+else in that directory is left in place with a warning.
 `-ArmRollback` can prepare an overlay already set to rollback. There is no
 automatic reboot or process termination; review results and restart manually.
 

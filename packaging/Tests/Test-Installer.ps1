@@ -163,7 +163,7 @@ function Fixture($name) {
     $p = Posix $root
     foreach ($name in @('install','rollback')) {
         $text = [IO.File]::ReadAllText((Join-Path $sd "mod/carplay-rgi/installer/$name.sh"))
-        $text = $text.Replace('/net/mmx/fs/sda0', "$p/sd").Replace('/mnt/app', "$p/app").Replace('/mnt/system', "$p/system")
+        $text = $text.Replace('/net/mmx/fs/sda0', "$p/sd").Replace('/mnt/app', "$p/app").Replace('/mnt/system', "$p/system").Replace('/mnt/persist', "$p/persist")
         $mocks = @'
 sync() { [ "${FAIL_SYNC:-0}" != 1 ]; }
 sleep() { [ "${FAIL_SLEEP:-0}" != 1 ]; }
@@ -230,6 +230,36 @@ $root = Fixture 'normal'
 Assert ((Run $root 'install') -eq 0) 'first install succeeds'
 Assert ((Run $root 'install') -eq 0) 'managed reinstall succeeds'
 Recovered $root
+
+# The renderer's shader cache on the persist partition has no install record:
+# rollback removes only its own names, never recursively, and never fails on it.
+$cacheNames = @('0123456789abcdef.bin', 'fedcba9876543210.bin', '0123456789abcdef.bin.4242')
+foreach ($case in @('shader-cache','shader-cache-foreign','shader-cache-stuck')) {
+    $root = Fixture $case
+    Assert ((Run $root 'install') -eq 0) "$case install succeeds"
+    $cache = Join-Path $root 'persist/var/app/luka_carplay_maneuver'
+    New-Item -ItemType Directory -Force -Path $cache | Out-Null
+    foreach ($name in $cacheNames) { WriteText (Join-Path $cache $name) 'program binary' }
+    if ($case -eq 'shader-cache-foreign') {
+        foreach ($name in @('notes.txt', 'ABCDEF0123456789.bin', '0123456789abcde.bin')) { WriteText (Join-Path $cache $name) 'not the renderer''s' }
+    }
+    if ($case -eq 'shader-cache-stuck') { New-Item -ItemType Directory -Path (Join-Path $cache 'aaaaaaaaaaaaaaaa.bin') | Out-Null }
+    Recovered $root
+    $rollbackLog = [IO.File]::ReadAllText((Join-Path $root 'sd/mod/carplay-rgi-rollback.log'))
+    foreach ($name in $cacheNames) { Assert (-not (Test-Path (Join-Path $cache $name))) "$case removes cache file $name" }
+    if ($case -eq 'shader-cache') {
+        Assert (-not (Test-Path $cache)) 'shader cache directory removed once empty'
+    } else {
+        Assert (Test-Path $cache) "$case leaves the cache directory in place"
+        Assert ($rollbackLog.Contains('WARNING: ') -and $rollbackLog.Contains('SUCCESS:')) "$case warns without failing the rollback"
+    }
+    if ($case -eq 'shader-cache-foreign') {
+        foreach ($name in @('notes.txt', 'ABCDEF0123456789.bin', '0123456789abcde.bin')) {
+            Assert ([IO.File]::ReadAllText((Join-Path $cache $name)) -eq 'not the renderer''s') "foreign $name in the cache directory is preserved"
+        }
+    }
+    if ($case -eq 'shader-cache-stuck') { Assert (Test-Path (Join-Path $cache 'aaaaaaaaaaaaaaaa.bin') -PathType Container) 'a directory with a cache name is never removed' }
+}
 
 foreach ($case in @('upgrade','interrupted-upgrade','unowned-monitor')) {
     $root = Fixture $case
