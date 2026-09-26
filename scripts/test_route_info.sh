@@ -16,6 +16,7 @@ TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT
 CLASSPATH="$PATCH_JAR:$STOCK_JAR:$TOOLS_DIR/libs/org.osgi.framework-1.10.0.jar:$TOOLS_DIR/libs/org.osgi.util.tracker-1.5.4.jar"
 "$JDK_DIR/bin/javac" -encoding UTF-8 -cp "$CLASSPATH" -d "$TEST_DIR" \
+    "$PROJECT_DIR/tests/RgdTeardownTest.java" \
     "$PROJECT_DIR/tests/CurrentPositionDeliveryTest.java" \
     "$PROJECT_DIR/tests/RouteInfoTimeoutTest.java" \
     "$PROJECT_DIR/tests/CurrentPositionStockChainTest.java" \
@@ -65,3 +66,5 @@ CLASSPATH="$PATCH_JAR:$STOCK_JAR:$TOOLS_DIR/libs/org.osgi.framework-1.10.0.jar:$
     -cp "$TEST_DIR:$PATCH_JAR:$TOOLS_DIR/out/MU1316-combined.jar:$TOOLS_DIR/libs/org.osgi.framework-1.10.0.jar:$TOOLS_DIR/libs/org.osgi.util.tracker-1.5.4.jar" \
     com.luka.carplay.rgd.CurrentPositionStockChainTest
 python3 "$PROJECT_DIR/tests/test_rgd_native_contract.py"
+
+"$JDK_DIR/bin/java" -Xverify:none -cp "$TEST_DIR:$CLASSPATH" com.luka.carplay.core.RgdTeardownTest

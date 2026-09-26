@@ -1,10 +1,10 @@
 /*
- * RgdModule — CarPlay route-guidance feature as a CarPlayApp Module.
+ * RgdModule â€” CarPlay route-guidance feature as a CarPlayApp Module.
  *
  * Adapter over the ported RouteGuidance/BAPBridge chain.  start() implements the
  * proven retry-until-ready gate: CombiBAPServiceNavi (and the ClusterService BAP
  * listener it drives) appears a beat after CarPlay activate, so we return false
- * until the service is registered — CarPlayApp.startRetry() calls us again.
+ * until the service is registered â€” CarPlayApp.startRetry() calls us again.
  *
  * Copyright (c) 2026 LuKa (@LuKa_dev)
  */
@@ -24,7 +24,7 @@ final class RgdModule implements Module {
     public String name() { return "rgd"; }
 
     public boolean start(FrameworkRef fw) {
-        if (fw == null || !fw.isReady()) return false;             /* framework not up → retry */
+        if (fw == null || !fw.isReady()) return false;             /* framework not up â†’ retry */
         if (!ScreenModule.isPlatformSupported(fw)) {
             Log.w(TAG, "disabled on unsupported G24 cluster");
             return true;
@@ -37,7 +37,7 @@ final class RgdModule implements Module {
         }
 
         /* Init + subscribe ONCE.  Guard against re-running rg.init() on a retry (it builds a
-         * fresh BAPBridge each call → would re-wrap the gate every retry).  rg.start() is
+         * fresh BAPBridge each call â†’ would re-wrap the gate every retry).  rg.start() is
          * idempotent (returns early if already running). */
         if (rg == null) {
             RouteGuidance r = new RouteGuidance();
@@ -47,7 +47,7 @@ final class RgdModule implements Module {
             rg = r;
         }
         /* REPLACE: don't report started until the RG gate is actually shut.  engageTakeover
-         * returns false while ClusterService isn't up yet → CarPlayApp keeps retrying, so a
+         * returns false while ClusterService isn't up yet â†’ CarPlayApp keeps retrying, so a
          * connected session with no CarPlay navigation still gets stock RG blocked. */
         if (!rg.engageTakeover()) {
             return false;
@@ -57,7 +57,19 @@ final class RgdModule implements Module {
     }
 
     public void stop() {
-        if (rg != null) { rg.stop(); rg.disengageTakeover(); rg = null; }
-        if (naviHandle != null) { naviHandle.release(); naviHandle = null; }
+        /* the native RG gate must reopen even when the route-guidance teardown
+         * throws; before, a throw from rg.stop() skipped disengageTakeover() and left stock
+         * route guidance blocked on the cluster for the rest of the ignition cycle. */
+        RouteGuidance r = rg;
+        rg = null;
+        try {
+            if (r != null) {
+                try { r.stop(); }
+                catch (Throwable t) { Log.w(TAG, "route guidance stop failed: " + t); }
+                finally { r.disengageTakeover(); }
+            }
+        } finally {
+            if (naviHandle != null) { naviHandle.release(); naviHandle = null; }
+        }
     }
 }
