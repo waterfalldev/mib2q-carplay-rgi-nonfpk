@@ -36,6 +36,8 @@ Unknown or missing keys are refused. No real firmware profile is shipped here.
 ```
 
 The checkout must be clean. `-Ref` resolves locally, without fetching or pushing.
+The package is named `mib2q-carplay-rgi_<Name>_source_<commit>`; an optional
+alphanumeric `-Label` is appended, for example a local trial number.
 All source is exported with LF line endings. The recorded immutable toolchain
 image ID is used by both native builds; `-ExpectedToolchainImageId` can enforce
 a previously reviewed ID. Generated packages contain private stock configuration

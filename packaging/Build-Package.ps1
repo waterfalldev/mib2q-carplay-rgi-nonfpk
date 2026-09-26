@@ -17,6 +17,8 @@ param(
     [string]$JavaHome = '',
     [string]$ExpectedToolchainImageId = '',
     [string]$HostTestImage = 'carplay-rgi-host-tests:local',
+    # Optional name suffix, e.g. a local trial number; the commit still identifies the source.
+    [ValidatePattern('^[A-Za-z0-9]*$')][string]$Label = '',
     [switch]$ForceRebuild,
     [switch]$ArmRollback
 )
@@ -56,7 +58,7 @@ Invoke-Native -Exe $Git -Arguments ($gitArgs + @('-c','core.autocrlf=false','arc
 $tar = (Get-Command tar -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 Push-Location -LiteralPath $run
 try { Invoke-Native -Exe $tar -Arguments @('-xf','source.tar','-C','source') } finally { Pop-Location }
-$final = Join-Path $OutputRoot ('mib2q-carplay-rgi_' + $firmware + '_source_' + $short)
+$final = Join-Path $OutputRoot ('mib2q-carplay-rgi_' + $firmware + '_source_' + $short + $(if ($Label) { '_' + $Label } else { '' }))
 if ((Test-Path -LiteralPath $final) -and -not $ForceRebuild) { throw "Completed package already exists: $final" }
 $pending = Join-Path $OutputRoot ('.pending-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $pending | Out-Null
