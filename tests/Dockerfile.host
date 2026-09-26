@@ -1,0 +1,3 @@
+# Reuse the native build image; add the Linux headers required by host tests.
+FROM qnx65-armv7-toolchain:latest
+RUN apt-get update && apt-get install -y --no-install-recommends zlib1g-dev && rm -rf /var/lib/apt/lists/*

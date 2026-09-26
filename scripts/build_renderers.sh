@@ -18,7 +18,7 @@ set -e
 [ "$#" -le 1 ] || { echo "usage: ./scripts/build_renderers.sh [grid]"; exit 2; }
 [ "$#" -eq 0 ] || [ "$1" = "grid" ] || { echo "usage: ./scripts/build_renderers.sh [grid]"; exit 2; }
 
-IMG=qnx65-armv7-toolchain:latest
+IMG=${QNX_TOOLCHAIN_IMAGE:-qnx65-armv7-toolchain:latest}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # under Git for Windows hand Docker a Windows path (MSYS maps /tmp to the user's

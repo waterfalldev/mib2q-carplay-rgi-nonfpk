@@ -90,40 +90,16 @@ flowchart LR
 - **renderer**: EGL draw loop - TCP client to Java - progress watchdog thread
   ([maneuver-renderer](cluster/maneuver-renderer.md)); no dmdt on this branch.
 
-## 🔧 Build & deploy (quickref)
+## Build, tests and deployment
 
-```sh
-./scripts/build_java.sh        # -> build/carplay_hook.jar    (eclipse-temurin:8 Docker)
-./scripts/build_hook.sh        # -> build/libcarplay_hook.so   (qnx65-armv7-toolchain Docker)
-./scripts/build_renderers.sh   # -> build/maneuver_render      (qnx65-armv7-toolchain Docker)
-```
+The [package guide](deploy/install.md) describes the shared build and checked
+installation workflow. It exports one committed source and keeps stock firmware,
+dependency caches, test evidence and packages outside this repository. Java uses
+JDK 8 and the supplied stock bootstrap library; native code uses the QNX Docker
+image. The package checks run without a vehicle.
 
-All three build in Docker - no host toolchain. The `qnx65-armv7-toolchain` image is built once from
-[luka-dev/qnx65-armv7-toolchain](https://github.com/luka-dev/qnx65-armv7-toolchain) (`./host-scripts/qnx-run.sh build`). No Java variants; `java_patch/` builds directly to the
-jar, and `java_resources/` (the `vc-text.bin` glyph/Unicode table) is copied in before `jar cf`. The
-renderer's `scene/` is C++11 compiled with the image's `g++` into `build/libmaneuver_scene.a` (no C++
-runtime allowed). The native builds synthesize import stubs; the resulting ELF binds the unit's real
-Screen/EGL/GLES libs at runtime. `build_hook.sh` also enforces the 5-symbol export allowlist.
-
-## 🧪 Tests (host only, no HU)
-
-```sh
-./scripts/run_tests.sh            # C: RGD TLV parser, bus transport, signal guard, state trace, protocol constants
-./scripts/test_route_info.sh      # Java BAPBridge/RouteGuidance vs stock service interface (text, maneuvers, lanes, viewport)
-./scripts/test_java_transports.sh # CarplayBus / RendererServer sockets, TouchpadController
-./scripts/test_maneuver_native.sh # renderer lane decoder, scene engine, maneuver parity (ASan/UBSan, macOS)
-./scripts/audit_maneuvers.sh      # offline maneuver -> BAP wire export
-./scripts/audit_java_stock.sh     # Java linkage against the stock jar
-python3 tests/test_rgd_native_contract.py   # after build_java.sh: real C parser + slot writer -> Java -> stock BAP sender
-```
-
-The Java suites need the MU1316 stock jar and JDK under `../../Tools/jxe2jar`.
-
-Deploy by copying the runtime files to `/mnt/app/root/hooks/`, pointing `smartphone_integrator.json`
-at `carplay_child.json`, and dropping `carplay_hook.jar` into `/mnt/app/eso/hmi/lsd/jars/`.
-Separately, the RGD message IDs (0x5200/0x5203 sent, 0x5201/0x5202/0x5204 received) must be registered
-in `dio_manager.json` (`MessagesSentByAccessory` / `MessagesReceivedFromDevice`). Then reboot - there
-is no one-shot flasher. Runtime integration + install paths: [supervisor-lifecycle](deploy/supervisor-lifecycle.md).
+For component development, see the root README. Runtime ownership is described
+in [supervisor lifecycle](deploy/supervisor-lifecycle.md).
 
 ## 📚 Reverse-engineering references
 
