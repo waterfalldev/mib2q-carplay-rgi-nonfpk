@@ -62,6 +62,11 @@ features below follow it automatically.
   app that sends CarPlay route guidance: Apple Maps and Google Maps do, AMap does with its CarPlay
   guidance setting on, Waze does not
   ([details](docs/rgd/rgd-activation.md#-which-navigation-apps-send-route-guidance)).
+- **Turn-by-turn on MOST clusters.** On an analogue cluster with a colour centre display coded
+  for map-over-MOST, CarPlay's maneuver appears in the stock arrows view, rendered at the view's
+  native size. The map view keeps the Audi map with CarPlay's distance, street and arrival text.
+  Stock view selection stays in charge, and Audi guidance returns on disconnect
+  ([details](docs/cluster/most-cluster.md)).
 - **Route text in the Virtual Cockpit.** A text line names the exit sign or the next road (the
   current road when there is nothing else); long names scroll. Press **OK** (the left steering-wheel
   roller) to switch it to arrival time and time left, and press again to go back; it returns by itself
@@ -116,6 +121,8 @@ paths first. `scripts/build_hook.sh` and `scripts/build_renderers.sh` build the
 native components; `QNX_TOOLCHAIN_IMAGE` can pin an immutable image ID.
 
 `scripts/run_tests.sh` runs the native and supervisor checks on Linux/macOS.
+`tests/most/run-native-tests.sh <checkout>` runs the renderer's MOST output checks against
+the real QNX sources inside the toolchain image.
 `scripts/check_java.sh` runs the stock-backed Java suites and linkage audit.
 The package builder also exercises install, interrupted install, managed upgrade,
 rollback, collector timeouts, ACTION transitions and archive recovery using local
@@ -124,14 +131,19 @@ fixtures. No test connects to a vehicle.
 ## 🚀 Deployment
 
 **Compatibility.** The patch is not limited to US, EU or CN units, nor to one MU train: it is
-meant for any MHI2Q MU firmware (developed on MU1316). What matters is:
+meant for any MHI2Q MU firmware (developed on MU1316). The cluster presentation follows the
+unit's coding (sysConst 541):
 
-- a fully digital instrument cluster (Audi virtual cockpit); cars with an analog cluster are not
-  supported;
-- preferably, the latest firmware available for the unit, flashed before installing the patch.
+- **Virtual Cockpit** (541=2): the full feature set above.
+- **Map-over-MOST analogue cluster** (541=1): maneuvers in the stock arrows view and guidance
+  text. Tested on one MU1329 unit with an 800x252 arrows view; other trains and cluster variants
+  are untested. A rapid ticking sound during animated guidance has been reported there and is
+  not yet explained ([details](docs/cluster/most-cluster.md#-validation-and-limits)).
+- **RGI-only cluster** (541=0): stock cluster state is left alone. Untested.
 
-With both in place it should almost certainly work, as long as nothing went wrong during the
-install itself.
+Preferably flash the latest firmware available for the unit before installing the patch. The
+package builder checks the stock files you supply, but it cannot prove behavior on a firmware
+or cluster that has not been tested in a car.
 
 A release is eight files plus two config edits; nothing stock is replaced and no firewall profile is
 touched:

@@ -23,7 +23,9 @@ reconciles:
 # maneuver_render - protocol, scene engine & visible area
 
 `maneuver_render` draws the 3D maneuver arrow (plus the lane strip) into displayable 98, 328x181
-(180 px content + 1 ECC row), transparent when idle. It is a TCP **client** of Java's
+(180 px content + 1 ECC row), transparent when idle. On a MOST cluster the window is instead
+the arrows view's stream size, opaque, with the content rendered natively in its centre
+([most-cluster](most-cluster.md)). It is a TCP **client** of Java's
 `RendererServer` on `127.0.0.1:19800`; the supervisor owns the process, Java never spawns or kills it
 ([supervisor-lifecycle](../deploy/supervisor-lifecycle.md)). Plane routing and geometry: [display-contexts](display-contexts.md), [kdk-geometry](kdk-geometry.md).
 
