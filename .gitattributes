@@ -1,0 +1,8 @@
+*.sh text eol=lf
+*.patch text eol=lf
+*.java text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.cpp text eol=lf
+*.ps1 text eol=lf
+*.psm1 text eol=lf
