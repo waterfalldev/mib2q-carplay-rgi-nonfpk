@@ -69,7 +69,11 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
     private static final int KOMBI_CTX_KDK_ONLY = 9;   // KDK-only cluster
     protected LogChannel logChannel;
     protected final NavigationEnv env;
-    private boolean rgiDataValid = false;
+    private volatile boolean rgiDataValid = false;
+    // Keep the temporary CarPlay claim separate from the latest genuine stock state.
+    private volatile boolean carPlayRgiValidOverride = false;
+    private volatile boolean dsiRgActiveKnown = false;
+    private volatile boolean dsiRgActive = false;
     private final DateMetric etaDateMetric;
     private final DateMetric rttDateMetric;
     private Distance distanceToManeuver = new Distance(0.0F, 1);
@@ -563,6 +567,9 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
 
     public void updateRgActive(boolean flag) {
         this.logChannel.log(100000000, "ClusterService#updateRgActive( %1 )", flag);
+        /* Only AbstractDSINavigationHandler calls this, right after it writes the container. */
+        this.dsiRgActive = flag;
+        this.dsiRgActiveKnown = true;
         this.refreshRGIValid();
         this.clusterViewMode.refreshRGState();
         if (!flag) {
@@ -586,7 +593,7 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
 
     private void refreshRGIValid() {
         boolean flag = this.env.getContainer().isRgActive();
-        boolean flag1 = flag && this.rgiDataValid;
+        boolean flag1 = flag && (this.rgiDataValid || this.carPlayRgiValidOverride);
         this.logChannel
             .log(
                 100000000, "ClusterService#refreshRGIValid() - rgActive: %1, rgiDataValid: %2", flag, this.rgiDataValid
@@ -1125,5 +1132,14 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
         if (current != null) {
             this.combiBAPListener.setCombiService(current);
         }
+    }
+
+    public void setCarPlayRgiValidOverride(boolean active) {
+        this.carPlayRgiValidOverride = active;
+        this.refreshRGIValid();
+    }
+
+    public boolean getLastDsiRgActive(boolean fallback) {
+        return this.dsiRgActiveKnown ? this.dsiRgActive : fallback;
     }
 }
