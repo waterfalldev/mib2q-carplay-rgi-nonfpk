@@ -1,4 +1,4 @@
-#requires -version 5.1
+#requires -version 7.0
 # Internal entry point. Build-Package.ps1 exports an exact commit before calling this.
 [CmdletBinding()]
 param(
@@ -339,20 +339,23 @@ $Docker = (Get-Command docker -ErrorAction Stop).Source
 $ToolchainImageId = (Invoke-Native -Exe $Docker -Arguments @('image','inspect','--format','{{.Id}}','qnx65-armv7-toolchain:latest') -Capture | Select-Object -First 1).Trim()
 if ($ExpectedToolchainImageId -and $ToolchainImageId -ne $ExpectedToolchainImageId) { throw 'QNX toolchain image does not match the requested pin.' }
 $savedImage = $env:QNX_TOOLCHAIN_IMAGE
-try {
-    # Pass the inspected immutable ID to both builds, even if a tag moves.
-    $env:QNX_TOOLCHAIN_IMAGE = $ToolchainImageId
-    foreach ($script in @('build_hook.sh','build_renderers.sh')) {
-        Invoke-Native -Exe $GitSh -Arguments @((Join-Path $WorkTree ('scripts/' + $script)).Replace('\','/'))
+# Pass the inspected immutable ID to every native step, even if a tag moves. The native
+# steps run in Docker alongside the Java build and tests below; they share no files
+# (build/ versus the Java scratch) and are collected before anything uses their output.
+$env:QNX_TOOLCHAIN_IMAGE = $ToolchainImageId
+$NativeSteps = [System.Collections.Generic.List[string[]]]::new()
+$NativeSteps.Add([string[]]@((Join-Path $WorkTree 'scripts/build_hook.sh').Replace('\','/')))
+$NativeSteps.Add([string[]]@((Join-Path $WorkTree 'scripts/build_renderers.sh').Replace('\','/')))
+$nativeJob = Start-ThreadJob -ArgumentList $GitSh, $NativeSteps -ScriptBlock {
+    param($GitSh, $Steps)
+    foreach ($step in $Steps) {
+        $stepArgs = $step
+        $output = @(& $GitSh @stepArgs 2>&1 | ForEach-Object { $_.ToString() })
+        [pscustomobject]@{ Step = $stepArgs -join ' '; ExitCode = $LASTEXITCODE; Output = $output }
+        if ($LASTEXITCODE -ne 0) { break }
     }
-} finally { $env:QNX_TOOLCHAIN_IMAGE = $savedImage }
-$DownloadedHook = Join-Path $WorkTree 'build/libcarplay_hook.so'
-$PackagedRenderer = Join-Path $WorkTree 'build/maneuver_render'
-Assert-ElfArm32 -Path $DownloadedHook -Name 'hook'
-Assert-ElfArm32 -Path $PackagedRenderer -Name 'renderer'
-Set-Guard 'nativeSourceBuild'
-Set-Guard 'nativeArm32Elf'
-$java = & "$PSScriptRoot/Build-Java.ps1" -SourceRoot $WorkTree -StockJar $LsdJar -Dependencies $Dependencies -OutputRoot $JavaWork -BuildId $BuildId -JavaHome $JavaHome
+}
+$java =& "$PSScriptRoot/Build-Java.ps1" -SourceRoot $WorkTree -StockJar $LsdJar -Dependencies $Dependencies -OutputRoot $JavaWork -BuildId $BuildId -JavaHome $JavaHome
 $BuiltJavaJar = $java.Jar
 $JavaClassCount = $java.ClassCount
 $JavaResources = $java.Resources
@@ -363,6 +366,20 @@ $RgdContractFrames = Join-Path $ScratchRoot 'rgd-contract'
 New-Item -ItemType Directory -Force -Path $RgdContractFrames | Out-Null
 Invoke-Native -Exe $Docker -Arguments @('run','--rm','--network','none','--mount',('type=bind,source=' + $WorkTree + ',target=/src,readonly'),'--mount',('type=bind,source=' + $RgdContractFrames + ',target=/out'),'--workdir','/src',$HostTestImageId,'bash','-c','export PATH=/usr/sbin:/usr/bin:/sbin:/bin PYTHONDONTWRITEBYTECODE=1 RGD_CONTRACT_STAGE=native RGD_CONTRACT_OUT=/out RGD_CONTRACT_SANITIZE=undefined; python3 tests/test_rgd_native_contract.py')
 . "$PSScriptRoot/Test-Java.ps1"
+Write-Step 'Collecting the native build'
+try { $NativeResults = @(Receive-Job -Job $nativeJob -Wait -AutoRemoveJob) }
+finally { $env:QNX_TOOLCHAIN_IMAGE = $savedImage }
+foreach ($result in $NativeResults) {
+    $result.Output | ForEach-Object { Write-Host $_ }
+    if ($result.ExitCode -ne 0) { throw "Native step failed ($($result.ExitCode)): $($result.Step)" }
+}
+if ($NativeResults.Count -ne $NativeSteps.Count) { throw 'Not every native step ran.' }
+$DownloadedHook = Join-Path $WorkTree 'build/libcarplay_hook.so'
+$PackagedRenderer = Join-Path $WorkTree 'build/maneuver_render'
+Assert-ElfArm32 -Path $DownloadedHook -Name 'hook'
+Assert-ElfArm32 -Path $PackagedRenderer -Name 'renderer'
+Set-Guard 'nativeSourceBuild'
+Set-Guard 'nativeArm32Elf'
 # Native and shell checks consume the same source and freshly built JAR.
 Copy-Item -LiteralPath $BuiltJavaJar -Destination (Join-Path $WorkTree 'build/carplay_hook.jar')
 Invoke-Native -Exe $Docker -Arguments @('run','--rm','--network','none','--mount',('type=bind,source=' + $WorkTree + ',target=/src,readonly'),'--workdir','/src',$HostTestImageId,'bash','-c','export PATH=/usr/sbin:/usr/bin:/sbin:/bin; bash scripts/run_tests.sh')

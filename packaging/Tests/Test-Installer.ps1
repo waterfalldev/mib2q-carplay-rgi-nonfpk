@@ -1,17 +1,28 @@
+#requires -version 7.0
 param(
     [Parameter(Mandatory=$true)][string]$PackageDirectory,
     [switch]$DispatcherOnly,
     # Optional source overlay in temporary fixtures only, for testing future builds.
     [string]$CollectorScript = '',
     [string]$DispatcherScript = '',
-    [string]$TestRootParent = [IO.Path]::GetTempPath()
+    [string]$TestRootParent = [IO.Path]::GetTempPath(),
+    # Run every unit in sequence in this process (for debugging).
+    [switch]$Sequential,
+    [int]$ThrottleLimit = 0,
+    # Internal: run one unit inside an existing fixture root (parallel children).
+    [string]$Unit = '',
+    [string]$TestRoot = ''
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/../PackageTools.ps1"
 $sh = Find-GitSh (Get-Command git -ErrorAction Stop).Source
 $utf8 = New-Object System.Text.UTF8Encoding($false)
-$testRoot = Join-Path $TestRootParent ('carplay-rgi-test-' + [Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $testRoot | Out-Null
+if ($TestRoot) {
+    $testRoot = $TestRoot
+} else {
+    $testRoot = Join-Path $TestRootParent ('carplay-rgi-test-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $testRoot | Out-Null
+}
 $script:checks = 0
 function Assert($condition, $label) {
     if (-not $condition) { throw "FAIL: $label" }
@@ -224,17 +235,19 @@ function Recovered($root) {
     Assert (-not (Test-Path (Join-Path $root 'app/root/hooks/carplay_rgi_install.state'))) 'managed state removed'
     Assert (-not (Test-Path (Join-Path $root 'app/root/hooks/carplay_monitor.sh'))) 'runtime monitor removed'
 }
-
-if (-not $DispatcherOnly) {
-$root = Fixture 'normal'
-Assert ((Run $root 'install') -eq 0) 'first install succeeds'
-Assert ((Run $root 'install') -eq 0) 'managed reinstall succeeds'
-Recovered $root
+# Install and recovery scenarios, each on its own simulated unit.
+$normalBody = {
+    $root = Fixture 'normal'
+    Assert ((Run $root 'install') -eq 0) 'first install succeeds'
+    Assert ((Run $root 'install') -eq 0) 'managed reinstall succeeds'
+    Recovered $root
+}
 
 # The renderer's shader cache on the persist partition has no install record:
 # rollback removes only its own names, never recursively, and never fails on it.
-$cacheNames = @('0123456789abcdef.bin', 'fedcba9876543210.bin', '0123456789abcdef.bin.4242')
-foreach ($case in @('shader-cache','shader-cache-foreign','shader-cache-stuck')) {
+$shaderCacheBody = {
+    param($case)
+    $cacheNames = @('0123456789abcdef.bin', 'fedcba9876543210.bin', '0123456789abcdef.bin.4242')
     $root = Fixture $case
     Assert ((Run $root 'install') -eq 0) "$case install succeeds"
     $cache = Join-Path $root 'persist/var/app/luka_carplay_maneuver'
@@ -261,7 +274,8 @@ foreach ($case in @('shader-cache','shader-cache-foreign','shader-cache-stuck'))
     if ($case -eq 'shader-cache-stuck') { Assert (Test-Path (Join-Path $cache 'aaaaaaaaaaaaaaaa.bin') -PathType Container) 'a directory with a cache name is never removed' }
 }
 
-foreach ($case in @('upgrade','interrupted-upgrade','unowned-monitor')) {
+$monitorUpgradeBody = {
+    param($case)
     $root = Fixture $case
     Assert ((Run $root 'install') -eq 0) "$case initial managed install succeeds"
     $state = Join-Path $root 'app/root/hooks/carplay_rgi_install.state'
@@ -281,42 +295,50 @@ foreach ($case in @('upgrade','interrupted-upgrade','unowned-monitor')) {
     }
 }
 
-foreach ($fault in @('FAIL_SYNC=1','FAIL_CP=1')) {
+$installFaultBody = {
+    param($fault)
     $root = Fixture $fault.Replace('=','-')
     Assert ((Run $root 'install' $fault) -ne 0) "$fault refused"
     Assert (IsStock $root) "$fault leaves stock configs intact"
     Assert (-not (Test-Path (Join-Path $root 'app/eso/hmi/lsd/jars/carplay_hook.jar'))) "$fault commits no JAR"
 }
 
-$root = Fixture 'payload-corruption'
-Add-Content (Join-Path $root 'sd/mod/carplay-rgi/payload/hooks/carplay_startup.sh') 'corrupt'
-Assert ((Run $root 'install') -ne 0) 'corrupt payload refused'
-Assert (IsStock $root) 'corrupt payload leaves stock configs intact'
+$payloadCorruptionBody = {
+    $root = Fixture 'payload-corruption'
+    Add-Content (Join-Path $root 'sd/mod/carplay-rgi/payload/hooks/carplay_startup.sh') 'corrupt'
+    Assert ((Run $root 'install') -ne 0) 'corrupt payload refused'
+    Assert (IsStock $root) 'corrupt payload leaves stock configs intact'
+}
 
-$root = Fixture 'conflicting-navigation-patch'
-$conflict = Join-Path $root 'app/eso/hmi/lsd/jars/NavActiveIgnore.jar'
-WriteText $conflict 'owned by a different installer'
-Assert ((Run $root 'install') -ne 0) 'conflicting navigation patch is refused'
-Assert (([IO.File]::ReadAllText($conflict)) -eq 'owned by a different installer') 'unowned navigation patch is preserved'
-Assert (IsStock $root) 'navigation conflict leaves stock configs intact'
+$navigationConflictBody = {
+    $root = Fixture 'conflicting-navigation-patch'
+    $conflict = Join-Path $root 'app/eso/hmi/lsd/jars/NavActiveIgnore.jar'
+    WriteText $conflict 'owned by a different installer'
+    Assert ((Run $root 'install') -ne 0) 'conflicting navigation patch is refused'
+    Assert (([IO.File]::ReadAllText($conflict)) -eq 'owned by a different installer') 'unowned navigation patch is preserved'
+    Assert (IsStock $root) 'navigation conflict leaves stock configs intact'
+}
 
 # Three backup renames precede the runtime files, two configs, then state.
 # Fail each live commit independently and exercise recovery with the same package.
-$plan = Get-Content -Raw -LiteralPath (Join-Path $PackageDirectory 'sdcard/mod/carplay-rgi/meta/deployment-plan.json') | ConvertFrom-Json
-foreach ($n in 4..(3 + @($plan.files).Count)) {
+$renameBody = {
+    param($n)
     $root = Fixture "rename-$n"
     Assert ((Run $root 'install' "FAIL_MV=$n") -ne 0) "rename $n failure propagates"
     Assert (Test-Path (Join-Path $root 'app/root/carplay-rgi-backup/owner-marker.txt')) "rename $n retains recovery ownership"
     Recovered $root
 }
 
-$root = Fixture 'unknown-modification'
-Assert ((Run $root 'install') -eq 0) 'install before tamper succeeds'
-Add-Content (Join-Path $root 'app/root/hooks/carplay_startup.sh') 'unknown change'
-Assert ((Run $root 'rollback') -ne 0) 'rollback refuses an unrecognised modified target'
-Assert (Test-Path (Join-Path $root 'app/root/carplay-rgi-backup/owner-marker.txt')) 'refused rollback retains backups'
+$unknownModificationBody = {
+    $root = Fixture 'unknown-modification'
+    Assert ((Run $root 'install') -eq 0) 'install before tamper succeeds'
+    Add-Content (Join-Path $root 'app/root/hooks/carplay_startup.sh') 'unknown change'
+    Assert ((Run $root 'rollback') -ne 0) 'rollback refuses an unrecognised modified target'
+    Assert (Test-Path (Join-Path $root 'app/root/carplay-rgi-backup/owner-marker.txt')) 'refused rollback retains backups'
+}
 
-foreach ($n in 1..2) {
+$rollbackRenameBody = {
+    param($n)
     $root = Fixture "rollback-rename-$n"
     Assert ((Run $root 'install') -eq 0) "install before rollback failure $n succeeds"
     Assert ((Run $root 'rollback' "FAIL_MV=$n") -ne 0) "rollback rename $n failure propagates"
@@ -324,19 +346,16 @@ foreach ($n in 1..2) {
     Recovered $root
 }
 
-$root = Fixture 'settle-fails'
-Assert ((Run $root 'install' 'FAIL_SLEEP=1') -ne 0) 'settling failure is not reported as success'
-Recovered $root
-
+$settleFailsBody = {
+    $root = Fixture 'settle-fails'
+    Assert ((Run $root 'install' 'FAIL_SLEEP=1') -ne 0) 'settling failure is not reported as success'
+    Recovered $root
 }
-
 # Source command.sh exactly as M.I.B. does. Run its real MMX lock body in a
 # subshell with a simulated SD; do not replace lock acquisition with success.
 $dispatcherSource = if ($DispatcherScript) { $DispatcherScript } else { Join-Path $PackageDirectory 'sdcard/mod/custom.sh' }
 $dispatcherTemplate = [IO.File]::ReadAllText($dispatcherSource)
 $autoRollback = $dispatcherTemplate.Contains('ACTION is now rollback')
-# The source is identical in every fixture: check this static invariant once.
-Assert (-not $dispatcherTemplate.Contains('/tmp/carplay-rgi-install.lock')) 'dispatcher does not lock on QNX RAM filesystem'
 $dispatcherScenarios = @('invalid-action','action-fails','lock-held',
     'lock-io-fails','readonly-fails','app-ro-fails','sd-rw-fails','app-rw-fails',
     'sys-rw-fails','release-fails','missing-utility','normal','rollback','rollback-slots-full',
@@ -345,7 +364,8 @@ if ($autoRollback) {
     $dispatcherScenarios += @('action-changed','action-stage-fails','action-rename-fails',
         'action-sync-fails','action-settle-fails','action-readback-fails','two-runs')
 }
-foreach ($scenario in $dispatcherScenarios) {
+$dispatcherBody = {
+    param($scenario)
     $root = Fixture "dispatcher-$scenario"
     $p = Posix $root
     $dispatcher = $dispatcherTemplate.Replace('/net/mmx/fs/sda0', "$p/sd")
@@ -558,9 +578,10 @@ exit 0
         Assert ($elapsed -lt 20) "a hung capture does not hold the rollback (dispatcher returned in $([int]$elapsed) s with a 30 s hang)"
     }
 }
-
 # A standalone SD contains only the shared script, with no package at all.
-foreach ($scenario in @('sourced','executed','lock-cleanup-fails','sd-rw-fails','slots-full','dispatch-fails','worker-launch-fails','worker-no-ack','invalid-argument')) {
+$standaloneScenarios = @('sourced','executed','lock-cleanup-fails','sd-rw-fails','slots-full','dispatch-fails','worker-launch-fails','worker-no-ack','invalid-argument')
+$standaloneBody = {
+    param($scenario)
     $root = Join-Path $testRoot "standalone-$scenario"
     foreach ($dir in @('sd/mod/carplay-rgi-runtime-logs','tmp')) {
         New-Item -ItemType Directory -Force -Path (Join-Path $root $dir) | Out-Null
@@ -673,7 +694,9 @@ exit 0
 }
 # Audio diagnostics: success, empty buffers, missing tools, errors and a hung
 # reader. These run the shared worker directly, just as the package invokes it.
-foreach ($scenario in @('normal','empty','missing','fails','hangs','live-normal','live-fails','live-hangs')) {
+$audioScenarios = @('normal','empty','missing','fails','hangs','live-normal','live-fails','live-hangs')
+$audioBody = {
+    param($scenario)
     $root = Join-Path $testRoot "audio-$scenario"
     foreach ($dir in @('sd/mod/carplay-rgi-runtime-logs','tmp')) {
         New-Item -ItemType Directory -Force -Path (Join-Path $root $dir) | Out-Null
@@ -772,6 +795,7 @@ foreach ($scenario in @('normal','empty','missing','fails','hangs','live-normal'
 }
 # Interrupt a bounded query after the first system snapshot. The worker must
 # return nonzero, retain partial evidence and reap its own active probe.
+$interruptBody = {
 $root = Join-Path $testRoot 'live-interrupted'
 foreach ($dir in @('sd/mod','tmp')) { New-Item -ItemType Directory -Force -Path (Join-Path $root $dir) | Out-Null }
 $p = Posix $root
@@ -788,4 +812,91 @@ Assert ($LASTEXITCODE -ne 0) 'interruption reaps the active query'
 $capture = Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/01'
 Assert ((Get-Content -Raw (Join-Path $capture 'sloginfo-live-01.txt')).Contains('system snapshot 1') -and
     (Get-Content -Raw (Join-Path $capture 'live-01-io-audio-sched.txt')).Contains('partial thread diagnostic')) 'interruption preserves the preceding snapshot and partial active query output'
-Write-Host "All $script:checks assertions passed. Fixtures: $testRoot"
+}
+
+# Every scenario is a unit with its own fixture under $testRoot, so units can run in
+# parallel. Phase 2 holds the scenarios that assert elapsed time; they run after the
+# others, together, so a loaded machine cannot fail them.
+$units = New-Object System.Collections.Generic.List[object]
+function Add-Unit([string]$Name, [scriptblock]$Body, $Argument = $null, [int]$Phase = 1) {
+    $units.Add([pscustomobject]@{ Name = $Name; Body = $Body; Argument = $Argument; Phase = $Phase })
+}
+if (-not $DispatcherOnly) {
+    Add-Unit 'normal' $normalBody
+    foreach ($case in @('shader-cache','shader-cache-foreign','shader-cache-stuck')) { Add-Unit $case $shaderCacheBody $case }
+    foreach ($case in @('upgrade','interrupted-upgrade','unowned-monitor')) { Add-Unit $case $monitorUpgradeBody $case }
+    foreach ($fault in @('FAIL_SYNC=1','FAIL_CP=1')) { Add-Unit $fault.Replace('=','-') $installFaultBody $fault }
+    Add-Unit 'payload-corruption' $payloadCorruptionBody
+    Add-Unit 'conflicting-navigation-patch' $navigationConflictBody
+    $plan = Get-Content -Raw -LiteralPath (Join-Path $PackageDirectory 'sdcard/mod/carplay-rgi/meta/deployment-plan.json') | ConvertFrom-Json
+    foreach ($n in 4..(3 + @($plan.files).Count)) { Add-Unit "rename-$n" $renameBody $n }
+    Add-Unit 'unknown-modification' $unknownModificationBody
+    foreach ($n in 1..2) { Add-Unit "rollback-rename-$n" $rollbackRenameBody $n }
+    Add-Unit 'settle-fails' $settleFailsBody
+}
+foreach ($scenario in $dispatcherScenarios) {
+    Add-Unit "dispatcher-$scenario" $dispatcherBody $scenario $(if ($scenario -eq 'rollback-collector-hangs') { 2 } else { 1 })
+}
+foreach ($scenario in $standaloneScenarios) { Add-Unit "standalone-$scenario" $standaloneBody $scenario }
+foreach ($scenario in $audioScenarios) {
+    Add-Unit "audio-$scenario" $audioBody $scenario $(if ($scenario -in @('hangs','live-hangs')) { 2 } else { 1 })
+}
+Add-Unit 'live-interrupted' $interruptBody
+
+function Invoke-Unit($entry) {
+    if ($null -eq $entry.Argument) { & $entry.Body } else { & $entry.Body $entry.Argument }
+}
+
+# Child mode: one unit, in its own process, reporting its own checks.
+if ($Unit) {
+    $selected = @($units | Where-Object { $_.Name -ceq $Unit })
+    if ($selected.Count -ne 1) { throw "Unknown installer test unit: $Unit" }
+    Invoke-Unit $selected[0]
+    Write-Host "UNIT-CHECKS: $script:checks"
+    exit 0
+}
+
+# The source is identical in every fixture: check this static invariant once.
+Assert (-not $dispatcherTemplate.Contains('/tmp/carplay-rgi-install.lock')) 'dispatcher does not lock on QNX RAM filesystem'
+
+if ($Sequential) {
+    foreach ($item in $units) { Invoke-Unit $item }
+    Write-Host "All $script:checks assertions passed. Fixtures: $testRoot"
+    return
+}
+
+if ($ThrottleLimit -lt 1) { $ThrottleLimit = [Math]::Max(2, [Environment]::ProcessorCount) }
+$pwshPath = (Get-Process -Id $PID).Path
+$childArguments = @('-NoProfile', '-NonInteractive', '-File', $PSCommandPath, '-PackageDirectory', $PackageDirectory,
+    '-TestRoot', $testRoot, '-TestRootParent', $TestRootParent)
+if ($DispatcherOnly) { $childArguments += '-DispatcherOnly' }
+if ($CollectorScript) { $childArguments += @('-CollectorScript', $CollectorScript) }
+if ($DispatcherScript) { $childArguments += @('-DispatcherScript', $DispatcherScript) }
+# The slowest units start first so they do not finish last.
+$slowFirst = @('audio-live-fails','audio-live-normal','dispatcher-two-runs','standalone-sourced','standalone-executed',
+    'normal','upgrade','dispatcher-action-readback-fails','rollback-rename-1','rollback-rename-2','audio-fails')
+$results = @{}
+foreach ($phase in @(1, 2)) {
+    $batch = @($units | Where-Object { $_.Phase -eq $phase } |
+        Sort-Object @{ Expression = { $i = [Array]::IndexOf($slowFirst, $_.Name); if ($i -lt 0) { 999 } else { $i } } })
+    $batch | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
+        $unitName = $_.Name
+        $childArgs = $using:childArguments
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $output = @(& $using:pwshPath @childArgs -Unit $unitName 2>&1 | ForEach-Object { $_.ToString() })
+        [pscustomobject]@{ Name = $unitName; ExitCode = $LASTEXITCODE; Output = $output; Seconds = $clock.Elapsed.TotalSeconds }
+    } | ForEach-Object { $results[$_.Name] = $_ }
+}
+
+# Report in the fixed unit order, one block per unit.
+$failed = New-Object System.Collections.Generic.List[string]
+foreach ($item in $units) {
+    $result = $results[$item.Name]
+    Write-Host ('--- {0} ({1:N1} s)' -f $item.Name, $result.Seconds)
+    $checksLine = @($result.Output | Where-Object { $_ -match '^UNIT-CHECKS: \d+$' })
+    foreach ($line in $result.Output) { if ($line -notmatch '^UNIT-CHECKS: ') { Write-Host $line } }
+    if ($result.ExitCode -ne 0 -or $checksLine.Count -ne 1) { $failed.Add($item.Name); continue }
+    $script:checks += [int]($checksLine[0] -replace '^UNIT-CHECKS: ', '')
+}
+if ($failed.Count) { throw "Installer test units failed: $($failed -join ', '). Fixtures: $testRoot" }
+Write-Host "All $script:checks assertions passed in $($units.Count) parallel units. Fixtures: $testRoot"

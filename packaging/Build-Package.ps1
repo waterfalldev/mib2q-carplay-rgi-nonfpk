@@ -1,4 +1,4 @@
-#requires -version 5.1
+#requires -version 7.0
 <#
 .SYNOPSIS
 Build a checked M.I.B. package from one local Git commit and external stock inputs.

@@ -1,4 +1,4 @@
-#requires -version 5.1
+#requires -version 7.0
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$SourceRoot,
