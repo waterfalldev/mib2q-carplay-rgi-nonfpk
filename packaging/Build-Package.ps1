@@ -52,7 +52,10 @@ $scratch = Join-Path $run 'scratch'
 New-Item -ItemType Directory -Path $source, $scratch | Out-Null
 $archive = Join-Path $run 'source.tar'
 Invoke-Native -Exe $Git -Arguments ($gitArgs + @('-c','core.autocrlf=false','archive','--format=tar',('--output=' + $archive),$commit))
-Invoke-Native -Exe (Get-Command tar -ErrorAction Stop).Source -Arguments @('-xf',$archive,'-C',$source)
+# Relative names: GNU tar (first on PATH under Git Bash) reads "C:\..." as a remote host.
+$tar = (Get-Command tar -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+Push-Location -LiteralPath $run
+try { Invoke-Native -Exe $tar -Arguments @('-xf','source.tar','-C','source') } finally { Pop-Location }
 $final = Join-Path $OutputRoot ('mib2q-carplay-rgi_' + $firmware + '_source_' + $short)
 if ((Test-Path -LiteralPath $final) -and -not $ForceRebuild) { throw "Completed package already exists: $final" }
 $pending = Join-Path $OutputRoot ('.pending-' + [Guid]::NewGuid().ToString('N'))
