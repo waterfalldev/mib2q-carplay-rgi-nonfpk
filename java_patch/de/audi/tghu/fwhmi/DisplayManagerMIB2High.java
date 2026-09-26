@@ -32,16 +32,36 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
     private static final int CTX_MAP_ALT     = 76;   // alt map only
     private static final int CTX_MAP_ALT_KDK = 77;   // alt map + KDK + backings
     private static final int CTX_CARPLAY_NAV = 80;   // CarPlay: maneuver + backing + stock native map
+    private static final int CTX_CARPLAY_KDK_MOST = com.luka.carplay.cluster.MostPresentation.CTX_CARPLAY_KDK;   // 81
     private static final int FIRST_CARPLAY_CONTEXT = 80;   // every stock context id is < this
 
     /* ---- context-table sizing / G24 KDK variants ---- */
-    private static final int DC_SIZE_A5  = 82;    // stock 0..78 + CarPlay 80
+    private static final int DC_SIZE_A5  = 82;    // stock 0..78 + CarPlay 80 (VC) and 81 (MOST arrows view)
     private static final int DC_SIZE_G24 = 158;   // stock + the +79 KDK-hoisted variants
     private static final int G24_KDK_CTX_OFFSET = 79;
     private int lastBlockedCarPlayContext = -1;
+    /* the last terminal-1 context stock asked for, so the MOST arrows-view substitution
+     * (MostPresentation) can be applied or removed on a CarPlay edge without a stock event. */
+    private int lastClusterRequest = -1;
+    private IDisplayListener lastClusterListener;
 
     public DisplayManagerMIB2High(IFrameworkAccess iframeworkaccess) {
         super(iframeworkaccess);
+        com.luka.carplay.cluster.ClusterPlatform.bind(iframeworkaccess);
+        com.luka.carplay.cluster.MostPresentation.bind(this, new com.luka.carplay.cluster.MostPresentation.ContextOwner() {
+            public void runOnHmiThread(Runnable work) {
+                DisplayManagerMIB2High.this.postToHmiThread(work);
+            }
+            public int[] cachedExtents(int displayable) {
+                return DisplayManagerMIB2High.this.cachedExtents(displayable);
+            }
+            public void requestExtents(int displayable) {
+                DisplayManagerMIB2High.this.getExtends(displayable);
+            }
+            public void reapplyClusterContext() {
+                DisplayManagerMIB2High.this.reapplyClusterContext();
+            }
+        });
         iframeworkaccess.getErrorMgr().registerDumpInfoProvider(new DisplayManagerProvider());
 
         for (int t = 0; t < this.visibleKDKs.length; t++) {
@@ -177,6 +197,8 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
          *   74<->80 switch is driven by ScreenModule (no-nav state is plain stock ctx 74). */
         if (this.framework.getKombiType() != KOMBI_TYPE_G24) {
             this.dc[CTX_CARPLAY_NAV] = new DisplayContext(CTX_CARPLAY_NAV, new int[]{98, 101, 102, 33});
+            /* MOST cluster arrows view with CarPlay's maneuver in place of stock KDK 20. */
+            this.dc[CTX_CARPLAY_KDK_MOST] = new DisplayContext(CTX_CARPLAY_KDK_MOST, new int[]{98});
         } else {
             this.defineContextsForG24();
         }
@@ -303,8 +325,10 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
          * CombiMapController.  While CarPlay owns terminal 1, accept physical context writes only
          * from ScreenModule's one serialized worker.  The logical FwHMI main-context still
          * changes normally and RouteGuidance uses it to enter ctx80 while CarPlay owns the cluster. */
+        /* only while CarPlay owns the Virtual Cockpit composition.  On a MOST or
+         * RGI-only cluster stock keeps every terminal-1 write (ScreenModule.ownsClusterContext). */
         if (terminal == CLUSTER_TERMINAL
-                && com.luka.carplay.core.ScreenModule.isConnected()
+                && com.luka.carplay.core.ScreenModule.ownsClusterContext()
                 && !com.luka.carplay.core.ScreenModule.isClusterContextWriterThread()) {
             if (lastBlockedCarPlayContext != ctx) {
                 lastBlockedCarPlayContext = ctx;
@@ -324,10 +348,98 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
             ctx = this.addKDKToContext(ctx);
         }
 
+        /* MOST arrows view.  Remember what stock asked for; while CarPlay guides, compose
+         * CarPlay's maneuver (ctx 81 = {98}) wherever stock asks for its KDK context 73. */
+        boolean carPlayArrows = false;
+        if (terminal == CLUSTER_TERMINAL) {
+            if (listener instanceof StockContextReporter) {
+                /* Stock's buffered-switch replay (DisplayManager.addingService, when the display
+                 * service (re)appears) passes back the listener it holds: undo the substitution so
+                 * it is stock's original request again, then substitute afresh below. */
+                StockContextReporter reporter = (StockContextReporter) listener;
+                if (ctx == reporter.composed) {
+                    ctx = reporter.requested;
+                }
+                listener = reporter.stock;
+            }
+            /* Stock code that re-issues getCurrentContextID(1) reads 81 while CarPlay composes it;
+             * that request means stock's arrows view.  (On G24, 81 is a stock KDK context.) */
+            if (ctx == CTX_CARPLAY_KDK_MOST && this.framework.getKombiType() != KOMBI_TYPE_G24) {
+                ctx = CTX_KDK_NO_MAP;
+            }
+            lastClusterRequest = ctx;
+            lastClusterListener = listener;
+            int composed = com.luka.carplay.cluster.MostPresentation.substitute(terminal, ctx);
+            if (composed != ctx) {
+                this.log.log(1000000, "DisplayManager#switchContext CarPlay maneuver replaces stock KDK: context %1 -> %2",
+                    ctx, composed);
+                /* Stock's listener (DisplayControllerEvo) is told the context it asked for, never 81. */
+                if (listener != null) {
+                    listener = new StockContextReporter(listener, composed, ctx);
+                }
+                ctx = composed;
+                carPlayArrows = true;
+            }
+        }
+
         super.switchContext(ctx, terminal, listener);
+        if (carPlayArrows) {
+            com.luka.carplay.cluster.MostPresentation.onCarPlayContextApplied();
+        }
         if (SHOW_DM_INFO && this.getCurrentContextID(terminal) > -1) {
             this.postStatisticInfoContextGeneral(ctx, terminal);
             this.postStatisticInfoContextOpacity(ctx, terminal);
+        }
+    }
+
+    /* MostPresentation.ContextOwner plumbing.  The protected stock fields are read here,
+     * with subclass access, never from the anonymous owner class. */
+
+    /** Same queue and event type stock's DSIDisplayListener uses for extents answers. */
+    private void postToHmiThread(Runnable work) {
+        this.framework.getHMIService().getEventDispatcher().postEvent(new de.audi.atip.hmi.event.RunnableEvent(false, work));
+    }
+
+    /** What the display service last reported for a displayable (HMI thread, like the cache fill). */
+    private int[] cachedExtents(int displayable) {
+        Object extents = this.displayableExtents.get(new Integer(displayable));
+        return extents instanceof int[] ? (int[]) extents : null;
+    }
+
+    /** reports a substituted terminal-1 switch to stock's listener as the context stock
+     *  requested.  The DisplayManager confirms the composed context (81, or 81 % 79 = 2); stock's
+     *  model 168 only ever sees 73. */
+    private static final class StockContextReporter implements IDisplayListener {
+        final IDisplayListener stock;
+        final int composed;
+        final int requested;
+
+        StockContextReporter(IDisplayListener stock, int composed, int requested) {
+            this.stock = stock;
+            this.composed = composed;
+            this.requested = requested;
+        }
+
+        public void activeContext(int ctx, int terminal) {
+            if (ctx == composed || ctx == composed % G24_KDK_CTX_OFFSET) {
+                ctx = requested;
+            }
+            stock.activeContext(ctx, terminal);
+        }
+    }
+
+    /** re-issue stock's last terminal-1 request so a CarPlay start/stop edge applies or
+     *  removes the MOST arrows-view substitution even when stock itself stays silent.  HMI thread
+     *  only (MostPresentation posts it there), like every stock terminal-1 switch. */
+    public void reapplyClusterContext() {
+        int ctx;
+        IDisplayListener listener;
+        synchronized (this) {
+            ctx = lastClusterRequest;
+            listener = lastClusterListener;
+        }
+        if (ctx >= 0) {
+            this.switchContext(ctx, CLUSTER_TERMINAL, listener);
         }
     }
 

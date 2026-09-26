@@ -27,7 +27,8 @@
         'CurrentPositionDeliveryTest', 'RouteInfoTimeoutTest', 'CurrentPositionStockChainTest',
         'TouchpadControllerTest', 'CarplayBusTransportTest', 'RendererServerTransportTest',
         'GatedCombiServiceInitStateTest', 'ManeuverChainAudit',
-        'RgdTeardownTest', 'NativeGuidanceGateTest', 'NativeGuidanceStateTest'
+        'RgdTeardownTest', 'NativeGuidanceGateTest', 'NativeGuidanceStateTest',
+        'MostArrowsTest', 'MostViewHandshakeTest', 'ClusterOwnershipTest', 'ClusterCoreTest'
     )
 
     $hostTestSources = @(
@@ -82,7 +83,7 @@
         [ordered]@{ Name = 'RendererServerTransportTest'; Main = 'com.luka.carplay.rgd.RendererServerTransportTest'; ClassPath = ($HostTestClasses + [IO.Path]::PathSeparator + $BuiltJavaJar); Verify = $true; Arguments = @() }
         [ordered]@{ Name = 'GatedCombiServiceInitStateTest'; Main = 'com.luka.carplay.rgd.GatedCombiServiceInitStateTest'; ClassPath = ($HostTestClasses + [IO.Path]::PathSeparator + $BuiltJavaJar + [IO.Path]::PathSeparator + $LsdJar); Verify = $true; Arguments = @() }
     )
-    foreach ($main in @('com.luka.carplay.core.RgdTeardownTest','com.luka.carplay.core.NativeGuidanceGateTest','NativeGuidanceStateTest')) {
+    foreach ($main in @('com.luka.carplay.core.RgdTeardownTest','com.luka.carplay.core.NativeGuidanceGateTest','NativeGuidanceStateTest','MostArrowsTest','MostViewHandshakeTest','ClusterOwnershipTest','com.luka.carplay.core.ClusterCoreTest')) {
         $HostSuiteRuns += [ordered]@{ Name = $main.Split('.')[-1]; Main = $main; Verify = $false; Arguments = @() }
     }
     # Every suite is queued first and then run in parallel (each is its own JVM); the

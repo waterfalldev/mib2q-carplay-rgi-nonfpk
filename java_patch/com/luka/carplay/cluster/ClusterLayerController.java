@@ -78,6 +78,12 @@ public final class ClusterLayerController {
     /** Source pixels actually visible on VC, in the renderer's 328x181 frame.
      * Use the same stage selection and crop as applyNow(), without moving the plane. */
     public static int[] maneuverViewport() {
+        /* a MOST cluster shows the whole renderer frame, aspect-fitted into the KOMO
+         * stream window (maneuver_render fits it; MostPresentation sizes the window); the VC
+         * popup/in-tube crops do not apply there. */
+        if (ClusterPlatform.isMost()) {
+            return new int[]{0, 0, MostPresentation.SRC_W, MostPresentation.SRC_H};
+        }
         synchronized (LOCK) {
             boolean popup = haveVcStage ? vcPopup : lastStockPopup;
             Geometry g = lastGeometry;
@@ -257,6 +263,10 @@ public final class ClusterLayerController {
     }
 
     private static void reapplySerialized() {
+        /* 98/101/102 are only a presentation path on the Virtual Cockpit composition.
+         * A MOST or RGI-only cluster never created 101/102 (configureDM), and stock never
+         * writes these planes there, so neither do we - not even the "restore" branch. */
+        if (!ClusterPlatform.ownsContexts()) return;
         IDisplayManagerKombiControl dm;
         int terminal;
         boolean stockVisible;
@@ -276,7 +286,7 @@ public final class ClusterLayerController {
     private static void applyNow(IDisplayManagerKombiControl dm, int terminal, Geometry geometry,
                                  boolean stockVisible, int stockOpacity) {
         boolean popup;
-        boolean carplayOwnsCluster = com.luka.carplay.core.ScreenModule.isConnected();
+        boolean carplayOwnsCluster = com.luka.carplay.core.ScreenModule.ownsClusterContext();
         int permittedOpacity;
         synchronized (LOCK) {
             popup = carplayOwnsCluster && haveVcStage ? vcPopup : lastStockPopup;

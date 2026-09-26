@@ -320,7 +320,8 @@ public class BAPBridge {
     }
 
     /* Serialize snapshot + BAP emission + VC enqueue with the action-blink worker.
-     * Lock order stays this -> distanceToManeuverLock -> renderer queue. */
+     * Lock order stays this -> distanceToManeuverLock -> renderer queue (and on MOST, -> the
+     * KOMO service; claimKomoGuidance takes komoClaimLock -> distanceToManeuverLock). */
     private synchronized void sendDistanceToManeuverRaw(int meters, boolean bargraphOn, int bargraph,
                                            int progressState) throws Exception {
         if(meters<=0 || !bargraphOn) progressState=RendererServer.PROGRESS_OFF;
@@ -337,6 +338,8 @@ public class BAPBridge {
                 lastBarOn = false;
                 lastBar = 0;
             }
+            /* a MOST cluster's KOMO distance field, from the same values as the BAP send. */
+            publishKomoDistanceLocked(meters, bargraphOn);
         }
 
         if (meters <= 0) {
@@ -630,12 +633,14 @@ public class BAPBridge {
              * run (CarPlay yanked without a route ever starting), and a leaked forge outlives
              * the phone -- native route guidance then aborts until the head unit reboots. */
             forceClusterRouteInfoState(false);
+            claimKomoGuidance(false);
             nativeStopAttempted = false;
             nativeStopWasRouteAbsent = false;
             nativeAbortIssued = false;
             nativeStopLogState = -1;
             com.luka.carplay.core.ScreenNavStatusGate.setRouteGuidanceBlocked(false);
             Log.i(TAG, "REPLACE: takeover disengaged (stock RG gate reopened)");
+            com.luka.carplay.cluster.ClusterStateTrace.dump("takeover-released");
         } catch (Throwable t) { /* ignore */ }
     }
 
@@ -724,17 +729,25 @@ public class BAPBridge {
              * 1. RGStatus(1) - FctID 17 -> triggers startSync(0) for {17,39,23,18,49}
              * 2. Complete sync(0) window: rgType(39), descriptor(23), distance(18), exitView(49)
              */
+            /* on a MOST cluster take the KOMO text and view now, before the sync window:
+             * that lets stock select the arrows view the cluster asked for, so FctID 39 below
+             * already carries it (activeRGType). */
+            claimKomoGuidance(true);
+            int rgType = activeRGType();
             appConnectorNavi.updateRGStatus(1);                                      /* FctID 17 -> sync(0) */
-            appConnectorNavi.updateActiveRGType(ACTIVE_RGTYPE);                      /* FctID 39 */
+            appConnectorNavi.updateActiveRGType(rgType);                             /* FctID 39 */
 
             /* Sync(0) FctIDs: descriptor, distance, exitView */
             sendFollowStreet();                                                      /* FctID 23 */
             sendDistanceToManeuverRaw(0, false, 0);                                  /* FctID 18 */
             sendExitView();                                                          /* FctID 49 */
 
-            Log.i(TAG, "Started (rgType=" + ACTIVE_RGTYPE
+            Log.i(TAG, "Started (rgType=" + rgType
                 + ", cr=" + customRendererStarted + ")");
+            if (komoGuidanceOwned) Log.w(TAG, "MOST: CarPlay RGStatus=1 ActiveRGType=" + rgType);
             bapSessionStarted = true;
+            publishKomoGuidance(lastKomoState);
+            com.luka.carplay.cluster.ClusterStateTrace.dump("rgi-start");
             /* Keep the VC's empty "---" shell out while route text is pending.
              * Clear the separate FctID 20 layer; never synthesize a text arrow. */
             try {
@@ -761,7 +774,7 @@ public class BAPBridge {
     private void rollbackFailedStart() {
         clearPositionScroll();
         try { appConnectorNavi.updateRGStatus(0); } catch (Throwable t) { }
-        try { appConnectorNavi.updateActiveRGType(0); } catch (Throwable t) { }
+        try { appConnectorNavi.updateActiveRGType(activeRGType()); } catch (Throwable t) { }
         try { sendNoSymbol(); } catch (Throwable t) { }
         try { sendDistanceToManeuverRaw(0, false, 0); } catch (Throwable t) { }
         try { sendExitView(); } catch (Throwable t) { }
@@ -773,6 +786,7 @@ public class BAPBridge {
          * renderer teardown must not leave shared HMI state forged. */
         forceClusterRouteInfoState(false);
         forceGfxAvailable(false);
+        claimKomoGuidance(false);
         bapSessionStarted = false;
         rendererPrimed = false;
         crConsecutiveSendFailures = 0;
@@ -843,7 +857,7 @@ public class BAPBridge {
              * a permanently shut RG gate). */
             try {
                 appConnectorNavi.updateRGStatus(0);
-                appConnectorNavi.updateActiveRGType(0);
+                appConnectorNavi.updateActiveRGType(activeRGType());
                 sendNoSymbol();
                 sendDistanceToManeuverRaw(0, false, 0);
                 sendExitView();
@@ -862,6 +876,7 @@ public class BAPBridge {
 
             stopCustomRenderer(preserveSurface);
             forceClusterRouteInfoState(false);
+            claimKomoGuidance(false);
             /* CarPlay session ending — release the renderer listen socket
              * (port :19800).  stopCustomRenderer keeps it bound for fast
              * route restarts within a session; full session shutdown
@@ -886,6 +901,7 @@ public class BAPBridge {
             forceGfxAvailable(false);
 
             Log.i(TAG, "Shutdown (full teardown)");
+            com.luka.carplay.cluster.ClusterStateTrace.dump(preserveSurface ? "rgi-route-end" : "rgi-shutdown");
         } catch (Exception e) {
             Log.e(TAG, "onShutdown error", e);
         }
@@ -901,7 +917,9 @@ public class BAPBridge {
         int failureSerial = rendererSendFailureSerial;
         int dirty = s.dirtyMask;
         cacheTravelInfo(s, dirty);
+        lastKomoState = s;
         if (dirty == 0) return false;
+        publishKomoGuidance(s);
         int crIconMask = RouteGuidance.State.DIRTY_MANEUVER_ICON
             | RouteGuidance.State.DIRTY_MANEUVER_LIST
             | RouteGuidance.State.DIRTY_MANEUVER_COUNT;
@@ -2264,32 +2282,107 @@ public class BAPBridge {
      */
     private void forceGfxAvailable(boolean available) {
         /* KOMO gfxAvailable/dataRate gate the stock view modes only on a MOST cluster map
-         * (Util.isClusterMapMOST).  On this FPK cluster (sysConst 541 == 2) the whole chain is a
+         * (Util.isClusterMapMOST).  On an FPK cluster (sysConst 541 == 2) the whole chain is a
          * no-op EXCEPT one side effect: ClusterViewMode.setDataRate -> refreshMapVisibility ->
          * showKombiMap(viewMode == 3), and viewMode is pinned at COMPASS on FPK, so every rate
          * change parked the stock kombi map in its hidden context (frozen ~10 fps, roller zoom
          * swallowed) until the VC re-sent MapViewAndOrientation on a tab switch - visible right
          * after a disconnect that followed a route (seen 2026-09-21).  Stock itself never calls
-         * refreshMapVisibility on FPK (refreshViewMode returns early). */
+         * refreshMapVisibility on FPK (refreshViewMode returns early).
+         *
+         * never inject KOMO on a MOST cluster either.  updateDataRate and
+         * updateGfxState are DSIKOMONavInfoListener callbacks - the CLUSTER's own reports.
+         * Calling them forges the cluster's state, and the cluster re-reports only on a real
+         * change, so the forged false (route end, disconnect) stuck until a reboot:
+         * ClusterViewMode.isMapReady() = mapReady && gfxAvailable failed, MAP fell back to
+         * COMPASS, the KOMO rate went to 0 and the map/zoom/KDK view modes were unavailable.
+         * No CarPlay presentation on a MOST cluster needs the forged true (there is no ctx 80
+         * path there), so stock's KOMO state stays authoritative on every platform. */
         IFrameworkAccess fw = CarPlayApp.framework();
         if (fw == null || !de.audi.tghu.navi.app.util.Util.isClusterMapMOST(fw)) return;
-        int desiredRate = available ? 2 : 0;
-        try {
-            if (komoService != null) {
-                komoService.updateDataRate(desiredRate, 1);
-                komoService.updateGfxState(available ? 1 : 0, 1);
-            } else if (csRef != null) {
-                // Preserve recovery when the service reference was not acquired.
-                ClusterViewMode viewMode = csRef.getClusterViewMode();
-                viewMode.setDataRate(desiredRate);
-                viewMode.setGFXAvailable(available);
-                csRef.setKOMODataRate(desiredRate);
-            } else {
-                return;
+        if (!komoLeftToStockLogged) {
+            komoLeftToStockLogged = true;
+            Log.i(TAG, "KOMO: graphics state left to stock (no injected gfxAvailable/dataRate)");
+        }
+    }
+
+    private boolean komoLeftToStockLogged = false;
+
+    /* ============================================================
+     * KOMO guidance text on a MOST cluster
+     * ============================================================ */
+
+    /* A MOST cluster's arrows/map views take distance, street and arrival time from KOMO
+     * (DSIKOMONavInfo), not from BAP.  CarPlay owns those fields from RGI start to route end or
+     * shutdown; CarPlayKOMOService records stock's writes meanwhile and replays them on release. */
+    private volatile boolean komoGuidanceOwned = false;
+    private RouteGuidance.State lastKomoState;
+
+    private static boolean mostCluster() {
+        return com.luka.carplay.cluster.ClusterPlatform.isMost(CarPlayApp.framework());
+    }
+
+    /** FctID 39 value for CarPlay's route-guidance start/stop.  Virtual Cockpit: upstream's RGI
+     *  type.  MOST: stock's own answer to the cluster's view choice (GatedCombiService passes it
+     *  there too), never a view the MOST coding does not offer. */
+    private int activeRGType() {
+        if (csRef != null && mostCluster()) {
+            try { return csRef.getStockActiveRGType(); }
+            catch (Throwable t) { Log.w(TAG, "stock ActiveRGType unavailable: " + t); }
+        }
+        return ACTIVE_RGTYPE;
+    }
+
+    /* Claim/release run on the RouteGuidance worker and on teardown threads: one at a time, so
+     * komoGuidanceOwned and CarPlayKOMOService's owner can never disagree. */
+    private final Object komoClaimLock = new Object();
+
+    private void claimKomoGuidance(boolean claim) {
+        synchronized (komoClaimLock) {
+            if (csRef == null) return;
+            if (claim && !mostCluster()) return;
+            if (komoGuidanceOwned == claim) return;
+            komoGuidanceOwned = claim;
+            try {
+                csRef.setCarPlayKomoOwned(claim);
+                Log.w(TAG, "KOMO guidance text " + (claim ? "claimed by CarPlay" : "returned to stock (replayed)"));
+            } catch (Throwable t) {
+                Log.w(TAG, "KOMO guidance " + (claim ? "claim" : "release") + " failed: " + t);
             }
-            Log.i(TAG, "KOMO: gfxAvailable=" + available + " dataRate=" + desiredRate);
+            if (claim) {
+                synchronized (distanceToManeuverLock) {
+                    publishKomoDistanceLocked(hasLastDistM ? lastDistM : 0, lastBarOn);
+                }
+            }
+        }
+    }
+
+    /** distanceToManeuverLock held: the KOMO distance follows the BAP distance/bargraph just sent. */
+    private void publishKomoDistanceLocked(int meters, boolean bargraphOn) {
+        if (!komoGuidanceOwned || csRef == null) return;
+        try {
+            csRef.publishCarPlayKomoDistance(meters, meters > 0 && bargraphOn);
         } catch (Throwable t) {
-            Log.w(TAG, "KOMO: graphics state update failed: " + t.getMessage());
+            Log.w(TAG, "KOMO distance publish failed: " + t);
+        }
+    }
+
+    private void publishKomoGuidance(RouteGuidance.State s) {
+        if (!komoGuidanceOwned || csRef == null || s == null) return;
+        try {
+            int idx = primaryManeuverIndex(s);
+            String turnTo = "";
+            if (idx >= 0 && s.mAfterRoad != null && idx < s.mAfterRoad.length && s.mAfterRoad[idx] != null) {
+                turnTo = normalizeRouteText(keepLastColonPart(s.mAfterRoad[idx]));
+            }
+            String road = s.currentRoad != null ? normalizeRouteText(s.currentRoad) : "";
+            long arrival = currentArrivalSeconds();
+            long arrivalLocalMs = arrival >= 0L ? convertUtcToLocalMs(arrival * 1000L) : -1L;
+            long remaining = currentRemainingSeconds();
+            long remainingMs = remaining >= 0L ? remaining * 1000L : -1L;
+            csRef.publishCarPlayKomoGuidance(turnTo, road, arrivalLocalMs, remainingMs, lastDistanceToDestinationM);
+        } catch (Throwable t) {
+            Log.w(TAG, "KOMO guidance publish failed: " + t);
         }
     }
 

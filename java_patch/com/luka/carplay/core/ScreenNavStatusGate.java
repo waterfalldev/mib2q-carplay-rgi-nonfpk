@@ -71,6 +71,7 @@ public final class ScreenNavStatusGate {
                  * re-sends on change: replay its whole cache now (we are on NavigationJobs). */
                 cs.replayCombiBAPStateAfterCarPlay();
                 Log.i(TAG, "native route-guidance gate reopened; stock CombiBAP state replayed");
+                com.luka.carplay.cluster.ClusterStateTrace.dump("gate-reopened");
             }
         } catch (Throwable t) {
             Log.w(TAG, "gate install/replay failed: " + t);
