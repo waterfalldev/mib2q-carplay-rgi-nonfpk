@@ -356,10 +356,15 @@ $java = & "$PSScriptRoot/Build-Java.ps1" -SourceRoot $WorkTree -StockJar $LsdJar
 $BuiltJavaJar = $java.Jar
 $JavaClassCount = $java.ClassCount
 $JavaResources = $java.Resources
+$HostTestImageId = (Invoke-Native -Exe $Docker -Arguments @('image','inspect','--format','{{.Id}}',$HostTestImage) -Capture | Select-Object -First 1).Trim()
+# C half of the native route-guidance contract, in the host-test image; Test-Java.ps1
+# feeds its frames to the built JAR. UBSan only: ASan hangs at random under Docker.
+$RgdContractFrames = Join-Path $ScratchRoot 'rgd-contract'
+New-Item -ItemType Directory -Force -Path $RgdContractFrames | Out-Null
+Invoke-Native -Exe $Docker -Arguments @('run','--rm','--network','none','--mount',('type=bind,source=' + $WorkTree + ',target=/src,readonly'),'--mount',('type=bind,source=' + $RgdContractFrames + ',target=/out'),'--workdir','/src',$HostTestImageId,'bash','-c','export PATH=/usr/sbin:/usr/bin:/sbin:/bin PYTHONDONTWRITEBYTECODE=1 RGD_CONTRACT_STAGE=native RGD_CONTRACT_OUT=/out RGD_CONTRACT_SANITIZE=undefined; python3 tests/test_rgd_native_contract.py')
 . "$PSScriptRoot/Test-Java.ps1"
 # Native and shell checks consume the same source and freshly built JAR.
 Copy-Item -LiteralPath $BuiltJavaJar -Destination (Join-Path $WorkTree 'build/carplay_hook.jar')
-$HostTestImageId = (Invoke-Native -Exe $Docker -Arguments @('image','inspect','--format','{{.Id}}',$HostTestImage) -Capture | Select-Object -First 1).Trim()
 Invoke-Native -Exe $Docker -Arguments @('run','--rm','--network','none','--mount',('type=bind,source=' + $WorkTree + ',target=/src,readonly'),'--workdir','/src',$HostTestImageId,'bash','-c','export PATH=/usr/sbin:/usr/bin:/sbin:/bin; bash scripts/run_tests.sh')
 $BuiltJarSha256 = Get-Sha256 $BuiltJavaJar
 . "$PSScriptRoot/Stage-Package.ps1"

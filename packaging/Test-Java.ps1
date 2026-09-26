@@ -115,6 +115,110 @@
         Pop-Location
     }
 
+    # Suites with their own compilation sets (formerly scripts/test_java_transports.sh,
+    # scripts/test_pdc.sh and tests/test_rgd_native_contract.py). A suite passes when its
+    # last line reports PASS; a negative control must fail on the unpatched stock classes
+    # with the defect it names.
+    $PatchCore = Join-Path $WorkTree 'java_patch/com/luka/carplay/core'
+    $Stubs = Join-Path $UpstreamTestRoot 'stubs'
+    $AsmClassPath = $AsmJar + [IO.Path]::PathSeparator + $AsmTreeJar
+    $OsgiClassPath = $OsgiFramework + [IO.Path]::PathSeparator + $OsgiTracker
+    $compileSet = {
+        param([string]$Name, [string]$ClassPath, [string[]]$Sources)
+        $directory = Join-Path $HostTestRoot $Name
+        New-Item -ItemType Directory -Force -Path $directory | Out-Null
+        $arguments = @('-nowarn', '-encoding', 'UTF-8', '-d', $directory)
+        if ($ClassPath) { $arguments += @('-cp', $ClassPath) }
+        Invoke-Native -Exe $Javac -Arguments ($arguments + $Sources) -Capture | Out-Null
+        $directory
+    }
+    $runSuite = {
+        param([string]$Name, [string]$ClassPath, [string]$Main, [string[]]$Arguments, [switch]$NoVerify)
+        $javaArguments = @()
+        if ($NoVerify) { $javaArguments += '-Xverify:none' }
+        $suiteOutput = Invoke-Native -Exe $JavaExe -Arguments ($javaArguments + @('-cp', $ClassPath, $Main) + @($Arguments)) -Capture
+        $suiteSummary = (@($suiteOutput) | Where-Object { $_ -match '\S' } | Select-Object -Last 1)
+        if ($suiteSummary -notmatch 'PASS') {
+            throw "Host test $Name did not report PASS:`n$(@($suiteOutput) -join "`n")"
+        }
+        Write-Host "PASS $Name"
+        $script:HostSuiteResults += [ordered]@{ name = $Name; result = $suiteSummary.Trim() }
+    }
+    $expectStockFailure = {
+        param([string]$Name, [string]$ClassPath, [string]$Main, [string]$Defect)
+        $eap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { $stockOutput = @(& $JavaExe -cp $ClassPath $Main 2>&1 | ForEach-Object { $_.ToString() }); $code = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $eap }
+        if ($code -eq 0 -or -not ($stockOutput -join "`n").Contains($Defect)) {
+            throw "Negative control $Name did not reproduce the stock defect '$Defect':`n$($stockOutput -join "`n")"
+        }
+        Write-Host "PASS $Name (stock reproduces: $Defect)"
+        $script:HostSuiteResults += [ordered]@{ name = $Name; result = "PASS (unpatched stock fails: $Defect)" }
+    }
+
+    Push-Location $HostTestCwd
+    try {
+        # The real lifecycle worker against controllable external modules.
+        $lifecycle = & $compileSet 'lifecycle' '' @(
+            (Join-Path $PatchCore 'CarPlayApp.java'), (Join-Path $PatchCore 'Module.java'),
+            (Join-Path $UpstreamTestRoot 'CarPlayAppLifecycleTest.java'),
+            (Join-Path $Stubs 'app-lifecycle/com/luka/carplay/core/LifecycleFixtures.java'),
+            (Join-Path $Stubs 'app-lifecycle/com/luka/carplay/bus/CarplayBus.java'),
+            (Join-Path $Stubs 'app-lifecycle/com/luka/carplay/framework/Log.java'),
+            (Join-Path $Stubs 'app-lifecycle/com/luka/carplay/pdc/PdcSmallStageGuard.java'),
+            (Join-Path $Stubs 'app-lifecycle/de/audi/app/terminalmode/IContext.java'),
+            (Join-Path $Stubs 'app-lifecycle/de/audi/atip/base/IFrameworkAccess.java'))
+        foreach ($scenario in @('publication','during-start','replug','failure','bounce')) {
+            & $runSuite "CarPlayAppLifecycleTest $scenario" $lifecycle 'com.luka.carplay.core.CarPlayAppLifecycleTest' @($scenario)
+        }
+
+        # Parking popups: this firmware's stock resource policy, properties and commands
+        # with a fake physical HMI.
+        $pdcStubs = & $compileSet 'pdc-stubs' ($LsdJar + [IO.Path]::PathSeparator + $OsgiClassPath) @(
+            (Join-Path $Stubs 'pdc/com/luka/carplay/core/CarPlayApp.java'),
+            (Join-Path $Stubs 'app-lifecycle/com/luka/carplay/framework/Log.java'),
+            (Join-Path $Stubs 'pdc/de/audi/atip/hmi/view/Screen.java'),
+            (Join-Path $Stubs 'pdc/de/esolutions/hmi/widgets/audi/base/AbstractScreenWidget.java'))
+        $pdcBase = @($pdcStubs, $BuiltJavaJar, $LsdJar, $OsgiClassPath, $AsmClassPath) -join [IO.Path]::PathSeparator
+        $pdcTests = & $compileSet 'pdc-tests' $pdcBase @('PdcResourcePolicyTest','PdcExternalEventsTest','OpsAudioDrawerTest','OpsStatusLineTest' |
+            ForEach-Object { Join-Path $UpstreamTestRoot ($_ + '.java') })
+        foreach ($suite in @('PdcResourcePolicyTest','PdcExternalEventsTest','OpsAudioDrawerTest','OpsStatusLineTest')) {
+            & $runSuite $suite ($pdcTests + [IO.Path]::PathSeparator + $pdcBase) $suite @()
+        }
+        # The PDC suites fake CarPlayApp.active; the real lifecycle worker must release the
+        # presentation policy on disconnect without a later HMI callback.
+        $pdcLifecycle = & $compileSet 'pdc-lifecycle' $pdcBase @(
+            (Join-Path $PatchCore 'CarPlayApp.java'), (Join-Path $PatchCore 'Module.java'),
+            (Join-Path $Stubs 'app-lifecycle/com/luka/carplay/core/LifecycleFixtures.java'),
+            (Join-Path $Stubs 'app-lifecycle/com/luka/carplay/bus/CarplayBus.java'),
+            (Join-Path $Stubs 'app-lifecycle/com/luka/carplay/framework/Log.java'))
+        $pdcLifecycleCp = @($pdcLifecycle, $pdcTests, $pdcBase) -join [IO.Path]::PathSeparator
+        $pdcLifecycleTest = & $compileSet 'pdc-lifecycle-test' $pdcLifecycleCp @((Join-Path $UpstreamTestRoot 'CarPlayPdcLifecycleTest.java'))
+        & $runSuite 'CarPlayPdcLifecycleTest' ($pdcLifecycleTest + [IO.Path]::PathSeparator + $pdcLifecycleCp) 'CarPlayPdcLifecycleTest' @()
+        # Stock classes first on the class path: each suite must fail with the stock defect.
+        $stockFirst = @($pdcTests, $pdcStubs, $LsdJar, $BuiltJavaJar, $OsgiClassPath, $AsmClassPath) -join [IO.Path]::PathSeparator
+        & $expectStockFailure 'PdcResourcePolicyTest on stock' $stockFirst 'PdcResourcePolicyTest' 'pure OPS 108 toggled Main Wizard'
+        & $expectStockFailure 'OpsAudioDrawerTest on stock' $stockFirst 'OpsAudioDrawerTest' 'APS drawer still selected over CarPlay + side OPS'
+        & $expectStockFailure 'OpsStatusLineTest on stock' $stockFirst 'OpsStatusLineTest' 'MMI status line 62 remained over CarPlay'
+
+        # Native route-guidance contract: frames written by the real C parser and slot
+        # writer (the package builder runs that half in Docker), parsed by the built JAR
+        # and sent through this firmware's stock BAP classes.
+        if ((Test-Path variable:RgdContractFrames) -and $RgdContractFrames) {
+            $frames = @('old-slot.txt','new-no-angle.txt','new-known-angle.txt','new-generation.txt' |
+                ForEach-Object { Join-Path $RgdContractFrames $_ })
+            foreach ($frame in $frames) { Assert-FileExists $frame 'native RGI contract frame' }
+            $probe = & $compileSet 'rgd-contract' ($HostTestClasses + [IO.Path]::PathSeparator + $HostClassPath) @((Join-Path $UpstreamTestRoot 'RgdNativeContractProbe.java'))
+            & $runSuite 'RgdNativeContractProbe' (@($probe, $HostTestClasses, $HostClassPath) -join [IO.Path]::PathSeparator) 'RgdNativeContractProbe' $frames -NoVerify
+        } else {
+            Write-Host 'SKIPPED RgdNativeContractProbe: no native frames supplied (the package build runs it)'
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
     $vcTextResult = @($HostSuiteResults | Where-Object { $_.name -eq 'VCTextScrollTest' })[0].result
     if ($vcTextResult -notmatch 'VCTextScrollTest: PASS') {
         throw "VCTextScrollTest summary is not a pass: $vcTextResult"
@@ -129,7 +233,6 @@
     New-Item -ItemType Directory -Force -Path $AuditClasses | Out-Null
     $AuditSource = Join-Path $UpstreamTestRoot 'JavaStockLinkageAudit.java'
     Assert-FileExists $AuditSource 'pinned upstream JavaStockLinkageAudit.java'
-    $AsmClassPath = $AsmJar + [IO.Path]::PathSeparator + $AsmTreeJar
 
     Invoke-Native `
         -Exe $Javac `
