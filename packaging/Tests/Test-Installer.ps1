@@ -969,11 +969,13 @@ if ($Sequential) {
 
 if ($ThrottleLimit -lt 1) { $ThrottleLimit = [Math]::Max(2, [Environment]::ProcessorCount) }
 $pwshPath = (Get-Process -Id $PID).Path
-$childArguments = @('-NoProfile', '-NonInteractive', '-File', $PSCommandPath, '-PackageDirectory', $PackageDirectory,
-    '-TestRoot', $testRoot, '-TestRootParent', $TestRootParent)
-if ($DispatcherOnly) { $childArguments += '-DispatcherOnly' }
-if ($CollectorScript) { $childArguments += @('-CollectorScript', $CollectorScript) }
-if ($DispatcherScript) { $childArguments += @('-DispatcherScript', $DispatcherScript) }
+function Quote-Literal([string]$Text) { "'" + $Text.Replace("'", "''") + "'" }
+$unitCall = '& ' + (Quote-Literal $PSCommandPath) + ' -PackageDirectory ' + (Quote-Literal $PackageDirectory) +
+    ' -TestRoot ' + (Quote-Literal $testRoot) + ' -TestRootParent ' + (Quote-Literal $TestRootParent)
+if ($DispatcherOnly) { $unitCall += ' -DispatcherOnly' }
+if ($CollectorScript) { $unitCall += ' -CollectorScript ' + (Quote-Literal $CollectorScript) }
+if ($DispatcherScript) { $unitCall += ' -DispatcherScript ' + (Quote-Literal $DispatcherScript) }
+New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
 # The slowest units start first so they do not finish last.
 $slowFirst = @('audio-live-fails','audio-live-normal','dispatcher-two-runs','standalone-sourced','standalone-executed',
     'normal','upgrade','dispatcher-action-readback-fails','rollback-rename-1','rollback-rename-2','audio-fails')
@@ -984,30 +986,29 @@ foreach ($phase in @(1, 2)) {
     # Each unit runs in its own hidden console (CreateNoWindow).  Units run Git Bash, and
     # Git Bash trees of concurrent units on one console can deadlock in the MSYS2 runtime
     # (msys-2.0.dll 3.6.10): on 27 September a unit's bash waited for good on the shared
-    # console (see Build-Snapshot's native steps).  A unit still running after 10 minutes
+    # console (see Build-Snapshot's native steps).  The unit writes every stream to its own
+    # file, read after it exits: no output pipes for a leftover process to hold open and no
+    # asynchronous reads (inside a package build those came back empty for 10 units).  Its
+    # stdin is an empty pipe: MSYS tools need a valid handle 0 (cksum fails "failed to set
+    # file descriptor text/binary mode" without one).  A unit still running after 10 minutes
     # (the slowest takes ~25 s) is killed and fails by name with the output it had written.
     $batch | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
         $unitName = $_.Name
         $clock = [Diagnostics.Stopwatch]::StartNew()
+        $outFile = Join-Path $using:testRoot ($unitName + '.unit-output.txt')
+        $out = "'" + $outFile.Replace("'", "''") + "'"
+        $command = 'try { ' + $using:unitCall + " -Unit '" + $unitName + "' *> " + $out + '; exit $LASTEXITCODE } ' +
+            'catch { $_ | Out-String | Add-Content -LiteralPath ' + $out + '; exit 1 }'
         $psi = [System.Diagnostics.ProcessStartInfo]::new($using:pwshPath)
-        foreach ($arg in @($using:childArguments) + @('-Unit', $unitName)) { $psi.ArgumentList.Add($arg) }
+        foreach ($arg in @('-NoProfile', '-NonInteractive', '-Command', $command)) { $psi.ArgumentList.Add($arg) }
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        # A real, empty stdin: without one MSYS tools find no valid handle 0 (cksum fails
-        # "failed to set file descriptor text/binary mode").
         $psi.RedirectStandardInput = $true
         $process = [System.Diagnostics.Process]::Start($psi)
         $process.StandardInput.Close()
-        $buffers = @([System.IO.MemoryStream]::new(), [System.IO.MemoryStream]::new())
-        $copies = @($process.StandardOutput.BaseStream.CopyToAsync($buffers[0]),
-                    $process.StandardError.BaseStream.CopyToAsync($buffers[1]))
         $finished = $process.WaitForExit(10 * 60 * 1000)
         if (-not $finished) { $process.Kill($true); $process.WaitForExit() }
-        $null = [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$copies, 10000)
-        $text = ($buffers | ForEach-Object { [System.Text.Encoding]::UTF8.GetString($_.ToArray()) }) -join ''
-        $output = @($text -split '\r?\n' | Where-Object { $_ -ne '' })
+        $output = @(if (Test-Path -LiteralPath $outFile) { Get-Content -LiteralPath $outFile })
         if (-not $finished) { $output += 'Installer test unit timed out after 10 minutes and was killed.' }
         [pscustomobject]@{ Name = $unitName; ExitCode = $(if ($finished) { $process.ExitCode } else { 124 });
             Output = $output; Seconds = $clock.Elapsed.TotalSeconds }
