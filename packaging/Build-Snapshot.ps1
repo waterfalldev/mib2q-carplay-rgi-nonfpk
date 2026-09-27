@@ -371,7 +371,9 @@ $nativeJob = Start-ThreadJob -ArgumentList $GitSh, $NativeSteps -ScriptBlock {
         $psi.CreateNoWindow = $true
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
+        $psi.RedirectStandardInput = $true               # a real, empty stdin for MSYS tools
         $process = [System.Diagnostics.Process]::Start($psi)
+        $process.StandardInput.Close()
         $buffers = @([System.IO.MemoryStream]::new(), [System.IO.MemoryStream]::new())
         $copies = @($process.StandardOutput.BaseStream.CopyToAsync($buffers[0]),
                     $process.StandardError.BaseStream.CopyToAsync($buffers[1]))

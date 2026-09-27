@@ -981,12 +981,36 @@ $results = @{}
 foreach ($phase in @(1, 2)) {
     $batch = @($units | Where-Object { $_.Phase -eq $phase } |
         Sort-Object @{ Expression = { $i = [Array]::IndexOf($slowFirst, $_.Name); if ($i -lt 0) { 999 } else { $i } } })
+    # Each unit runs in its own hidden console (CreateNoWindow).  Units run Git Bash, and
+    # Git Bash trees of concurrent units on one console can deadlock in the MSYS2 runtime
+    # (msys-2.0.dll 3.6.10): on 27 September a unit's bash waited for good on the shared
+    # console (see Build-Snapshot's native steps).  A unit still running after 10 minutes
+    # (the slowest takes ~25 s) is killed and fails by name with the output it had written.
     $batch | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
         $unitName = $_.Name
-        $childArgs = $using:childArguments
         $clock = [Diagnostics.Stopwatch]::StartNew()
-        $output = @(& $using:pwshPath @childArgs -Unit $unitName 2>&1 | ForEach-Object { $_.ToString() })
-        [pscustomobject]@{ Name = $unitName; ExitCode = $LASTEXITCODE; Output = $output; Seconds = $clock.Elapsed.TotalSeconds }
+        $psi = [System.Diagnostics.ProcessStartInfo]::new($using:pwshPath)
+        foreach ($arg in @($using:childArguments) + @('-Unit', $unitName)) { $psi.ArgumentList.Add($arg) }
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        # A real, empty stdin: without one MSYS tools find no valid handle 0 (cksum fails
+        # "failed to set file descriptor text/binary mode").
+        $psi.RedirectStandardInput = $true
+        $process = [System.Diagnostics.Process]::Start($psi)
+        $process.StandardInput.Close()
+        $buffers = @([System.IO.MemoryStream]::new(), [System.IO.MemoryStream]::new())
+        $copies = @($process.StandardOutput.BaseStream.CopyToAsync($buffers[0]),
+                    $process.StandardError.BaseStream.CopyToAsync($buffers[1]))
+        $finished = $process.WaitForExit(10 * 60 * 1000)
+        if (-not $finished) { $process.Kill($true); $process.WaitForExit() }
+        $null = [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$copies, 10000)
+        $text = ($buffers | ForEach-Object { [System.Text.Encoding]::UTF8.GetString($_.ToArray()) }) -join ''
+        $output = @($text -split '\r?\n' | Where-Object { $_ -ne '' })
+        if (-not $finished) { $output += 'Installer test unit timed out after 10 minutes and was killed.' }
+        [pscustomobject]@{ Name = $unitName; ExitCode = $(if ($finished) { $process.ExitCode } else { 124 });
+            Output = $output; Seconds = $clock.Elapsed.TotalSeconds }
     } | ForEach-Object { $results[$_.Name] = $_ }
 }
 
