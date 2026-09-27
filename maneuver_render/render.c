@@ -287,6 +287,12 @@ static int g_route_mask_ready = 0;
 #endif
 #endif
 #define FXAA_ENABLED 1 /* FXAA on both platforms */
+/* An opaque MOST output (KVS_Most, 457x252 on the MU1329 non-VC cluster) renders at its
+ * content size with no supersampling: FXAA alone smooths the edges, and pass 2 is a 1:1
+ * copy.  The masks keep MASK_MIN_SCALE density from the content size, not the frame's:
+ * below ~1.51 the arrow shows dark notches (see SSAA_SCALE). */
+#define MOST_RENDER_SCALE 1.0f
+#define MASK_MIN_SCALE    1.6f
 static GLuint g_ss_fbo = 0;
 static GLuint g_ss_tex = 0;
 static GLuint g_ss_depth = 0;
@@ -1151,11 +1157,12 @@ static double targets_mb(void) {
     return (ss * 6.0 + (FXAA_ENABLED ? ss * 4.0 : 0.0) + masks * 4.0) / (1024.0 * 1024.0);
 }
 
-/* Resize every render target for a framebuffer of fb_width x fb_height (pre-SSAA).
+/* Resize every render target for a framebuffer of fb_width x fb_height (pre-SSAA): the
+ * frame at scale, the masks at mask_scale around the same content.
  * Returns 0 when all of them are complete at that size. */
-static int resize_targets(int fb_width, int fb_height, float scale) {
+static int resize_targets(int fb_width, int fb_height, float scale, float mask_scale) {
     GLint max_tex = 0, max_rb = 0;
-    int limit, i;
+    int limit, i, mask_w, mask_h;
 
     g_win_w = fb_width;
     g_win_h = fb_height;
@@ -1163,16 +1170,18 @@ static int resize_targets(int fb_width, int fb_height, float scale) {
     g_ss_h = (int)(fb_height * scale + 0.5f);
     g_fb_w = g_ss_w;
     g_fb_h = g_ss_h;
+    mask_w = (int)(fb_width * mask_scale + 0.5f);
+    mask_h = (int)(fb_height * mask_scale + 0.5f);
 
     /* refuse, before allocating anything, a size the GL cannot hold (the masks are
-     * several times the supersampled frame).  An unreported limit is not a refusal. */
+     * several times the frame).  An unreported limit is not a refusal. */
     update_mask_config(g_fb_w, g_fb_h);
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_tex);
     glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &max_rb);
     limit = max_tex < max_rb ? max_tex : max_rb;
-    if (limit > 0 && (mask_extent(g_fb_w) > limit || mask_extent(g_fb_h) > limit)) {
+    if (limit > 0 && (mask_extent(mask_w) > limit || mask_extent(mask_h) > limit)) {
         fprintf(stderr, "render: %dx%d needs %dx%d masks, over the GL limit %d\n",
-                fb_width, fb_height, mask_extent(g_fb_w), mask_extent(g_fb_h), limit);
+                fb_width, fb_height, mask_extent(mask_w), mask_extent(mask_h), limit);
         return -1;
     }
     for (i = 0; i < 16 && glGetError() != GL_NO_ERROR; i++) {}
@@ -1199,7 +1208,7 @@ static int resize_targets(int fb_width, int fb_height, float scale) {
 #endif
 
     glViewport(0, 0, g_fb_w, g_fb_h);
-    fbos_resize(g_fb_w, g_fb_h);
+    fbos_resize(mask_w, mask_h);
     return targets_complete() ? 0 : -1;
 }
 
@@ -1208,26 +1217,27 @@ static int resize_targets(int fb_width, int fb_height, float scale) {
  * platform framebuffer and is refused from then on.  Returns 1 when the targets changed. */
 static int apply_render_size(void) {
     int w = g_base_w, h = g_base_h;
-    float scale = SSAA_SCALE;
-    if (g_out_win_w > 0 && g_out_opaque && !(g_out_w == g_refused_w && g_out_h == g_refused_h)) {
+    int most = g_out_win_w > 0 && g_out_opaque;
+    float scale = most ? MOST_RENDER_SCALE : SSAA_SCALE;
+    float mask_scale = scale < MASK_MIN_SCALE && most ? MASK_MIN_SCALE : scale;
+    if (most && !(g_out_w == g_refused_w && g_out_h == g_refused_h)) {
         w = g_out_w;
         h = g_out_h;
-        scale = 2.0f;
     }
     if (w == g_win_w && h == g_win_h &&
         g_ss_w == (int)(w * scale + 0.5f) && g_ss_h == (int)(h * scale + 0.5f)) return 0;
-    if (resize_targets(w, h, scale) == 0) {
-        fprintf(stderr, "render: rendering %dx%d (SSAA %dx%d, masks %dx%d, %.1f MB offscreen)\n",
+    if (resize_targets(w, h, scale, mask_scale) == 0) {
+        fprintf(stderr, "render: rendering %dx%d (frame %dx%d, masks %dx%d, %.1f MB offscreen)\n",
                 g_win_w, g_win_h, g_ss_w, g_ss_h, g_fbo_w, g_fbo_h, targets_mb());
         return 1;
     }
-    if (w != g_base_w || h != g_base_h || scale != SSAA_SCALE) {
+    if (w != g_base_w || h != g_base_h) {
         g_refused_w = w;
         g_refused_h = h;
         fprintf(stderr, "render: %dx%d render targets failed; falling back to %dx%d\n",
                 w, h, g_base_w, g_base_h);
-        if (resize_targets(g_base_w, g_base_h, SSAA_SCALE) == 0) {
-            fprintf(stderr, "render: rendering %dx%d (SSAA %dx%d, masks %dx%d, %.1f MB offscreen)\n",
+        if (resize_targets(g_base_w, g_base_h, scale, mask_scale) == 0) {
+            fprintf(stderr, "render: rendering %dx%d (frame %dx%d, masks %dx%d, %.1f MB offscreen)\n",
                     g_win_w, g_win_h, g_ss_w, g_ss_h, g_fbo_w, g_fbo_h, targets_mb());
             return 1;
         }

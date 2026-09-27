@@ -28,11 +28,11 @@
 #include "platform.h"
 
 /* TARGET_FPS is the unit of every per-frame animation constant (render_frame_step) and the
- * first idle poll rate.  Frames are drawn at PACED_FPS: slower, evenly spaced frames keep
- * the head unit's GPU load steady (see frame_pacer.h). */
+ * first idle poll rate.  Frames are drawn at PACED_FPS, evenly spaced (frame_pacer.h): nfc19
+ * held 20 on the car; nfc20 paces at 30. */
 #define TARGET_FPS     30
 #define FRAME_TIME_NS  (1000000000L / TARGET_FPS)
-#define PACED_FPS      20
+#define PACED_FPS      30
 #include "frame_pacer.h"
 #include "gl_compat.h"
 #include "render.h"
@@ -1086,7 +1086,7 @@ int main(int argc, char **argv) {
 
 #ifdef CR_DIAG_FRAME_LOG
         /* 1 Hz render-loop stats.  Steady state should report
-         * iters≈20 frames≈20 (ARRIVED flag keeps maneuver_needs_redraw
+         * iters≈30 frames≈30 (ARRIVED flag keeps maneuver_needs_redraw
          * true).  Anything else means the loop is being throttled. */
         {
             struct timespec stat_now;

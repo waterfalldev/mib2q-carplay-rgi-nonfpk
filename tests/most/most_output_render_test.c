@@ -281,9 +281,12 @@ static void expect_state_for_next_frame(const char *what) {
     render_end_frame();
 }
 
-/* Every render target at w x h (pre-SSAA): 2x supersampled colour, depth and FXAA, and the
- * transition masks at their envelope around that. */
-static void expect_render_size(const char *what, int w, int h, int sw, int sh) {
+/* Mask content size on a MOST output: MASK_MIN_SCALE (1.6) times the content. */
+static int most_mask(int n) { return (int)(n * 1.6f + 0.5f); }
+
+/* Every render target for content w x h: the frame (colour, depth and FXAA) at sw x sh, and
+ * the transition masks at their envelope around an mw x mh content. */
+static void expect_render_size(const char *what, int w, int h, int sw, int sh, int mw, int mh) {
     int rw = 0, rh = 0, i;
     render_get_render_size(&rw, &rh);
     check(rw == w && rh == h, "%s: renders %dx%d, expected %dx%d", what, rw, rh, w, h);
@@ -294,9 +297,9 @@ static void expect_render_size(const char *what, int w, int h, int sw, int sh) {
     check(g_tex_w[g_fxaa_tex] == sw && g_tex_h[g_fxaa_tex] == sh, "%s: FXAA %dx%d",
           what, g_tex_w[g_fxaa_tex], g_tex_h[g_fxaa_tex]);
     for (i = 0; i < FBO_COUNT; i++) {
-        check(g_tex_w[g_fbo_texs[i]] == mask_extent(sw) && g_tex_h[g_fbo_texs[i]] == mask_extent(sh),
+        check(g_tex_w[g_fbo_texs[i]] == mask_extent(mw) && g_tex_h[g_fbo_texs[i]] == mask_extent(mh),
               "%s: mask %d %dx%d, expected %dx%d", what, i, g_tex_w[g_fbo_texs[i]], g_tex_h[g_fbo_texs[i]],
-              mask_extent(sw), mask_extent(sh));
+              mask_extent(mw), mask_extent(mh));
     }
 }
 
@@ -314,7 +317,7 @@ static void vc_pass2_is_upstream(void) {
     int bad = 0;
     for (int i = 0; i < 328 * 181; i++) bad += !px_is(g_px[i], content);
     check(bad == 0, "vc: %d window pixels are not the content (alpha kept for the VC compositor)", bad);
-    expect_render_size("vc", 328, 181, 525, 290);
+    expect_render_size("vc", 328, 181, 525, 290, 525, 290);
     check(g_draw_tex_w == 525 && g_draw_tex_h == 290, "vc: pass 2 resolves a %dx%d frame, expected 525x290",
           g_draw_tex_w, g_draw_tex_h);
     expect_state_for_next_frame("vc");
@@ -325,11 +328,12 @@ static void most_pass2(int ww, int wh, int x, int y, int w, int h) {
     snprintf(what, sizeof(what), "most %dx%d", ww, wh);
     window_alloc(ww, wh);
     render_set_output(ww, wh, x, y, w, h, 1);
-    /* The scene renders at the content size itself: Pass 2 is an exact 2:1 resolve. */
-    expect_render_size(what, w, h, 2 * w, 2 * h);
+    /* The scene renders at the content size itself, not supersampled: Pass 2 is a 1:1 copy.
+     * The masks keep 1.6x density from the content size. */
+    expect_render_size(what, w, h, w, h, most_mask(w), most_mask(h));
     check(render_set_output(ww, wh, x, y, w, h, 1) == 0, "%s: an unchanged output keeps the targets", what);
     frame();
-    check(g_draw_tex_w == 2 * w && g_draw_tex_h == 2 * h, "%s: pass 2 resolves a %dx%d frame into %dx%d",
+    check(g_draw_tex_w == w && g_draw_tex_h == h, "%s: pass 2 copies a %dx%d frame into %dx%d",
           what, g_draw_tex_w, g_draw_tex_h, w, h);
     char expected[512];
     snprintf(expected, sizeof(expected),
@@ -399,12 +403,12 @@ static void fallback_on_out_of_memory(void) {
     const char *what = "out of memory";
     render_set_output(0, 0, 0, 0, 0, 0, 0);
     reset_refusals();
-    g_fail_alloc_wider_than = 1500;           /* 457x252's masks (1828 wide) fail; 328x181's fit */
+    g_fail_alloc_wider_than = 1200;           /* 457x252's masks (1462 wide) fail; 328x181's (1050) fit */
     check(render_set_output(800, 252, 171, 0, 457, 252, 1) == 1, "%s: targets reallocated", what);
-    expect_render_size(what, 328, 181, 525, 290);
+    expect_render_size(what, 328, 181, 328, 181, 525, 290);
     check(g_refused_w == 457 && g_refused_h == 252, "%s: 457x252 refused", what);
     expect_kvs_most_picture(what);
-    check(g_draw_tex_w == 525 && g_draw_tex_h == 290, "%s: pass 2 resamples the 525x290 frame", what);
+    check(g_draw_tex_w == 328 && g_draw_tex_h == 181, "%s: pass 2 resamples the 328x181 frame", what);
     g_allocs = 0;
     check(render_set_output(800, 252, 171, 0, 457, 252, 1) == 0 && g_allocs == 0,
           "%s: a refused size is not retried (%d allocations)", what, g_allocs);
@@ -412,10 +416,10 @@ static void fallback_on_out_of_memory(void) {
     g_allocs = 0;
     render_set_output(820, 300, 138, 0, 544, 300, 1);
     check(g_allocs > 0, "%s: a new size is attempted", what);
-    expect_render_size(what, 328, 181, 525, 290);
+    expect_render_size(what, 328, 181, 328, 181, 525, 290);
     g_fail_alloc_wider_than = 0;
     render_set_output(640, 240, 102, 0, 435, 240, 1);
-    expect_render_size("after out of memory", 435, 240, 870, 480);
+    expect_render_size("after out of memory", 435, 240, 435, 240, most_mask(435), most_mask(240));
     render_set_output(0, 0, 0, 0, 0, 0, 0);
     reset_refusals();
 }
@@ -425,9 +429,9 @@ static void fallback_on_incomplete_framebuffer(void) {
     const char *what = "incomplete framebuffer";
     render_set_output(0, 0, 0, 0, 0, 0, 0);
     reset_refusals();
-    g_incomplete_at_ss_w = 914;
+    g_incomplete_at_ss_w = 457;
     render_set_output(800, 252, 171, 0, 457, 252, 1);
-    expect_render_size(what, 328, 181, 525, 290);
+    expect_render_size(what, 328, 181, 328, 181, 525, 290);
     check(g_refused_w == 457, "%s: 457x252 refused", what);
     expect_kvs_most_picture(what);
     g_incomplete_at_ss_w = 0;
@@ -441,17 +445,17 @@ static void gl_limit(void) {
     const char *what = "GL limit";
     render_set_output(0, 0, 0, 0, 0, 0, 0);
     reset_refusals();
-    g_gl_limit = 1500;
+    g_gl_limit = 1200;
     g_widest_alloc = 0;
     render_set_output(800, 252, 171, 0, 457, 252, 1);
-    check(g_widest_alloc <= 1500, "%s: widest allocation %d, over the limit", what, g_widest_alloc);
-    expect_render_size(what, 328, 181, 525, 290);
+    check(g_widest_alloc <= 1200, "%s: widest allocation %d, over the limit", what, g_widest_alloc);
+    expect_render_size(what, 328, 181, 328, 181, 525, 290);
     check(g_refused_w == 457, "%s: 457x252 refused", what);
     render_set_output(0, 0, 0, 0, 0, 0, 0);
     reset_refusals();
     g_gl_limit = 0;
     render_set_output(800, 252, 171, 0, 457, 252, 1);
-    expect_render_size("unreported GL limit", 457, 252, 914, 504);
+    expect_render_size("unreported GL limit", 457, 252, 457, 252, most_mask(457), most_mask(252));
     g_gl_limit = 4096;
     render_set_output(0, 0, 0, 0, 0, 0, 0);
     reset_refusals();
