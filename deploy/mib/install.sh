@@ -18,6 +18,9 @@ PKG_OWNER=$PKG/installer/owner-marker.txt
 TARGET_SMARTPHONE=/mnt/system/etc/eso/production/smartphone_integrator.json
 TARGET_DIO=/mnt/system/etc/eso/production/dio_manager.json
 STATE=/mnt/app/root/hooks/carplay_rgi_install.state
+# The HMI class library J9 boots from (-jxe:/ifs/lsd.jxe), as POSIX cksum:bytes.
+HMI_LIBRARY=/ifs/lsd.jxe
+HMI_LIBRARY_IDENTITY=@@LSD_JXE_CKSUM@@:@@LSD_JXE_BYTES@@
 @@TEMP_DEFINITIONS@@
 TMP_HU_OWNER=$HU_BACKUP/owner-marker.txt.carplay-rgi-new.$$
 TMP_HU_SMARTPHONE=$HU_BACKUP/smartphone_integrator.before.json.carplay-rgi-new.$$
@@ -128,6 +131,20 @@ check_file "$PKG/rollback/dio_manager.stock.json" "@@STOCK_DIO_CKSUM@@" "@@STOCK
 @@PAYLOAD_CHECKS@@
 check_file "$PKG/installer/install-state.txt" "@@STATE_CKSUM@@" "@@STATE_BYTES@@" "install state" || die "Package install state failed validation"
 log "All package sources passed POSIX cksum and byte-count validation."
+
+# The JAR goes on J9's boot classpath and was compiled and link-checked against one
+# exact HMI library. On any other (for example after a firmware update) it may stop
+# the HMI booting, which also takes away the M.I.B. menu a rollback needs. Rollback
+# does not check this, so a changed library can never block removal.
+log "Checking the HMI library $HMI_LIBRARY against $HMI_LIBRARY_IDENTITY."
+hmi_library_found=`cksum "$HMI_LIBRARY" 2>> "$LOG"` ||
+    die "Cannot read this unit's HMI library $HMI_LIBRARY"
+set -- $hmi_library_found
+if [ "$1:$2" != "$HMI_LIBRARY_IDENTITY" ]; then
+    log "MISMATCH HMI library: $HMI_LIBRARY is $1:$2, expected $HMI_LIBRARY_IDENTITY"
+    die "This unit's HMI library is not the @@MU@@ one this package was built for (firmware changed?)"
+fi
+log "The HMI library matches the one the package was built and checked against."
 
 # These independently installed navigation patches conflict with CarPlay app
 # state. They are not ours to delete or silently adopt.

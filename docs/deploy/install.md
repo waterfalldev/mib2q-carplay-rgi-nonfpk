@@ -62,6 +62,13 @@ stock backups, stages replacements, preserves live config permissions, commits
 runtime files before configs, and writes managed state last. It restores the
 firmware mounts read-only and releases the action lock before reporting success.
 
+Before any write, the installer also checks the unit's HMI class library,
+`/ifs/lsd.jxe`, against the `lsd.jxe` the package was built from. The patch JAR is on
+J9's boot classpath and was compiled and link-checked against exactly that library;
+on another one (a different firmware variant, or the same car after a firmware
+update) it may stop the HMI from booting. Rollback does not check it, so a changed
+library never blocks removal.
+
 Only a reported **install result 0** saves and verifies `ACTION=rollback`. A
 later failure saving that setting is reported separately; check the SD action
 before running it again. Every unsuccessful install leaves ACTION unchanged.
@@ -94,6 +101,13 @@ live capture launches a detached MMX worker, acknowledges arming, delays so the
 user can return to CarPlay, then takes bounded audio/system/runtime snapshots.
 Follow the timing printed by the script. Check the saved status before treating
 a capture as complete. A failed or timed-out diagnostic never prevents rollback.
+
+Rollback runs from the M.I.B. menu, which needs the HMI to boot. If a JAR ever
+stops the HMI from starting (upstream issue #24: a patch linked against another
+firmware variant), M.I.B. is unavailable. Recovery is then an SD card that runs
+M.I.B. automatically at boot (`Swdlautorun.txt`) to delete the JAR, or removing the
+head unit and deleting it over a serial (UART) console. Roll back before any
+firmware update: the installed JAR would meet the new library at the next boot.
 
 Local tests verify software contracts, not the vehicle's display and audio
 hardware. Test the resulting package on the intended firmware/cluster before

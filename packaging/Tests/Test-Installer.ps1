@@ -165,16 +165,22 @@ function Fixture($name) {
     if ($DispatcherScript) {
         WriteText (Join-Path $sd 'mod/command.sh') ([IO.File]::ReadAllText($DispatcherScript))
     }
-    foreach ($dir in @('app/root','app/eso/hmi/lsd/jars','system/etc/eso/production','tmp')) {
+    foreach ($dir in @('app/root','app/eso/hmi/lsd/jars','system/etc/eso/production','tmp','ifs')) {
         New-Item -ItemType Directory -Force -Path (Join-Path $root $dir) | Out-Null
     }
     foreach ($name in @('smartphone_integrator','dio_manager')) {
         Copy-Item -LiteralPath (Join-Path $sd "mod/carplay-rgi/rollback/$name.stock.json") -Destination (Join-Path $root "system/etc/eso/production/$name.json")
     }
+    # A small stand-in for the unit's HMI library; the fixture expects its identity.
+    # The build guard proves the real installer carries the pinned lsd.jxe identity.
+    $hmiLibrary = Join-Path $root 'ifs/lsd.jxe'
+    WriteText $hmiLibrary "stand-in HMI library`n"
+    $hmiIdentity = '{0}:{1}' -f (Get-PosixCksum $hmiLibrary), (Get-Item -LiteralPath $hmiLibrary).Length
     $p = Posix $root
     foreach ($name in @('install','rollback')) {
         $text = [IO.File]::ReadAllText((Join-Path $sd "mod/carplay-rgi/installer/$name.sh"))
-        $text = $text.Replace('/net/mmx/fs/sda0', "$p/sd").Replace('/mnt/app', "$p/app").Replace('/mnt/system', "$p/system").Replace('/mnt/persist', "$p/persist")
+        $text = $text.Replace('/net/mmx/fs/sda0', "$p/sd").Replace('/mnt/app', "$p/app").Replace('/mnt/system', "$p/system").Replace('/mnt/persist', "$p/persist").Replace('/ifs/lsd.jxe', "$p/ifs/lsd.jxe")
+        $text = $text -replace '(?m)^HMI_LIBRARY_IDENTITY=\d+:\d+$', "HMI_LIBRARY_IDENTITY=$hmiIdentity"
         $mocks = @'
 sync() { [ "${FAIL_SYNC:-0}" != 1 ]; }
 sleep() { [ "${FAIL_SLEEP:-0}" != 1 ]; }
@@ -350,6 +356,42 @@ $settleFailsBody = {
     $root = Fixture 'settle-fails'
     Assert ((Run $root 'install' 'FAIL_SLEEP=1') -ne 0) 'settling failure is not reported as success'
     Recovered $root
+}
+
+# The JAR must only reach the HMI library it was linked against (a firmware update
+# can change it); rollback must still work when it has changed.
+$hmiLibraryBody = {
+    param($case)
+    $root = Fixture "hmi-library-$case"
+    $hmiLibrary = Join-Path $root 'ifs/lsd.jxe'
+    $installLog = Join-Path $root 'sd/mod/carplay-rgi-install.log'
+    $refused = {
+        param($label)
+        Assert ((Run $root 'install') -ne 0) "$label is refused"
+        Assert (IsStock $root) "$label leaves stock configs intact"
+        Assert (-not (Test-Path (Join-Path $root 'app/eso/hmi/lsd/jars/carplay_hook.jar'))) "$label installs no JAR"
+        Assert ((Get-Content -Raw (Join-Path $root 'install-last-output.txt')).Contains('[RGI] ERROR! ')) "$label shows one [RGI] ERROR! line"
+    }
+    switch ($case) {
+        mismatch {
+            WriteText $hmiLibrary "a different firmware's HMI library`n"
+            & $refused 'a different HMI library'
+            Assert ((Get-Content -Raw $installLog).Contains('MISMATCH HMI library')) 'the install log records the HMI library found'
+            Assert ((Get-Content -Raw (Join-Path $root 'install-last-output.txt')).Contains('not the')) 'the refusal names the HMI library mismatch'
+        }
+        missing {
+            Remove-Item -LiteralPath $hmiLibrary
+            & $refused 'a missing HMI library'
+            Assert ((Get-Content -Raw $installLog).Contains('Cannot read this unit''s HMI library')) 'the install log records the unreadable HMI library'
+        }
+        changed {
+            Assert ((Run $root 'install') -eq 0) 'install onto the linked HMI library succeeds'
+            WriteText $hmiLibrary "HMI library after a firmware update`n"
+            Assert ((Run $root 'install') -ne 0) 'reinstall after the HMI library changed is refused'
+            Assert (Test-Path (Join-Path $root 'app/eso/hmi/lsd/jars/carplay_hook.jar')) 'a refused reinstall leaves the existing install untouched'
+            Recovered $root
+        }
+    }
 }
 # Source command.sh exactly as M.I.B. does. Run its real MMX lock body in a
 # subshell with a simulated SD; do not replace lock acquisition with success.
@@ -837,6 +879,7 @@ if (-not $DispatcherOnly) {
     Add-Unit 'unknown-modification' $unknownModificationBody
     foreach ($n in 1..2) { Add-Unit "rollback-rename-$n" $rollbackRenameBody $n }
     Add-Unit 'settle-fails' $settleFailsBody
+    foreach ($case in @('mismatch','missing','changed')) { Add-Unit "hmi-library-$case" $hmiLibraryBody $case }
 }
 foreach ($scenario in $dispatcherScenarios) {
     Add-Unit "dispatcher-$scenario" $dispatcherBody $scenario $(if ($scenario -eq 'rollback-collector-hangs') { 2 } else { 1 })

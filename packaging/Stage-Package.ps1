@@ -468,6 +468,8 @@ without the exact installer-owned marker and valid on-unit backups.
         STOCK_SMARTPHONE_BYTES = $ExpectedStockSmartphoneSize
         STOCK_DIO_CKSUM = $ExpectedStockDioCksum
         STOCK_DIO_BYTES = $ExpectedStockDioSize
+        LSD_JXE_CKSUM = $ExpectedLsdJxeCksum
+        LSD_JXE_BYTES = $ExpectedLsdJxeBytes
         PAYLOAD_CHECKS = $PayloadChecks
         STATE_CKSUM = $StateCksum
         STATE_BYTES = $StateBytes
@@ -712,6 +714,21 @@ without the exact installer-owned marker and valid on-unit backups.
     }
 
     Set-Guard 'installerWritabilityPreflight' 'PASS (install/rollback prove both partitions writable and mode-preserving before any write)'
+
+    # Install only onto the HMI library the JAR was linked against, checked before any
+    # write. Rollback must never depend on it: a changed library cannot block removal.
+    $hmiIdentityLine = "`nHMI_LIBRARY_IDENTITY=$ExpectedLsdJxeCksum`:$ExpectedLsdJxeBytes`n"
+    $hmiCheckIndex = $InstallerText.IndexOf('if [ "$1:$2" != "$HMI_LIBRARY_IDENTITY" ]; then')
+    $firstWriteIndex = $InstallerText.IndexOf("`nprobe_writable `"`$PROBE_APP`"")
+    if (
+        -not $InstallerText.Contains($hmiIdentityLine) -or
+        -not $InstallerText.Contains("`nHMI_LIBRARY=/ifs/lsd.jxe`n") -or
+        $hmiCheckIndex -lt 0 -or $firstWriteIndex -lt 0 -or $hmiCheckIndex -gt $firstWriteIndex -or
+        ([System.IO.File]::ReadAllText($RollbackPath)).Contains('HMI_LIBRARY')
+    ) {
+        throw 'Installer must refuse a unit whose /ifs/lsd.jxe differs from the linked library before any write, and rollback must not check it.'
+    }
+    Set-Guard 'installerHmiLibraryIdentity' "PASS (install refuses unless /ifs/lsd.jxe is $ExpectedLsdJxeCksum`:$ExpectedLsdJxeBytes; rollback does not check it)"
 
     # Neither script may assert a permission mode for a file whose stock mode
     # was never read off this car. Both stage the configs from the live file.

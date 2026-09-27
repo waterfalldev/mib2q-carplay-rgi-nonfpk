@@ -468,57 +468,48 @@ function Assert-Sha256 {
     }
 }
 
+# POSIX 1003.2 cksum: CRC-32/CKSUM. Polynomial 0x04C11DB7, MSB first, no
+# reflection, the file length fed in after the data, final value inverted.
+# Compiled once: a PowerShell byte loop takes minutes for a 60 MB lsd.jxe.
+if (-not ('CarPlayRgi.PosixCksum' -as [type])) {
+    Add-Type -TypeDefinition @'
+namespace CarPlayRgi {
+    public static class PosixCksum {
+        static readonly uint[] Table = BuildTable();
+        static uint[] BuildTable() {
+            uint[] table = new uint[256];
+            for (uint i = 0; i < 256; i++) {
+                uint value = i << 24;
+                for (int bit = 0; bit < 8; bit++)
+                    value = (value & 0x80000000u) != 0 ? (value << 1) ^ 0x04C11DB7u : value << 1;
+                table[i] = value;
+            }
+            return table;
+        }
+        public static uint Compute(string path) {
+            uint crc = 0;
+            long length = 0;
+            byte[] buffer = new byte[1 << 16];
+            using (var stream = System.IO.File.OpenRead(path)) {
+                int read;
+                while ((read = stream.Read(buffer, 0, buffer.Length)) > 0) {
+                    length += read;
+                    for (int i = 0; i < read; i++)
+                        crc = (crc << 8) ^ Table[((crc >> 24) ^ buffer[i]) & 0xFF];
+                }
+            }
+            for (long remaining = length; remaining > 0; remaining >>= 8)
+                crc = (crc << 8) ^ Table[((crc >> 24) ^ (uint)(remaining & 0xFF)) & 0xFF];
+            return ~crc;
+        }
+    }
+}
+'@
+}
+
 function Get-PosixCksum {
     param([string]$Path)
-
-    # POSIX 1003.2 cksum: CRC-32/CKSUM. Polynomial 0x04C11DB7, MSB first, no
-    # reflection, the file length fed in after the data, final value inverted.
-    $table = New-Object long[] 256
-
-    for ($i = 0; $i -lt 256; $i++) {
-        $value = [long]$i -shl 24
-
-        for ($bit = 0; $bit -lt 8; $bit++) {
-            if ($value -band 0x80000000L) {
-                $value = (($value -shl 1) -band 0xFFFFFFFFL) -bxor 0x04C11DB7L
-            }
-            else {
-                $value = ($value -shl 1) -band 0xFFFFFFFFL
-            }
-        }
-
-        $table[$i] = $value
-    }
-
-    $crc = [long]0
-    $length = [long]0
-    $stream = [System.IO.File]::OpenRead($Path)
-
-    try {
-        $buffer = New-Object byte[] 65536
-
-        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-            $length += $read
-
-            for ($i = 0; $i -lt $read; $i++) {
-                $index = [int]((($crc -shr 24) -bxor $buffer[$i]) -band 0xFF)
-                $crc = (($crc -shl 8) -band 0xFFFFFFFFL) -bxor $table[$index]
-            }
-        }
-    }
-    finally {
-        $stream.Dispose()
-    }
-
-    $remaining = $length
-
-    while ($remaining -gt 0) {
-        $index = [int]((($crc -shr 24) -bxor ($remaining -band 0xFF)) -band 0xFF)
-        $crc = (($crc -shl 8) -band 0xFFFFFFFFL) -bxor $table[$index]
-        $remaining = $remaining -shr 8
-    }
-
-    return (-bnot $crc) -band 0xFFFFFFFFL
+    return [long][CarPlayRgi.PosixCksum]::Compute([IO.Path]::GetFullPath($Path))
 }
 
 function Assert-StockBaseline {

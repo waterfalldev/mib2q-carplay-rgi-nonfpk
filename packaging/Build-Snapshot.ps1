@@ -51,6 +51,7 @@ $ExpectedGuardNames = @(
     'qnxTextLf'
     'configPatchScope'
     'installerWritabilityPreflight'
+    'installerHmiLibraryIdentity'
     'installerPreservesConfigModes'
     'installerRestoresReadOnlyMounts'
     'installerPayloadCksums'
@@ -105,6 +106,12 @@ Assert-Sha256 `
     -Path $LsdJar `
     -Expected $ExpectedLsdJarSha256 `
     -Description "$FirmwareName lsd.jar (Java compile input)"
+
+# The installer refuses a unit whose /ifs/lsd.jxe differs from this pinned file, the
+# library the JAR is compiled and link-checked against. The car has cksum, not SHA-256.
+$ExpectedLsdJxeCksum = Get-PosixCksum $LsdJxe
+$ExpectedLsdJxeBytes = $lsdJxeInfo.Length
+Write-Host "lsd.jxe identity for the installer: $ExpectedLsdJxeCksum`:$ExpectedLsdJxeBytes"
 
 # Both files were read off this unit and sit beside the firmware images. There
 # is nothing to search for: the contents are pinned by SHA-256 immediately
