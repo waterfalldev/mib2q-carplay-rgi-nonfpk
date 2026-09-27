@@ -25,6 +25,11 @@ cc -D_GNU_SOURCE -std=c99 -O1 -Wall -Wextra -Werror -pedantic -Wno-unused-functi
     -Imaneuver_render tests/frame_pacer_test.c -o "$OUT/frame_pacer"
 "$OUT/frame_pacer"
 
+printf '%-32s ' frame_profile_test
+cc -D_GNU_SOURCE -std=c99 -O1 -Wall -Wextra -Werror -pedantic -Wno-unused-function \
+    -Imaneuver_render tests/frame_profile_test.c -o "$OUT/frame_profile"
+"$OUT/frame_profile"
+
 printf '%-32s ' coverart_safety_test
 cc -D_GNU_SOURCE -std=c99 -O2 -Wall -Wextra -Werror -pedantic -Ihook \
     tests/coverart_safety_test.c hook/coverart/jpeg_safety.c \

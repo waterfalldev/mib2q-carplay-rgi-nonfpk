@@ -168,6 +168,10 @@ void render_reset_depth(void);
 /* Mark masks as needing re-render (call on maneuver state change) */
 void render_invalidate_masks(void);
 
+/* Mark only set 1, the next maneuver's masks, as needing re-render: the next maneuver changed
+ * but the current one did not, so its set 0 stays valid. */
+void render_invalidate_next_masks(void);
+
 /* Apply/remove a 2D rigid transform for mask rendering (second maneuver). */
 void render_push_mask_transform(float tx, float ty, float cos_r, float sin_r);
 void render_pop_mask_transform(void);
@@ -179,6 +183,12 @@ int render_masks_dirty(void);
  * during a push.  A set invalidated since its last composite is painted; a clean set
  * replays the painting calls without GPU work.  maneuver_draw leaves set 0 selected. */
 void render_select_mask_set(int set);
+
+/* Until the next render_select_mask_set, the selected set's painting waits for a later frame:
+ * it replays without GPU work, as for a clean set, and render_composite leaves the set dirty
+ * (it composites set 0's layers in its place).  For a set composited invisibly, so a frame
+ * that already painted set 0 does not paint set 1 as well. */
+void render_hold_mask_set(void);
 
 /* Mask layers painted (FBO clears) since start, for the pacing log. */
 unsigned render_mask_paint_count(void);

@@ -276,14 +276,17 @@ static int g_set_dirty[MASK_SETS] = { 1, 1 };    /* to be painted before its nex
 static int g_set_road[MASK_SETS];                /* painted a road mask since invalidated */
 static int g_set_route[MASK_SETS];               /* painted a route mask since invalidated */
 static int g_mask_skip;          /* between begin/end_mask of a clean set: replay, no GPU work */
+static int g_mask_hold;          /* the selected set paints in a later frame: render_hold_mask_set */
 static unsigned g_mask_paints;   /* mask clears (painted layers), for the pacing log */
+
+static void invalidate_mask_set(int set) {
+    g_set_dirty[set] = 1;
+    g_set_road[set] = g_set_route[set] = 0;
+}
 
 static void invalidate_mask_sets(void) {
     int i;
-    for (i = 0; i < MASK_SETS; i++) {
-        g_set_dirty[i] = 1;
-        g_set_road[i] = g_set_route[i] = 0;
-    }
+    for (i = 0; i < MASK_SETS; i++) invalidate_mask_set(i);
 }
 
 /* Supersample FBO — render above window resolution, blit down with GL_LINEAR.
@@ -1475,6 +1478,7 @@ static void sync_camera_uniforms(void) {
 void render_begin_frame(void) {
     double now=viewport_now();
     g_mask_skip = 0;                  /* a mask painting that never ended must not skip more */
+    g_mask_hold = 0;                  /* a hold lasts one frame at most */
     cr_rect_animate(&g_visible_area,now);
     cr_rect_animate(&g_content_offset,now);
     /* Render into 2x supersample FBO */
@@ -1856,12 +1860,21 @@ void render_invalidate_masks(void) {
     invalidate_mask_sets();
 }
 
+void render_invalidate_next_masks(void) {
+    invalidate_mask_set(1);
+}
+
 int render_masks_dirty(void) {
     return g_set_dirty[0];
 }
 
 void render_select_mask_set(int set) {
     g_mask_set = set == 1 ? 1 : 0;
+    g_mask_hold = 0;
+}
+
+void render_hold_mask_set(void) {
+    g_mask_hold = 1;
 }
 
 unsigned render_mask_paint_count(void) {
@@ -2051,8 +2064,9 @@ void render_shutdown(void) {
 
 static void begin_mask(int fbo_idx) {
     /* A clean set keeps its layers: the caller's painting replays without GPU work (vb_flush
-     * only advances the depth bias, as the composite that follows reads it). */
-    g_mask_skip = !g_set_dirty[g_mask_set];
+     * only advances the depth bias, as the composite that follows reads it).  So does a held
+     * set, which stays dirty and is painted in a later frame. */
+    g_mask_skip = !g_set_dirty[g_mask_set] || g_mask_hold;
     if (!g_mask_skip) {
         fbo_bind(fbo_idx + 2 * g_mask_set);
         g_mask_paints++;
@@ -2209,7 +2223,7 @@ void render_composite(void) {
 
     use_lit_program();
 
-    g_set_dirty[g_mask_set] = 0;
+    if (!g_mask_hold) g_set_dirty[g_mask_set] = 0;
 }
 
 void render_reset_depth(void) {

@@ -5,9 +5,10 @@
  *
  * Checks that a push paints the current (set 0) and next (set 1) masks once and then only
  * composites them, that a cached push frame composites exactly what the painted frame did
- * (same textures, same depth bias, no extra draws), that an invalidation repaints both sets,
- * that the commit repaints set 0, and that set 1 composites set 0's route when the next
- * maneuver painted none (as the single shared route texture did).
+ * (same textures, same depth bias, no extra draws), that a new or refreshed next maneuver
+ * repaints set 1 only, that the commit repaints set 0, that set 1 composites set 0's route
+ * when the next maneuver painted none (as the single shared route texture did), and that a
+ * frame paints one set, not two, while the next maneuver is invisible.
  */
 #define PLATFORM_QNX 1
 
@@ -19,7 +20,7 @@
 /* ---------------------------------------------------------------- GL model */
 
 static GLuint g_bound_fbo, g_bound_tex[8], g_active_unit, g_next_name = 1;
-static float g_last_zbias;
+static float g_last_zbias, g_last_alpha;
 #define NAMES_MAX 64
 static const char *g_uniform_names[NAMES_MAX];
 static int g_uniform_count;
@@ -29,6 +30,8 @@ typedef struct {
     int mask_draws;                  /* draws into any mask framebuffer */
     int scene_draws;                 /* draws into the scene (SSAA) framebuffer */
     int window_draws;                /* draws into the window (framebuffer 0): pass 2 */
+    int depth_resets;                /* render_reset_depth: a push's second composite follows */
+    float next_alpha;                /* global alpha of that composite's first draw, -1 none */
     char scene[8192];                /* "tex:zbias " per scene draw */
 } frame_rec_t;
 static frame_rec_t R;
@@ -47,8 +50,8 @@ static const char *tex_name(GLuint tex) {
 void glBindFramebuffer(GLenum target, GLuint fb) { (void)target; g_bound_fbo = fb; }
 void glClear(GLbitfield mask) {
     int i = mask_index(g_bound_fbo);
-    (void)mask;
     if (i >= 0) R.clears[i]++;
+    else if (g_bound_fbo == g_ss_fbo && mask == GL_DEPTH_BUFFER_BIT) R.depth_resets++;
 }
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     (void)mode; (void)first; (void)count;
@@ -56,6 +59,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     if (g_bound_fbo == 0) { R.window_draws++; return; }
     if (g_bound_fbo != g_ss_fbo) return;
     R.scene_draws++;
+    if (R.depth_resets == 1 && R.next_alpha < 0.0f) R.next_alpha = g_last_alpha;
     size_t n = strlen(R.scene);
     if (n + 48 < sizeof(R.scene))
         snprintf(R.scene + n, sizeof(R.scene) - n, "%s:%.6g ", tex_name(g_bound_tex[0]), g_last_zbias);
@@ -73,6 +77,7 @@ GLint glGetUniformLocation(GLuint p, const char *n) {
 }
 void glUniform1f(GLint l, GLfloat a) {
     if (l >= 0 && l < g_uniform_count && !strcmp(g_uniform_names[l], "u_z_bias")) g_last_zbias = a;
+    if (l >= 0 && l < g_uniform_count && !strcmp(g_uniform_names[l], "u_global_alpha")) g_last_alpha = a;
 }
 
 static void gen(GLsizei n, GLuint *out) { for (GLsizei i = 0; i < n; i++) out[i] = g_next_name++; }
@@ -160,6 +165,7 @@ static void check(int ok, const char *fmt, ...) {
 /* One loop iteration as main.c renders it. */
 static void frame(const maneuver_state_t *cur, const maneuver_state_t *next) {
     memset(&R, 0, sizeof(R));
+    R.next_alpha = -1.0f;
     maneuver_prepare_frame(cur, next);
     render_begin_frame();
     maneuver_draw(cur, next);
@@ -204,10 +210,10 @@ static void push_paints_each_set_once(void) {
           clears(), R.mask_draws);
 
     maneuver_start_push();
-    render_invalidate_masks();                     /* engine_apply_maneuver */
+    render_invalidate_next_masks();                /* engine_apply_maneuver */
     frame(&cur, &next);
-    check(R.clears[FBO_ROAD] == 1 && R.clears[FBO_ROAD_NEXT] == 1 && clears() == 2 && R.mask_draws > 0,
-          "push start: both roads painted once (clears %d/%d/%d/%d)",
+    check(R.clears[FBO_ROAD_NEXT] == 1 && clears() == 1 && R.mask_draws > 0,
+          "push start: the next road painted once, set 0 kept (clears %d/%d/%d/%d)",
           R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
     composites(first, sizeof(first));
     check(strstr(first, "road0:") && strstr(first, "road1:") && strstr(first, "road0:") < strstr(first, "road1:"),
@@ -223,10 +229,10 @@ static void push_paints_each_set_once(void) {
     check(R.scene_draws == painted_scene_draws, "push, cached: no extra scene draws (%d, painted %d)",
           R.scene_draws, painted_scene_draws);
 
-    render_invalidate_masks();                     /* engine_refresh_maneuver mid-push */
+    render_invalidate_next_masks();                /* engine_refresh_maneuver of the next */
     frame(&cur, &next);
-    check(R.clears[FBO_ROAD] == 1 && R.clears[FBO_ROAD_NEXT] == 1 && clears() == 2,
-          "refresh mid-push: both sets repainted (clears %d/%d/%d/%d)",
+    check(R.clears[FBO_ROAD_NEXT] == 1 && clears() == 1,
+          "refresh of the next mid-push: set 1 repainted (clears %d/%d/%d/%d)",
           R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
 
     int repaints = 0;
@@ -298,11 +304,11 @@ static void scene_push_paints_route_layers_once(int next_has_route) {
           what, R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
 
     maneuver_start_push();
-    render_invalidate_masks();
+    render_invalidate_next_masks();
     frame(&cur, &next);
-    check(R.clears[FBO_ROAD] == 1 && R.clears[FBO_ROUTE] == 1 && R.clears[FBO_ROAD_NEXT] == 1
+    check(R.clears[FBO_ROAD] == 0 && R.clears[FBO_ROUTE] == 0 && R.clears[FBO_ROAD_NEXT] == 1
           && R.clears[FBO_ROUTE_NEXT] == (next_has_route ? 1 : 0),
-          "%s start: each layer painted once into its set (clears %d/%d/%d/%d)",
+          "%s start: the next scene's layers painted once into set 1 (clears %d/%d/%d/%d)",
           what, R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
     composites(first, sizeof(first));
     {
@@ -323,11 +329,11 @@ static void scene_push_paints_route_layers_once(int next_has_route) {
     check(!strcmp(first, cached), "%s, cached: same composites and depth bias\n  painted %s\n  cached  %s",
           what, first, cached);
 
-    render_invalidate_masks();                     /* refresh mid-push */
+    render_invalidate_next_masks();                /* the next scene rebuilt mid-push */
     frame(&cur, &next);
     check(R.clears[FBO_ROAD_NEXT] == 1 && R.clears[FBO_ROUTE_NEXT] == (next_has_route ? 1 : 0)
-          && R.clears[FBO_ROAD] == 1 && R.clears[FBO_ROUTE] == 1,
-          "%s, refresh: both sets repainted (clears %d/%d/%d/%d)",
+          && R.clears[FBO_ROAD] == 0 && R.clears[FBO_ROUTE] == 0,
+          "%s, next rebuilt: set 1 repainted (clears %d/%d/%d/%d)",
           what, R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
 
     while (maneuver_is_pushing() && frames < 2000) {
@@ -339,6 +345,87 @@ static void scene_push_paints_route_layers_once(int next_has_route) {
           what, frames, repaints);
     maneuver_commit_pushed_state(&next);
     maneuver_set_scene_provider(NULL);             /* invalidates, back to built-ins */
+}
+
+/* With both sets due while the next maneuver is invisible (a commit and a promotion in one
+ * tick, or the current maneuver refreshed mid-push), set 0 is painted first and set 1 in the
+ * next frame.  Meanwhile the push's second composite shows set 0's layers at alpha 0, at the
+ * same depth bias.  Once the next maneuver is visible, a frame paints both sets it needs. */
+static void push_spreads_due_sets_over_frames(void) {
+    maneuver_state_t cur, next;
+    char held[1024], painted[1024], *p;
+    int frames = 0, visible = 0, held_ok = 1;
+    memset(&cur, 0, sizeof(cur));
+    memset(&next, 0, sizeof(next));
+    cur.icon = ICON_TURN;  cur.exit_angle = 90.0f;
+    next.icon = ICON_TURN; next.exit_angle = -90.0f;
+
+    maneuver_set_slide(1.0f);
+    render_invalidate_masks();
+    frame(&cur, NULL);
+    maneuver_start_push();
+    render_invalidate_masks();                     /* engine_tick: commit, then promote */
+    frame(&cur, &next);
+    composites(held, sizeof(held));
+    check(R.next_alpha == 0.0f && R.clears[FBO_ROAD] == 1 && R.clears[FBO_ROAD_NEXT] == 0 && clears() == 1,
+          "both due, next invisible: set 0 painted, set 1 held (clears %d/%d/%d/%d, next alpha %g)",
+          R.clears[0], R.clears[1], R.clears[2], R.clears[3], R.next_alpha);
+    check(strstr(held, "road0:") && !strstr(held, "road1:"), "held: set 0's road in set 1's place: %s", held);
+    frame(&cur, &next);
+    composites(painted, sizeof(painted));
+    check(R.clears[FBO_ROAD_NEXT] == 1 && clears() == 1, "the next frame paints set 1 (clears %d/%d/%d/%d)",
+          R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
+    while ((p = strstr(painted, "road1:")) != NULL) p[4] = '0';
+    check(!strcmp(held, painted), "held: same composites and depth bias as once painted, set 0's texture\n"
+          "  held    %s\n  painted %s", held, painted);
+    frame(&cur, &next);
+    check(clears() == 0 && R.mask_draws == 0, "then no mask work (%d clears, %d draws)", clears(), R.mask_draws);
+
+    while (maneuver_is_pushing() && frames < 2000 && !visible) {
+        render_invalidate_masks();                 /* the current maneuver refreshed mid-push */
+        frame(&cur, &next);
+        frames++;
+        if (R.next_alpha > 0.0f) {
+            visible = 1;
+            check(R.clears[FBO_ROAD] == 1 && R.clears[FBO_ROAD_NEXT] == 1,
+                  "refresh with the next visible (alpha %g): both sets painted (clears %d/%d/%d/%d)",
+                  R.next_alpha, R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
+        } else if (R.clears[FBO_ROAD] != 1 || R.clears[FBO_ROAD_NEXT] != 0) {
+            held_ok = 0;
+        }
+    }
+    check(held_ok, "every refresh while the next was invisible painted set 0 only");
+    check(visible && frames > 1, "the next maneuver became visible during the push (%d frames)", frames);
+    while (maneuver_is_pushing() && frames < 4000) { frame(&cur, &next); frames++; }
+    maneuver_commit_pushed_state(&next);
+}
+
+/* A hold lasts until the next selection and never past the frame. */
+static void hold_ends_with_selection_and_frame(void) {
+    render_invalidate_masks();
+    render_begin_frame();
+    memset(&R, 0, sizeof(R));
+    render_select_mask_set(1);
+    render_hold_mask_set();
+    render_begin_outline_mask(); render_triangle(0, 0, 1, 0, 0, 1, 1, 1, 1, 1); render_end_outline_mask();
+    render_composite();
+    render_select_mask_set(0);
+    render_begin_outline_mask(); render_triangle(0, 0, 1, 0, 0, 1, 1, 1, 1, 1); render_end_outline_mask();
+    render_composite();
+    check(R.clears[FBO_ROAD_NEXT] == 0 && R.clears[FBO_ROAD] == 1,
+          "a hold ends with its selection: set 1 held, set 0 then painted (clears %d/%d/%d/%d)",
+          R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
+    render_select_mask_set(1);
+    render_hold_mask_set();
+    render_end_frame();
+    render_begin_frame();
+    memset(&R, 0, sizeof(R));
+    render_begin_outline_mask(); render_triangle(0, 0, 1, 0, 0, 1, 1, 1, 1, 1); render_end_outline_mask();
+    render_composite();
+    render_select_mask_set(0);
+    check(R.clears[FBO_ROAD_NEXT] == 1, "a hold ends with the frame: the held set is painted in the next (clears %d/%d/%d/%d)",
+          R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
+    render_end_frame();
 }
 
 /* Set 1 without a route layer composites set 0's route, as the one shared texture did. */
@@ -399,6 +486,8 @@ int main(void) {
     push_paints_each_set_once();
     scene_push_paints_route_layers_once(1);
     scene_push_paints_route_layers_once(0);
+    push_spreads_due_sets_over_frames();
+    hold_ends_with_selection_and_frame();
     next_without_route_uses_current_route();
     unfinished_painting_does_not_hide_overlays();
     render_shutdown();
