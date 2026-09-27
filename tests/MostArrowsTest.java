@@ -747,12 +747,13 @@ public final class MostArrowsTest {
         endSession();
     }
 
-    /** The cluster stream rate is observed, never changed.  The HMI's setUpdateRate still reaches
-     *  the display service with the internal id and is remembered per terminal.  ClusterStreamRate
-     *  registers one display-management listener, asks the cluster display (internal 4) for its
-     *  rate at connect and on each arrows edge, records the answer, sends nothing else, survives
-     *  a failing service and unregisters at disconnect. */
-    static void streamRateIsObservedNotChanged() throws Exception {
+    /** The cluster stream rate.  The HMI's setUpdateRate reaches the display service with the
+     *  internal id and is remembered per terminal; while CarPlay's arrows view is composed,
+     *  stock's full rate 10 is sent as 30 (1 and 0 pass), set on composition and handed back on
+     *  release.  ClusterStreamRate registers one display-management listener, asks the cluster
+     *  display (internal 4) for its rate at connect and on each arrows edge, records the answer,
+     *  survives a failing service and unregisters at disconnect. */
+    static void streamRateLoggedAndRaisedForArrows() throws Exception {
         Hmi hmi = new Hmi();
         final Dsi dsi = new Dsi();
         Map<Integer, int[]> extents = new HashMap<Integer, int[]>();
@@ -843,17 +844,53 @@ public final class MostArrowsTest {
             "answer and HMI request recorded: " + com.luka.carplay.cluster.ClusterStreamRate.describe());
         check(dsi.drain().isEmpty(), "replies trigger no display-service call");
 
+        /* Stock is at its full rate (10) when CarPlay composes the arrows view: 30 is sent once,
+         * on the HMI thread, after 81 is composed; the rate query follows. */
         stockSwitch(hmi, dm, 73, 1, null);
         dsi.drain();
         MostPresentation.setActive(true);
         hmi.idle();
         c = dsi.drain();
-        check(has(c, "switch 81 term 4") && count(c, "getUpdateRate ") == 1 && has(c, "getUpdateRate 4")
-            && !hasPrefix(c, "setUpdateRate"), "arrows-on asks once and sets nothing: " + c);
+        check(has(c, "switch 81 term 4") && count(c, "setUpdateRate ") == 1 && has(c, "setUpdateRate 4 30")
+            && c.indexOf("switch 81 term 4") < c.indexOf("setUpdateRate 4 30")
+            && count(c, "getUpdateRate ") == 1 && c.indexOf("setUpdateRate 4 30") < c.indexOf("getUpdateRate 4"),
+            "arrows-on raises stock's 10 to 30 once, after 81, then asks: " + c);
+        check(DisplayManagerMIB2High.requestedUpdateRate(1) == 10, "stock's own request stays recorded as 10");
+
+        /* While composed: stock's 1 and 0 pass through, its 10 becomes 30, other terminals are untouched. */
+        final DisplayManagerMIB2High dmRef = dm;
+        String[] stockRequests = {"1 1", "1 10", "1 0", "1 10", "0 10"};
+        String[] expected = {"setUpdateRate 4 1", "setUpdateRate 4 30", "setUpdateRate 4 0", "setUpdateRate 4 30",
+            "setUpdateRate 0 10"};
+        for (int i = 0; i < stockRequests.length; i++) {
+            final int terminal = Integer.parseInt(stockRequests[i].split(" ")[0]);
+            final int rate = Integer.parseInt(stockRequests[i].split(" ")[1]);
+            hmi.run(new Runnable() { public void run() { dmRef.setUpdateRate(terminal, rate); } });
+            c = dsi.drain();
+            check(c.equals(java.util.Arrays.asList(expected[i])),
+                "stock " + stockRequests[i] + " while composed sends " + expected[i] + ": " + c);
+        }
+        check(DisplayManagerMIB2High.requestedUpdateRate(1) == 10 && DisplayManagerMIB2High.requestedUpdateRate(0) == 10,
+            "requests recorded as stock sent them");
+
         release(hmi);
         c = dsi.drain();
-        check(has(c, "switch 73 term 4") && count(c, "getUpdateRate ") == 1 && !hasPrefix(c, "setUpdateRate"),
-            "arrows-off asks once and sets nothing: " + c);
+        check(has(c, "switch 73 term 4") && count(c, "setUpdateRate ") == 1 && has(c, "setUpdateRate 4 10")
+            && c.indexOf("switch 73 term 4") < c.indexOf("setUpdateRate 4 10") && count(c, "getUpdateRate ") == 1,
+            "arrows-off hands stock's 10 back once, after 73, then asks: " + c);
+        hmi.run(new Runnable() { public void run() { dmRef.setUpdateRate(1, 10); } });
+        check(dsi.drain().equals(java.util.Arrays.asList("setUpdateRate 4 10")), "stock's 10 passes after arrows-off");
+
+        /* Stock at its reduced rate (1) when the view is composed and released: nothing is sent. */
+        hmi.run(new Runnable() { public void run() { dmRef.setUpdateRate(1, 1); } });
+        dsi.drain();
+        MostPresentation.setActive(true);
+        hmi.idle();
+        c = dsi.drain();
+        check(has(c, "switch 81 term 4") && !hasPrefix(c, "setUpdateRate"), "arrows-on at stock's 1 sends no rate: " + c);
+        release(hmi);
+        c = dsi.drain();
+        check(has(c, "switch 73 term 4") && !hasPrefix(c, "setUpdateRate"), "arrows-off at stock's 1 sends no rate: " + c);
 
         dsi.failRateQuery = true;
         com.luka.carplay.cluster.ClusterStreamRate.query("failing service");
@@ -874,6 +911,10 @@ public final class MostArrowsTest {
         }
         check(onlyQueriesOffHmi, "only rate calls (the read-only query, the test's own requests) leave the HMI thread: "
             + dsi.offHmi);
+        /* The rate records are static (they must exist before the constructor runs): clear them
+         * so later scenarios start from "no request since HMI start". */
+        java.util.Arrays.fill((int[]) field(DisplayManagerMIB2High.class, "REQUESTED_RATES").get(null), -1);
+        java.util.Arrays.fill((int[]) field(DisplayManagerMIB2High.class, "SENT_RATES").get(null), -1);
         endSession();
     }
 
@@ -1523,7 +1564,7 @@ public final class MostArrowsTest {
         freshOutputRequest();
         rendererOutputRequestFile();
         arrowsViewReachesTheDisplayService();
-        streamRateIsObservedNotChanged();
+        streamRateLoggedAndRaisedForArrows();
         stockListenerSeesItsOwnContext();
         bufferedReplayAfterDisplayServiceRestart();
         screenModuleActivation();

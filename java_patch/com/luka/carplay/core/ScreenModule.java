@@ -228,8 +228,10 @@ public final class ScreenModule implements Module {
         com.luka.carplay.cluster.ClusterPlatform.resolve(fw.framework());
         if (!com.luka.carplay.cluster.ClusterPlatform.ownsContexts(fw.framework())) {
             /* MOST / RGI-only cluster.  Keep the session semantics other modules read
-             * (isConnected), but never touch terminal-1 contexts or rates: no connect-time
-             * switch to 74, no ctx 80, no blocked stock switches, nothing to restore later. */
+             * (isConnected), but never drive terminal-1 contexts or rates from here: no
+             * connect-time switch to 74, no ctx 80, no blocked stock switches, nothing to restore
+             * later.  During CarPlay guidance MostPresentation substitutes stock's own arrows
+             * requests (context 73 -> 81, full rate 10 -> 30) and hands them back afterwards. */
             clusterContextsOwned = false;
             synchronized (LOCK) {
                 connected = true;

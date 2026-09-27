@@ -58,6 +58,9 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
             public void requestExtents(int displayable) {
                 DisplayManagerMIB2High.this.getExtends(displayable);
             }
+            public void reapplyClusterRate() {
+                DisplayManagerMIB2High.this.reapplyClusterRate();
+            }
             public void reapplyClusterContext() {
                 DisplayManagerMIB2High.this.reapplyClusterContext();
             }
@@ -516,11 +519,15 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
 
     /* Every video-stream rate requested through the HMI, per terminal: stock's map controller
      * (10/1/0), ScreenModule (30 on the VC's ctx 80) or anything else.  Logged when a terminal's
-     * value changes; ClusterStreamRate logs what the display service reports.  A static array:
-     * it must also exist on an instance the constructor did not initialise. */
+     * value changes; ClusterStreamRate logs what the display service reports.  While CarPlay's
+     * MOST arrows view is composed, MostPresentation.substituteRate raises stock's full rate
+     * (as substitute() replaces its context); SENT_RATES is what reached the display service.
+     * Static arrays: they must also exist on an instance the constructor did not initialise. */
     private static final int[] REQUESTED_RATES = new int[] { -1, -1, -1, -1, -1, -1, -1, -1 };
+    private static final int[] SENT_RATES = new int[] { -1, -1, -1, -1, -1, -1, -1, -1 };
 
     public void setUpdateRate(int terminal, int rate) {
+        int send = rate;
         try {
             boolean changed = true;
             synchronized (REQUESTED_RATES) {
@@ -529,12 +536,39 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
                     REQUESTED_RATES[terminal] = rate;
                 }
             }
-            if (changed) {
+            send = com.luka.carplay.cluster.MostPresentation.substituteRate(terminal, rate);
+            if (changed || send != rate) {
                 com.luka.carplay.framework.Log.w("DisplayManager", "setUpdateRate terminal " + terminal
-                    + " rate " + rate + " (thread " + Thread.currentThread().getName() + ")");
+                    + " rate " + rate + (send != rate ? " -> " + send + " for the CarPlay arrows view" : "")
+                    + " (thread " + Thread.currentThread().getName() + ")");
             }
-        } catch (Throwable t) { }
+        } catch (Throwable t) {
+            send = rate;
+        }
+        sendUpdateRate(terminal, send);
+    }
+
+    private void sendUpdateRate(int terminal, int rate) {
+        synchronized (REQUESTED_RATES) {
+            if (terminal >= 0 && terminal < SENT_RATES.length) SENT_RATES[terminal] = rate;
+        }
         super.setUpdateRate(terminal, rate);
+    }
+
+    /** HMI thread, on a CarPlay arrows-view edge: stock's last terminal-1 rate through
+     *  substituteRate, sent only when that differs from what the display service has. */
+    void reapplyClusterRate() {
+        int requested, sent, send;
+        synchronized (REQUESTED_RATES) {
+            requested = REQUESTED_RATES[CLUSTER_TERMINAL];
+            sent = SENT_RATES[CLUSTER_TERMINAL];
+        }
+        if (requested < 0) return;
+        send = com.luka.carplay.cluster.MostPresentation.substituteRate(CLUSTER_TERMINAL, requested);
+        if (send == sent) return;
+        com.luka.carplay.framework.Log.w("DisplayManager", "stream rate terminal " + CLUSTER_TERMINAL
+            + " " + sent + " -> " + send + " (stock requests " + requested + ")");
+        sendUpdateRate(CLUSTER_TERMINAL, send);
     }
 
     /** The last rate requested through the HMI for terminal, or -1 if none since HMI start. */

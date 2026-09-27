@@ -68,6 +68,8 @@ public final class MostPresentation {
         void requestExtents(int displayable);
         /** Re-issue stock's last terminal-1 context request. */
         void reapplyClusterContext();
+        /** Re-send stock's last terminal-1 update rate through substituteRate, if that changes it. */
+        void reapplyClusterRate();
     }
 
     private static final Object LOCK = new Object();
@@ -113,6 +115,20 @@ public final class MostPresentation {
     /** The context the DisplayManager composes for a stock terminal-1 request. */
     public static int substitute(int terminal, int ctx) {
         return terminal == TERMINAL_CLUSTER && ctx == CTX_STOCK_KDK && applied ? CTX_CARPLAY_KDK : ctx;
+    }
+
+    /* Stock streams terminal 1 at 10 fps when the cluster reports KOMO data rate 2 and at
+     * 1 fps at data rate 1 (measured in v20).  While CarPlay's arrows view is composed, stock's
+     * full rate becomes CARPLAY_ARROWS_RATE, the rate ScreenModule uses on the Virtual Cockpit.
+     * 1 and 0 pass through: the rate only rises where stock already streams at full rate.
+     * DisplayManagerMIB2High re-sends stock's last request on every composition edge, so the
+     * map view and stock sessions keep stock's rate. */
+    static final int STOCK_FULL_RATE = 10;
+    static final int CARPLAY_ARROWS_RATE = 30;
+
+    /** The update rate the DisplayManager sends for a stock terminal request. */
+    public static int substituteRate(int terminal, int rate) {
+        return terminal == TERMINAL_CLUSTER && rate == STOCK_FULL_RATE && applied ? CARPLAY_ARROWS_RATE : rate;
     }
 
     /** CarPlay route guidance started/stopped on a MOST cluster (ScreenModule). */
@@ -167,6 +183,12 @@ public final class MostPresentation {
         catch (Throwable t) { Log.w(TAG, "HMI post failed: " + t); }
     }
 
+    /** HMI thread, after a composition edge: stock's last rate request, substituted anew. */
+    private static void reapplyRate(ContextOwner o) {
+        try { o.reapplyClusterRate(); }
+        catch (Throwable t) { Log.w(TAG, "stream rate reapply failed: " + t); }
+    }
+
     private static void postConverge(ContextOwner o) {
         post(o, new Runnable() { public void run() { converge(); } });
     }
@@ -194,6 +216,7 @@ public final class MostPresentation {
             Log.w(TAG, "arrows view: stock KDK restored (ctx 73)");
             try { o.reapplyClusterContext(); }
             catch (Throwable t) { Log.w(TAG, "context reapply failed: " + t); }
+            reapplyRate(o);
             /* Hidden only after stock's 73 is back, so the arrows view never shows an empty ctx 81;
              * the next start's placement is logged afresh. */
             try { d.setOpacity(MANEUVER, TERMINAL_CLUSTER, 0); } catch (Throwable t) { }
@@ -245,6 +268,7 @@ public final class MostPresentation {
         Log.w(TAG, "arrows view: CarPlay maneuver composed (ctx 73 -> 81)");
         try { o.reapplyClusterContext(); }
         catch (Throwable t) { Log.w(TAG, "context reapply failed: " + t); }
+        reapplyRate(o);
         /* After the switch: the terminal-1 context and stock's view state (gfxAvailable,
          * komoView*, favored/current view), which decide whether the arrows view is reachable. */
         ClusterStateTrace.dump("most-arrows-on");
@@ -487,6 +511,7 @@ public final class MostPresentation {
                 Log.w(TAG, "arrows view: stock KDK restored while " + reason);
                 try { o.reapplyClusterContext(); }
                 catch (Throwable t) { Log.w(TAG, "context reapply failed: " + t); }
+                reapplyRate(o);
                 ClusterStateTrace.dump("most-arrows-wait");
                 converge();                           /* re-composes now if already reported */
             }

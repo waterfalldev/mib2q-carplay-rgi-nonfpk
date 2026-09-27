@@ -3,9 +3,9 @@
  *
  * On a MOST cluster the arrows reach the display as video: videoencoderservice captures
  * terminal 1 at its update rate, encodes it and sends it over MOST.  That rate caps how many
- * distinct frames the cluster can show, whatever the renderer draws.  The MOST path never
- * sets it (ScreenModule's 30 applies to the Virtual Cockpit context 80 only; stock's map
- * controller uses 10/1/0) and nothing logged it, so the arrows' stream rate was unknown.
+ * distinct frames the cluster can show, whatever the renderer draws.  Stock sets it from the
+ * cluster's KOMO data rate (10 fps at data rate 2, 1 fps at 1; measured in v20), and
+ * MostPresentation raises stock's 10 to 30 while CarPlay's arrows view is composed.
  *
  * This class asks DSIDisplayManagement for the cluster display's rate (getUpdateRate on
  * internal display 4, which DisplayManager maps from terminal 1) at CarPlay connect, at each
