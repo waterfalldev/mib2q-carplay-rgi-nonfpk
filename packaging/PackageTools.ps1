@@ -20,6 +20,33 @@ function Assert-FileExists {
     }
 }
 
+# Runs work that starts Git Bash while other Git Bash runs concurrently: two Git Bash trees on
+# one console can deadlock in the MSYS2 runtime (msys-2.0.dll 3.6.10), a shell waiting forever
+# on a program that has already exited.  The process gets its own hidden console and an empty
+# stdin pipe (MSYS tools need a valid handle 0).  The command writes its own output to
+# OutputFile, read after exit: no output pipes for a leftover process to hold open and no
+# asynchronous reads (inside a build those came back empty).  A process still running after
+# TimeoutMs is killed; ExitCode is then 124.
+function Invoke-IsolatedProcess {
+    param(
+        [Parameter(Mandatory=$true)][string]$Exe,
+        [string[]]$Arguments = @(),
+        [Parameter(Mandatory=$true)][string]$OutputFile,
+        [int]$TimeoutMs = 600000
+    )
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($Exe)
+    foreach ($arg in $Arguments) { $psi.ArgumentList.Add($arg) }
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $process = [System.Diagnostics.Process]::Start($psi)
+    $process.StandardInput.Close()
+    $finished = $process.WaitForExit($TimeoutMs)
+    if (-not $finished) { $process.Kill($true); $process.WaitForExit() }
+    $output = @(if (Test-Path -LiteralPath $OutputFile) { Get-Content -LiteralPath $OutputFile })
+    [pscustomobject]@{ ExitCode = $(if ($finished) { $process.ExitCode } else { 124 }); Output = $output; TimedOut = -not $finished }
+}
+
 function Invoke-Native {
     param(
         [Parameter(Mandatory=$true)]

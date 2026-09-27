@@ -28,6 +28,7 @@ typedef struct {
     int clears[FBO_COUNT];           /* per mask framebuffer */
     int mask_draws;                  /* draws into any mask framebuffer */
     int scene_draws;                 /* draws into the scene (SSAA) framebuffer */
+    int window_draws;                /* draws into the window (framebuffer 0): pass 2 */
     char scene[8192];                /* "tex:zbias " per scene draw */
 } frame_rec_t;
 static frame_rec_t R;
@@ -52,6 +53,7 @@ void glClear(GLbitfield mask) {
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     (void)mode; (void)first; (void)count;
     if (mask_index(g_bound_fbo) >= 0) { R.mask_draws++; return; }
+    if (g_bound_fbo == 0) { R.window_draws++; return; }
     if (g_bound_fbo != g_ss_fbo) return;
     R.scene_draws++;
     size_t n = strlen(R.scene);
@@ -248,6 +250,97 @@ static void push_paints_each_set_once(void) {
           "settled after the push: set 0 only: %s", now);
 }
 
+/* A supplied scene, as on the car: road and route layers under the push transform, like
+ * cr_scene_paint.  A state with direction 1 paints no route layer. */
+static int g_scene_paints;
+static void scene_route(void *ctx, const maneuver_state_t *st, route_path_t *path) {
+    (void)ctx;
+    maneuver_build_route(st, path);
+}
+static void scene_paint(void *ctx, const maneuver_state_t *st, float tx, float ty, float c, float sn) {
+    (void)ctx;
+    g_scene_paints++;
+    render_push_mask_transform(tx, ty, c, sn);
+    render_begin_outline_mask(); render_triangle(0, 0, 1, 0, 0, 1, 1, 1, 1, 1); render_end_outline_mask();
+    if (st->direction != 1) {
+        render_begin_route_mask(); render_triangle(0, 0, 1, 0, 0, 1, 0, 0, 1, 1); render_end_outline_mask();
+    }
+    render_pop_mask_transform();
+}
+static int scene_handles(void *ctx, const maneuver_state_t *st) { (void)ctx; (void)st; return 1; }
+
+/* A push between supplied scenes paints each set's road and route once; the next maneuver's
+ * route goes to set 1, or set 1 composites set 0's route when the next paints none. */
+static void scene_push_paints_route_layers_once(int next_has_route) {
+    maneuver_scene_provider_t provider;
+    maneuver_state_t cur, next;
+    char first[1024], cached[1024];
+    const char *what = next_has_route ? "scene push" : "scene push, next without route";
+    int frames = 0, repaints = 0;
+    memset(&provider, 0, sizeof(provider));
+    provider.build_route = scene_route;
+    provider.paint_masks = scene_paint;
+    provider.handles = scene_handles;
+    provider.route_base_y = 0.0f;
+    provider.route_top_y = 0.02f;
+    provider.entry_road_reach = provider.exit_road_reach = 0.35f;
+    maneuver_set_scene_provider(&provider);
+    memset(&cur, 0, sizeof(cur));
+    memset(&next, 0, sizeof(next));
+    cur.icon = ICON_TURN;  cur.exit_angle = 90.0f;
+    next.icon = ICON_TURN; next.exit_angle = -90.0f; next.direction = next_has_route ? 0 : 1;
+
+    maneuver_set_slide(1.0f);
+    render_invalidate_masks();
+    frame(&cur, NULL);
+    check(R.clears[FBO_ROAD] == 1 && R.clears[FBO_ROUTE] == 1 && clears() == 2,
+          "%s, settled: set 0's road and route painted (clears %d/%d/%d/%d)",
+          what, R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
+
+    maneuver_start_push();
+    render_invalidate_masks();
+    frame(&cur, &next);
+    check(R.clears[FBO_ROAD] == 1 && R.clears[FBO_ROUTE] == 1 && R.clears[FBO_ROAD_NEXT] == 1
+          && R.clears[FBO_ROUTE_NEXT] == (next_has_route ? 1 : 0),
+          "%s start: each layer painted once into its set (clears %d/%d/%d/%d)",
+          what, R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
+    composites(first, sizeof(first));
+    {
+        const char *road1 = strstr(first, "road1:");
+        check(road1 && strstr(first, "route0:") && strstr(first, "route0:") < road1
+              && (next_has_route ? strstr(road1, "route1:") != NULL
+                                 : strstr(road1, "route0:") != NULL && !strstr(first, "route1:")),
+              "%s start: set 0 road+route, then set 1 road and %s route: %s",
+              what, next_has_route ? "its own" : "set 0's", first);
+    }
+
+    g_scene_paints = 0;
+    frame(&cur, &next);
+    composites(cached, sizeof(cached));
+    check(clears() == 0 && R.mask_draws == 0 && g_scene_paints == 2,
+          "%s, cached: both scenes replayed (%d paints) with no mask work (%d clears, %d draws)",
+          what, g_scene_paints, clears(), R.mask_draws);
+    check(!strcmp(first, cached), "%s, cached: same composites and depth bias\n  painted %s\n  cached  %s",
+          what, first, cached);
+
+    render_invalidate_masks();                     /* refresh mid-push */
+    frame(&cur, &next);
+    check(R.clears[FBO_ROAD_NEXT] == 1 && R.clears[FBO_ROUTE_NEXT] == (next_has_route ? 1 : 0)
+          && R.clears[FBO_ROAD] == 1 && R.clears[FBO_ROUTE] == 1,
+          "%s, refresh: both sets repainted (clears %d/%d/%d/%d)",
+          what, R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
+
+    while (maneuver_is_pushing() && frames < 2000) {
+        frame(&cur, &next);
+        repaints += clears() + R.mask_draws;
+        frames++;
+    }
+    check(!maneuver_is_pushing() && repaints == 0, "%s: no mask work for the rest (%d frames, %d)",
+          what, frames, repaints);
+    maneuver_commit_pushed_state(&next);
+    maneuver_set_scene_provider(NULL);             /* invalidates, back to built-ins */
+}
+
 /* Set 1 without a route layer composites set 0's route, as the one shared texture did. */
 static void next_without_route_uses_current_route(void) {
     char c[1024];
@@ -271,6 +364,31 @@ static void next_without_route_uses_current_route(void) {
     render_end_frame();
 }
 
+/* A clean-set painting that never reaches its end_mask must not swallow later flat draws:
+ * the next frame's overlays (the lane panel) still reach the scene. */
+static void unfinished_painting_does_not_hide_overlays(void) {
+    static const float tri[] = { 0, 0, 10, 0, 0, 10 };
+    cr_rect_t clip = { 0, 0, 100, 50 };
+    render_invalidate_masks();
+    render_select_mask_set(0);
+    render_begin_frame();
+    render_begin_outline_mask(); render_triangle(0, 0, 1, 0, 0, 1, 1, 1, 1, 1); render_end_outline_mask();
+    render_composite();                            /* set 0 is clean now */
+    render_end_frame();
+    render_begin_frame();
+    render_begin_outline_mask();                   /* replay on the clean set, no end_mask */
+    render_triangle(0, 0, 1, 0, 0, 1, 1, 1, 1, 1);
+    memset(&R, 0, sizeof(R));
+    render_begin_overlay(clip);
+    render_overlay_mesh(tri, 3, 0, 0, 1, 1, 1, 1);
+    render_end_overlay();
+    check(R.scene_draws == 1, "an overlay after an unfinished clean-set painting is drawn (%d draws)", R.scene_draws);
+    memset(&R, 0, sizeof(R));
+    render_begin_outline_mask();                   /* again unfinished, then the frame ends */
+    render_end_frame();
+    check(R.window_draws == 1, "pass 2 still copies the frame to the window (%d draws)", R.window_draws);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     if (render_init(CR_DEFAULT_WIDTH, CR_DEFAULT_HEIGHT) != 0) {
@@ -279,7 +397,10 @@ int main(void) {
     }
     check(g_fbos[FBO_ROAD_NEXT] != 0 && g_fbo_texs[FBO_ROUTE_NEXT] != 0, "init: four mask framebuffers");
     push_paints_each_set_once();
+    scene_push_paints_route_layers_once(1);
+    scene_push_paints_route_layers_once(0);
     next_without_route_uses_current_route();
+    unfinished_painting_does_not_hide_overlays();
     render_shutdown();
     printf("most_mask_cache_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

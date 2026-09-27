@@ -192,9 +192,9 @@ iOS sends route guidance and the SDK silently drops it.
 
 **With M.I.B.** Build a package for your verified stock inputs and copy the
 generated `sdcard/` contents onto the card. Run **Individual Script** or **Custom
-Script**, according to your M.I.B. version. An install result **0** changes
-the package's `ACTION` to `rollback`, then shows `[RGI] Success: 0` as the last
-line; the next run captures logs and uninstalls. Failures leave the action
+Script**, according to your M.I.B. version. An install result **0** is announced,
+then changes the package's `ACTION` to `rollback` and shows `[RGI] Success: 0` as the
+last line; the next run captures logs and uninstalls. Failures leave the action
 unchanged. No automatic reboot is performed.
 
 The builder generates one checked installation system. It replaces the old

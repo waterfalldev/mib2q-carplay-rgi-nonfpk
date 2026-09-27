@@ -10,7 +10,8 @@
  * This class asks DSIDisplayManagement for the cluster display's rate (getUpdateRate on
  * internal display 4, which DisplayManager maps from terminal 1) at CarPlay connect, at each
  * arrows-view edge and whenever the cluster reports a new KOMO data rate, and logs every
- * answer at WARN.  DisplayManagerMIB2High logs the rates requested through the HMI.
+ * answer at WARN under the trigger of its own query.  DisplayManagerMIB2High logs the rates
+ * requested through the HMI.
  * ScreenModule starts it on a MOST cluster at CarPlay connect and stops it at disconnect.
  *
  * Read-only and best-effort: getUpdateRate changes nothing, and every stock
@@ -38,8 +39,13 @@ public final class ClusterStreamRate {
 
     private static final Object LOCK = new Object();
     private static DSIDisplayManagement dsi;          /* non-null while started */
-    private static String pendingReason = "";
+    /* Triggers of the queries not yet answered, oldest first: the service answers in request
+     * order, so overlapping queries are each logged under their own trigger.  Bounded, so a
+     * service that drops answers cannot grow it. */
+    private static final java.util.Vector PENDING = new java.util.Vector();
+    private static final int MAX_PENDING = 8;
     private static String lastAnswer = "unknown";
+    private static String lastSetResult;               /* last setUpdateRateResult logged */
 
     private FrameworkRef.ServiceHandle handle;
     private ServiceRegistration registration;
@@ -88,7 +94,7 @@ public final class ClusterStreamRate {
     }
 
     static void detach() {
-        synchronized (LOCK) { dsi = null; pendingReason = ""; }
+        synchronized (LOCK) { dsi = null; PENDING.removeAllElements(); lastSetResult = null; }
     }
 
     /** Ask for the cluster stream rate; the answer is logged when it arrives.  Never throws. */
@@ -97,26 +103,31 @@ public final class ClusterStreamRate {
         synchronized (LOCK) {
             d = dsi;
             if (d == null) return;
-            pendingReason = reason;
+            if (PENDING.size() == MAX_PENDING) PENDING.removeElementAt(0);
+            PENDING.addElement(reason);
         }
         try {
             d.getUpdateRate(CLUSTER_DISPLAY);
         } catch (Throwable t) {
+            synchronized (LOCK) { PENDING.removeElement(reason); }    /* no answer will come */
             Log.w(TAG, "getUpdateRate(" + CLUSTER_DISPLAY + ") after " + reason + " failed: " + t);
         }
     }
 
-    /** For the cluster state trace: the last rate requested through the HMI and the last DSI answer. */
+    /** For the cluster state trace: the last rate requested through the HMI, the rate sent to the
+     *  display service for it (30 for stock's 10 while the arrows view is composed) and the
+     *  last DSI answer. */
     public static String describe() {
         String answer;
         synchronized (LOCK) { answer = lastAnswer; }
-        return "streamRate{requested=" + requestedClusterRate() + " dsi=" + answer + "}";
+        return "streamRate{requested=" + clusterRate(false) + " sent=" + clusterRate(true) + " dsi=" + answer + "}";
     }
 
-    private static String requestedClusterRate() {
+    private static String clusterRate(boolean sent) {
         try {
-            int r = de.audi.tghu.fwhmi.DisplayManagerMIB2High.requestedUpdateRate(
-                com.luka.carplay.core.ScreenModule.TERMINAL_CLUSTER);
+            int terminal = com.luka.carplay.core.ScreenModule.TERMINAL_CLUSTER;
+            int r = sent ? de.audi.tghu.fwhmi.DisplayManagerMIB2High.sentUpdateRate(terminal)
+                         : de.audi.tghu.fwhmi.DisplayManagerMIB2High.requestedUpdateRate(terminal);
             return r < 0 ? "none" : String.valueOf(r);
         } catch (Throwable t) {
             return "?";
@@ -126,16 +137,28 @@ public final class ClusterStreamRate {
     static void onUpdateRate(int display, int rate) {
         String reason;
         synchronized (LOCK) {
-            reason = pendingReason;
+            if (PENDING.isEmpty()) {
+                reason = "no pending query";
+            } else {
+                reason = (String) PENDING.elementAt(0);
+                PENDING.removeElementAt(0);
+            }
             lastAnswer = "(" + display + ", " + rate + ")";
         }
         /* Argument order is not documented; both are logged as delivered. */
         Log.w(TAG, "cluster stream: getUpdateRateResult(" + display + ", " + rate + ") for display "
-            + CLUSTER_DISPLAY + " after " + reason + "; requested via HMI " + requestedClusterRate());
+            + CLUSTER_DISPLAY + " after " + reason + "; requested via HMI " + clusterRate(false) + ", sent " + clusterRate(true));
     }
 
+    /** Logged when the reply changes: one request can bring several identical replies (v20:
+     *  four setUpdateRateResult(4, 0) within 7 ms). */
     static void onSetResult(int display, int result) {
-        Log.w(TAG, "setUpdateRateResult(" + display + ", " + result + ")");
+        String r = "(" + display + ", " + result + ")";
+        synchronized (LOCK) {
+            if (r.equals(lastSetResult)) return;
+            lastSetResult = r;
+        }
+        Log.w(TAG, "setUpdateRateResult" + r);
     }
 
     /** Only the two rate replies are used; every other display-management reply is ignored. */

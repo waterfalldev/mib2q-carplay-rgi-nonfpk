@@ -366,6 +366,36 @@ public final class MostArrowsTest {
         return n;
     }
 
+    /** The Log lines ("[CP/W][Tag] message") written since Log.w("Test", marker + " start"),
+     *  once the writer thread has written the end marker this call adds. */
+    static List<String> logSince(String marker) throws Exception {
+        Log.w("Test", marker + " end");
+        for (int attempt = 0; attempt < 500; attempt++) {
+            StringBuilder text = new StringBuilder();
+            for (String path : new String[]{"/tmp/carplay_java.log.1", "/tmp/carplay_java.log"}) {
+                File f = new File(path);
+                if (f.exists()) text.append(new String(java.nio.file.Files.readAllBytes(f.toPath()), "UTF-8"));
+            }
+            int start = text.lastIndexOf("[Test] " + marker + " start");
+            int end = text.lastIndexOf("[Test] " + marker + " end");
+            if (start >= 0 && end > start) {
+                List<String> lines = new ArrayList<String>();
+                for (String line : text.substring(start, end).split("\n")) {
+                    if (line.indexOf("[CP/") >= 0) lines.add(line.substring(line.indexOf("[CP/")));
+                }
+                return lines;
+            }
+            Thread.sleep(10);
+        }
+        throw new AssertionError("log markers for " + marker + " never written");
+    }
+
+    static int countContaining(List<String> lines, String text) {
+        int n = 0;
+        for (int i = 0; i < lines.size(); i++) if (lines.get(i).indexOf(text) >= 0) n++;
+        return n;
+    }
+
     /* MostPresentation's request to maneuver_render (protocol.h CR_MOST_OUTPUT_PATH) goes to a
      * scratch file on the PC. */
     static File outputRequestFile;
@@ -762,6 +792,8 @@ public final class MostArrowsTest {
         mostSession(true);
         release(hmi);
         dsi.drain();
+        Log.setLevel(Log.W);                                  /* the car's default level */
+        Log.w("Test", "stream-rate start");
 
         check(DisplayManagerMIB2High.requestedUpdateRate(1) == -1, "no rate requested yet");
         dm.setUpdateRate(1, 10);
@@ -834,13 +866,18 @@ public final class MostArrowsTest {
         probe.start(new FrameworkRef((de.audi.app.terminalmode.IContext) context));
         check(count(registry, "register ") == 1 && dsi.drain().isEmpty(), "a second start registers nothing more");
 
+        /* A second query before the first answer: each answer is logged under its own trigger. */
+        com.luka.carplay.cluster.ClusterStreamRate.query("KOMO data rate 2");
+        check(dsi.drain().equals(java.util.Arrays.asList("getUpdateRate 4")), "an overlapping query is sent");
         org.dsi.ifc.displaymanagement.DSIDisplayManagementListener l =
             (org.dsi.ifc.displaymanagement.DSIDisplayManagementListener) listener[0];
         l.getUpdateRateResult(4, 10);
-        l.setUpdateRateResult(4, 0);
+        l.getUpdateRateResult(4, 10);
+        for (int i = 0; i < 4; i++) l.setUpdateRateResult(4, 0);
+        l.setUpdateRateResult(4, 30);
         l.activeContext(81, 4, 1);
         l.asyncException(1, "other request", org.dsi.ifc.displaymanagement.DSIDisplayManagement.RT_SETUPDATERATE + 1000);
-        check("streamRate{requested=10 dsi=(4, 10)}".equals(com.luka.carplay.cluster.ClusterStreamRate.describe()),
+        check("streamRate{requested=10 sent=10 dsi=(4, 10)}".equals(com.luka.carplay.cluster.ClusterStreamRate.describe()),
             "answer and HMI request recorded: " + com.luka.carplay.cluster.ClusterStreamRate.describe());
         check(dsi.drain().isEmpty(), "replies trigger no display-service call");
 
@@ -856,6 +893,8 @@ public final class MostArrowsTest {
             && count(c, "getUpdateRate ") == 1 && c.indexOf("setUpdateRate 4 30") < c.indexOf("getUpdateRate 4"),
             "arrows-on raises stock's 10 to 30 once, after 81, then asks: " + c);
         check(DisplayManagerMIB2High.requestedUpdateRate(1) == 10, "stock's own request stays recorded as 10");
+        check(com.luka.carplay.cluster.ClusterStreamRate.describe().startsWith("streamRate{requested=10 sent=30 "),
+            "the state trace shows the substituted rate: " + com.luka.carplay.cluster.ClusterStreamRate.describe());
 
         /* While composed: stock's 1 and 0 pass through, its 10 becomes 30, other terminals are untouched. */
         final DisplayManagerMIB2High dmRef = dm;
@@ -911,6 +950,17 @@ public final class MostArrowsTest {
         }
         check(onlyQueriesOffHmi, "only rate calls (the read-only query, the test's own requests) leave the HMI thread: "
             + dsi.offHmi);
+        List<String> log = logSince("stream-rate");
+        Log.setLevel(-1);
+        check(countContaining(log, "getUpdateRateResult(4, 10) for display 4 after CarPlay connect;") == 1
+            && countContaining(log, "getUpdateRateResult(4, 10) for display 4 after KOMO data rate 2;") == 1,
+            "overlapping answers are logged under their own triggers: " + log);
+        check(count(log, "[CP/W][StreamRate] setUpdateRateResult(4, 0)") == 1
+            && count(log, "[CP/W][StreamRate] setUpdateRateResult(4, 30)") == 1,
+            "repeated setUpdateRateResult replies are logged once: " + log);
+        check(countContaining(log, "setUpdateRate terminal ") == 2
+            && count(log, "[CP/W][DisplayManager] setUpdateRate terminal 1 rate 10 -> 30 for the CarPlay arrows view") == 2,
+            "at WARN only stock's two substituted requests are logged, not its plain rate changes: " + log);
         /* The rate records are static (they must exist before the constructor runs): clear them
          * so later scenarios start from "no request since HMI start". */
         java.util.Arrays.fill((int[]) field(DisplayManagerMIB2High.class, "REQUESTED_RATES").get(null), -1);

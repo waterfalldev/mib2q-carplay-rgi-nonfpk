@@ -29,18 +29,13 @@ function Invoke-JavaDocker {
         # Firmware packages use the verified combined JAR, never inherited shell overrides.
         STOCK_BOOT_JAR = ''; STOCK_RUNTIME_JAR = ''; CARPLAY_HOOK_JAR = ''; VC_UNICODE_TEST_DIR = ''
     }
-    $previous = @{}
+    # The settings reach the launcher through env, never this process's environment: processes
+    # Build-Snapshot's native job starts meanwhile would inherit them.  Empty means unset (env
+    # takes every -u before the first assignment).
+    $unset = @($settings.Keys | Where-Object { -not $settings[$_] } | ForEach-Object { '-u'; $_ })
+    $assign = @($settings.Keys | Where-Object { $settings[$_] } | ForEach-Object { "$_=$($settings[$_])" })
     $git = (Get-Command git -ErrorAction Stop).Source
     $shell = Find-GitSh $git
-    try {
-        foreach ($key in $settings.Keys) {
-            $previous[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
-            [Environment]::SetEnvironmentVariable($key, $settings[$key], 'Process')
-        }
-        $launcher = (Join-Path $SourceRoot 'scripts/java/docker.sh').Replace('\','/')
-        Invoke-Native -Exe $shell -Arguments (@($launcher) + $Action) -Capture:$Capture
-    }
-    finally {
-        foreach ($key in $previous.Keys) { [Environment]::SetEnvironmentVariable($key, $previous[$key], 'Process') }
-    }
+    $launcher = (Join-Path $SourceRoot 'scripts/java/docker.sh').Replace('\','/')
+    Invoke-Native -Exe $shell -Arguments (@('-c', 'exec env "$@"', 'sh') + $unset + $assign + @('sh', $launcher) + $Action) -Capture:$Capture
 }

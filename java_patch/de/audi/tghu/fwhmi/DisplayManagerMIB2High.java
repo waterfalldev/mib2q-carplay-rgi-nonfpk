@@ -518,8 +518,9 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
     }
 
     /* Every video-stream rate requested through the HMI, per terminal: stock's map controller
-     * (10/1/0), ScreenModule (30 on the VC's ctx 80) or anything else.  Logged when a terminal's
-     * value changes; ClusterStreamRate logs what the display service reports.  While CarPlay's
+     * (10/1/0), ScreenModule (30 on the VC's ctx 80) or anything else.  A terminal's new value is
+     * logged at INFO (the VC switches terminal 1 on every context change), a substituted rate at
+     * WARN; ClusterStreamRate logs what the display service reports.  While CarPlay's
      * MOST arrows view is composed, MostPresentation.substituteRate raises stock's full rate
      * (as substitute() replaces its context); SENT_RATES is what reached the display service.
      * Static arrays: they must also exist on an instance the constructor did not initialise. */
@@ -537,10 +538,13 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
                 }
             }
             send = com.luka.carplay.cluster.MostPresentation.substituteRate(terminal, rate);
-            if (changed || send != rate) {
+            if (send != rate) {
                 com.luka.carplay.framework.Log.w("DisplayManager", "setUpdateRate terminal " + terminal
-                    + " rate " + rate + (send != rate ? " -> " + send + " for the CarPlay arrows view" : "")
+                    + " rate " + rate + " -> " + send + " for the CarPlay arrows view"
                     + " (thread " + Thread.currentThread().getName() + ")");
+            } else if (changed) {
+                com.luka.carplay.framework.Log.i("DisplayManager", "setUpdateRate terminal " + terminal
+                    + " rate " + rate + " (thread " + Thread.currentThread().getName() + ")");
             }
         } catch (Throwable t) {
             send = rate;
@@ -575,6 +579,13 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
     public static int requestedUpdateRate(int terminal) {
         synchronized (REQUESTED_RATES) {
             return terminal >= 0 && terminal < REQUESTED_RATES.length ? REQUESTED_RATES[terminal] : -1;
+        }
+    }
+
+    /** The last rate sent to the display service for terminal, or -1 if none since HMI start. */
+    public static int sentUpdateRate(int terminal) {
+        synchronized (REQUESTED_RATES) {
+            return terminal >= 0 && terminal < SENT_RATES.length ? SENT_RATES[terminal] : -1;
         }
     }
 

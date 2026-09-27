@@ -353,39 +353,28 @@ $NativeSteps = [System.Collections.Generic.List[string[]]]::new()
 $NativeSteps.Add([string[]]@((Join-Path $WorkTree 'scripts/build_hook.sh').Replace('\','/')))
 $NativeSteps.Add([string[]]@((Join-Path $WorkTree 'scripts/build_renderers.sh').Replace('\','/')))
 $NativeSteps.Add([string[]]@((Join-Path $WorkTree 'tests/most/run-native-tests.sh').Replace('\','/'), $WorkTree.Replace('\','/')))
-# Each step's shell gets its own hidden console (CreateNoWindow). Two Git Bash trees on one
-# console, these steps' and the Java tests' on the main thread, can deadlock in the MSYS2
-# runtime (Git for Windows 2.55, msys-2.0.dll 3.6.10): a shell waits forever on a docker
-# that has already exited. A PC repro hung 4 of 4 times on a shared console, with or without
-# MSYS=disable_pcon, and 0 of 4 with this job's shells in their own console. The shell merges
-# stderr into stdout itself, keeping the order. A step still running after 20 minutes (they
-# take about a minute) is killed and fails the build by name with the output it had written.
-# MSYS execs break the Windows parent chain, so a grandchild may survive the kill and hold
-# the pipes open; the output is therefore copied as it arrives and read with a time limit.
-$nativeJob = Start-ThreadJob -ArgumentList $GitSh, $NativeSteps -ScriptBlock {
-    param($GitSh, $Steps)
+# Each step runs through Invoke-IsolatedProcess: its shell gets its own hidden console. Two Git
+# Bash trees on one console, these steps' and the Java tests' on the main thread, can deadlock
+# in the MSYS2 runtime (Git for Windows 2.55, msys-2.0.dll 3.6.10): a shell waits forever on a
+# docker that has already exited. A PC repro hung 4 of 4 times on a shared console, with or
+# without MSYS=disable_pcon, and 0 of 4 with this job's shells in their own console. The shell
+# writes the step's stdout and stderr, in order, to a file in the scratch tree, read after the
+# step exits (asynchronous pipe reads came back empty inside the build). A step still running
+# after 20 minutes (they take about a minute) is killed and fails the build by name with the
+# output it had written.
+$nativeJob = Start-ThreadJob -ArgumentList $GitSh, $NativeSteps, $ScratchRoot, "$PSScriptRoot/PackageTools.ps1" -ScriptBlock {
+    param($GitSh, $Steps, $ScratchRoot, $PackageTools)
+    . $PackageTools
+    $index = 0
     foreach ($step in $Steps) {
-        $psi = [System.Diagnostics.ProcessStartInfo]::new($GitSh)
-        foreach ($arg in @('-c', 'exec sh "$@" 2>&1', 'sh') + $step) { $psi.ArgumentList.Add($arg) }
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.RedirectStandardInput = $true               # a real, empty stdin for MSYS tools
-        $process = [System.Diagnostics.Process]::Start($psi)
-        $process.StandardInput.Close()
-        $buffers = @([System.IO.MemoryStream]::new(), [System.IO.MemoryStream]::new())
-        $copies = @($process.StandardOutput.BaseStream.CopyToAsync($buffers[0]),
-                    $process.StandardError.BaseStream.CopyToAsync($buffers[1]))
-        $finished = $process.WaitForExit(20 * 60 * 1000)
-        if (-not $finished) { $process.Kill($true); $process.WaitForExit() }
-        $null = [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$copies, 10000)
-        $text = ($buffers | ForEach-Object { [System.Text.Encoding]::UTF8.GetString($_.ToArray()) }) -join ''
-        $output = @($text -split '\r?\n' | Where-Object { $_ -ne '' })
-        if (-not $finished) { $output += 'Native step timed out after 20 minutes and was killed.' }
-        $exitCode = $(if ($finished) { $process.ExitCode } else { 124 })
-        [pscustomobject]@{ Step = $step -join ' '; ExitCode = $exitCode; Output = $output }
-        if ($exitCode -ne 0) { break }
+        $index++
+        $outFile = Join-Path $ScratchRoot "native-step-$index.output.txt"
+        $run = Invoke-IsolatedProcess -Exe $GitSh -OutputFile $outFile -TimeoutMs (20 * 60 * 1000) `
+            -Arguments (@('-c', 'out=$1; shift; exec sh "$@" > "$out" 2>&1', 'sh', $outFile.Replace('\','/')) + $step)
+        $output = @($run.Output | Where-Object { $_ -ne '' })
+        if ($run.TimedOut) { $output += 'Native step timed out after 20 minutes and was killed.' }
+        [pscustomobject]@{ Step = $step -join ' '; ExitCode = $run.ExitCode; Output = $output }
+        if ($run.ExitCode -ne 0) { break }
     }
 }
 # Until the native steps are collected, a failure here must also stop them, or they go on

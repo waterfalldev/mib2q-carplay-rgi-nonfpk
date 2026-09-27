@@ -439,6 +439,24 @@ static void fallback_on_incomplete_framebuffer(void) {
     reset_refusals();
 }
 
+/* A MOST content size equal to the platform framebuffer has no smaller size to fall back to:
+ * a failure at 1x falls back to the platform scale and is not tried again. */
+static void fallback_same_size_to_platform_scale(void) {
+    const char *what = "same-size fallback";
+    render_set_output(0, 0, 0, 0, 0, 0, 0);
+    reset_refusals();
+    g_incomplete_at_ss_w = 328;
+    render_set_output(328, 181, 0, 0, 328, 181, 1);
+    expect_render_size(what, 328, 181, 525, 290, 525, 290);
+    check(g_refused_w == 328 && g_refused_h == 181, "%s: 328x181 at 1x refused", what);
+    g_allocs = 0;
+    check(render_set_output(328, 181, 0, 0, 328, 181, 1) == 0 && g_allocs == 0,
+          "%s: the platform-scale fallback is kept (%d allocations)", what, g_allocs);
+    g_incomplete_at_ss_w = 0;
+    render_set_output(0, 0, 0, 0, 0, 0, 0);
+    reset_refusals();
+}
+
 /* A size over the GL's texture/renderbuffer limit is refused before anything is allocated;
  * an unreported limit (0) refuses nothing. */
 static void gl_limit(void) {
@@ -517,6 +535,7 @@ int main(void) {
     overlay_scissor_is_closed();
     fallback_on_out_of_memory();
     fallback_on_incomplete_framebuffer();
+    fallback_same_size_to_platform_scale();
     gl_limit();
     capture_writes_window();
     /* win_w <= 0 restores the upstream window-filling pass. */

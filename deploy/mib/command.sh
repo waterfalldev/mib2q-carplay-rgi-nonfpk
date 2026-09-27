@@ -157,9 +157,11 @@ install|rollback)
 esac
 
 # Only a fully completed install with result 0 may change ACTION.  This follow-up
-# setting does not change the install result, which is reported last, below.
+# setting does not change the install result, which is reported last, below; the
+# interim line shows it first, so an SD write that stalls the save cannot hide it.
 # Rollback and any install/cleanup failure leave ACTION unchanged.
     if [ "$CPRGI_ACTION" = "install" ] && [ "$CPRGI_RC" = "0" ]; then
+        echo "[RGI] Installed (result 0). Saving ACTION=rollback..."
         if on -f mmx /bin/sh -c '
             PATH=${PATH:+$PATH:}/proc/boot:/bin:/usr/bin:/usr/sbin:/sbin:/mnt/app/armle/bin:/mnt/app/armle/sbin:/mnt/app/armle/usr/bin:/mnt/app/armle/usr/sbin
             export PATH

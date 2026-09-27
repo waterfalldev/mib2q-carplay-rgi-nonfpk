@@ -618,6 +618,14 @@ exit 0
             Assert ($outputText.IndexOf('[RGI] Next run: Rollback') -lt $outputText.IndexOf('[RGI] Success: 0')) 'the ACTION change is reported before the result'
             Assert ($outputText.Contains('[RGI] Next run: Rollback')) 'success tells the operator the next run uninstalls'
         }
+        # A stalled SD write in the ACTION save must not hide a completed install.
+        $savingAt = $outputText.IndexOf('[RGI] Installed (result 0). Saving ACTION=rollback...')
+        if ($expected -eq 0 -and $scenario -notlike 'rollback*') {
+            $savedAt = [Math]::Max($outputText.IndexOf('[RGI] Next run: Rollback'), $outputText.IndexOf('[RGI] ERROR! Installed, but ACTION=rollback'))
+            Assert ($savingAt -ge 0 -and $savingAt -lt $savedAt) "$scenario shows the install result before the ACTION save"
+        } else {
+            Assert ($savingAt -lt 0) "$scenario does not claim a completed install"
+        }
         if ($scenario -like 'action-*-fails') {
             Assert ($outputText.Contains('[RGI] ERROR! Installed, but ACTION=rollback could not be saved')) 'ACTION publication failure is explicit'
             Assert ($outputText.Contains('[RGI] Success: 0') -and -not $outputText.Contains('[RGI] Failed')) 'setting failure does not rewrite the completed install result'
@@ -983,35 +991,26 @@ $results = @{}
 foreach ($phase in @(1, 2)) {
     $batch = @($units | Where-Object { $_.Phase -eq $phase } |
         Sort-Object @{ Expression = { $i = [Array]::IndexOf($slowFirst, $_.Name); if ($i -lt 0) { 999 } else { $i } } })
-    # Each unit runs in its own hidden console (CreateNoWindow).  Units run Git Bash, and
-    # Git Bash trees of concurrent units on one console can deadlock in the MSYS2 runtime
-    # (msys-2.0.dll 3.6.10): on 27 September a unit's bash waited for good on the shared
+    # Each unit runs through Invoke-IsolatedProcess, in its own hidden console.  Units run Git
+    # Bash, and Git Bash trees of concurrent units on one console can deadlock in the MSYS2
+    # runtime (msys-2.0.dll 3.6.10): on 27 September a unit's bash waited for good on the shared
     # console (see Build-Snapshot's native steps).  The unit writes every stream to its own
-    # file, read after it exits: no output pipes for a leftover process to hold open and no
-    # asynchronous reads (inside a package build those came back empty for 10 units).  Its
-    # stdin is an empty pipe: MSYS tools need a valid handle 0 (cksum fails "failed to set
-    # file descriptor text/binary mode" without one).  A unit still running after 10 minutes
-    # (the slowest takes ~25 s) is killed and fails by name with the output it had written.
+    # file, read after it exits (inside a package build asynchronous reads came back empty for
+    # 10 units).  A unit still running after 10 minutes (the slowest takes ~25 s) is killed and
+    # fails by name with the output it had written.
     $batch | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
+        . "$using:PSScriptRoot/../PackageTools.ps1"
         $unitName = $_.Name
         $clock = [Diagnostics.Stopwatch]::StartNew()
         $outFile = Join-Path $using:testRoot ($unitName + '.unit-output.txt')
         $out = "'" + $outFile.Replace("'", "''") + "'"
         $command = 'try { ' + $using:unitCall + " -Unit '" + $unitName + "' *> " + $out + '; exit $LASTEXITCODE } ' +
             'catch { $_ | Out-String | Add-Content -LiteralPath ' + $out + '; exit 1 }'
-        $psi = [System.Diagnostics.ProcessStartInfo]::new($using:pwshPath)
-        foreach ($arg in @('-NoProfile', '-NonInteractive', '-Command', $command)) { $psi.ArgumentList.Add($arg) }
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        $psi.RedirectStandardInput = $true
-        $process = [System.Diagnostics.Process]::Start($psi)
-        $process.StandardInput.Close()
-        $finished = $process.WaitForExit(10 * 60 * 1000)
-        if (-not $finished) { $process.Kill($true); $process.WaitForExit() }
-        $output = @(if (Test-Path -LiteralPath $outFile) { Get-Content -LiteralPath $outFile })
-        if (-not $finished) { $output += 'Installer test unit timed out after 10 minutes and was killed.' }
-        [pscustomobject]@{ Name = $unitName; ExitCode = $(if ($finished) { $process.ExitCode } else { 124 });
-            Output = $output; Seconds = $clock.Elapsed.TotalSeconds }
+        $run = Invoke-IsolatedProcess -Exe $using:pwshPath -OutputFile $outFile -TimeoutMs (10 * 60 * 1000) `
+            -Arguments @('-NoProfile', '-NonInteractive', '-Command', $command)
+        $output = $run.Output
+        if ($run.TimedOut) { $output += 'Installer test unit timed out after 10 minutes and was killed.' }
+        [pscustomobject]@{ Name = $unitName; ExitCode = $run.ExitCode; Output = $output; Seconds = $clock.Elapsed.TotalSeconds }
     } | ForEach-Object { $results[$_.Name] = $_ }
 }
 

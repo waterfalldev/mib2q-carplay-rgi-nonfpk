@@ -1238,9 +1238,13 @@ static int resize_targets(int fb_width, int fb_height, float scale, float mask_s
 static int apply_render_size(void) {
     int w = g_base_w, h = g_base_h;
     int most = g_out_win_w > 0 && g_out_opaque;
-    float scale = most ? MOST_RENDER_SCALE : SSAA_SCALE;
-    float mask_scale = scale < MASK_MIN_SCALE && most ? MASK_MIN_SCALE : scale;
-    if (most && !(g_out_w == g_refused_w && g_out_h == g_refused_h)) {
+    int refused = most && g_out_w == g_refused_w && g_out_h == g_refused_h;
+    /* A refused content size equal to the platform framebuffer fell back to the platform
+     * scale (the only other targets at that size). */
+    int platform = !most || (refused && g_out_w == g_base_w && g_out_h == g_base_h);
+    float scale = platform ? SSAA_SCALE : MOST_RENDER_SCALE;
+    float mask_scale = !platform && scale < MASK_MIN_SCALE ? MASK_MIN_SCALE : scale;
+    if (most && !refused) {
         w = g_out_w;
         h = g_out_h;
     }
@@ -1251,12 +1255,14 @@ static int apply_render_size(void) {
                 g_win_w, g_win_h, g_ss_w, g_ss_h, g_fbo_w, g_fbo_h, targets_mb());
         return 1;
     }
-    if (w != g_base_w || h != g_base_h) {
+    if (w != g_base_w || h != g_base_h || scale != SSAA_SCALE) {
+        int same = w == g_base_w && h == g_base_h;
         g_refused_w = w;
         g_refused_h = h;
         fprintf(stderr, "render: %dx%d render targets failed; falling back to %dx%d\n",
                 w, h, g_base_w, g_base_h);
-        if (resize_targets(g_base_w, g_base_h, scale, mask_scale) == 0) {
+        if (resize_targets(g_base_w, g_base_h, same ? SSAA_SCALE : scale,
+                           same ? SSAA_SCALE : mask_scale) == 0) {
             fprintf(stderr, "render: rendering %dx%d (frame %dx%d, masks %dx%d, %.1f MB offscreen)\n",
                     g_win_w, g_win_h, g_ss_w, g_ss_h, g_fbo_w, g_fbo_h, targets_mb());
             return 1;
@@ -1468,6 +1474,7 @@ static void sync_camera_uniforms(void) {
 
 void render_begin_frame(void) {
     double now=viewport_now();
+    g_mask_skip = 0;                  /* a mask painting that never ended must not skip more */
     cr_rect_animate(&g_visible_area,now);
     cr_rect_animate(&g_content_offset,now);
     /* Render into 2x supersample FBO */
@@ -1515,6 +1522,7 @@ void render_get_content_framing(float *x,float *y,float *dolly) {
 
 void render_begin_overlay(cr_rect_t clip) {
     float identity[16]={0};
+    g_mask_skip = 0;                  /* overlays are never mask painting */
     identity[0]=identity[5]=identity[10]=identity[15]=1;
     use_flat_program(3.0f);
     render_set_mask_entry_fade(0,0);
@@ -1681,6 +1689,7 @@ void render_sync_camera(void) {
 
 void render_end_frame(void) {
     static const float quad[] = { -1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1 };
+    g_mask_skip = 0;                  /* pass 2's blit is a flat draw, never mask painting */
 
     /* Pass 1: FXAA on SSAA FBO → FXAA FBO (same resolution, smoothed edges) */
 #if FXAA_ENABLED
