@@ -56,6 +56,7 @@ image=$(docker image inspect --format '{{.Id}}' "$image")
 printf '%s\n' "$image" > "$JAVA_OUTPUT/java-image-id.txt"
 case "$mode" in
     build) exec docker "${args[@]}" "$image" bash /src/scripts/java/build.sh ;;
+    build-tests) exec docker "${args[@]}" "$image" bash /src/scripts/test_java_build.sh --inside ;;
     test) exec docker "${args[@]}" -e "JAVA_SKIP_BUILD=${JAVA_SKIP_BUILD:-0}" "$image" bash -ec '
         [ "$JAVA_SKIP_BUILD" = 1 ] || bash /src/scripts/java/build.sh
         exec bash /src/scripts/java/test.sh "$@"

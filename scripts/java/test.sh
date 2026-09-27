@@ -94,20 +94,29 @@ queue() {
     if [ "$active" -ge "$JOBS" ]; then wait -n; active=$((active - 1)); fi
 }
 
-route_sources=(VCTextScrollTest RouteInfoPresentationTest RendererMapperDirectionTest
-    RouteGuidanceDeltaTest DistanceBargraphChainTest KomoGraphicsStateTest
-    ManeuverParityTest RendererViewportTest ClusterKdkSyncTest ClusterKdkBapChainTest
-    ClusterKdkRendererLifecycleTest LaneGuidanceTransportTest LaneGuidanceLifecycleTest
-    RgiDeliveryRecoveryTest CurrentPositionDeliveryTest RouteInfoTimeoutTest
-    CurrentPositionStockChainTest ManeuverChainAudit RgdTeardownTest NativeGuidanceGateTest
-    NativeGuidanceStateTest MostArrowsTest MostViewHandshakeTest ClusterOwnershipTest ClusterCoreTest)
-transport_sources=(TouchpadControllerTest CarplayBusTransportTest RendererServerTransportTest GatedCombiServiceInitStateTest)
+# Declare each ordinary suite once, for both compilation and execution. Keep the
+# special resource/wire arguments and isolated lifecycle/PDC fixtures explicit.
+route_verified=(RouteInfoPresentationTest RendererMapperDirectionTest RouteGuidanceDeltaTest)
+route_stock=(DistanceBargraphChainTest ManeuverParityTest RendererViewportTest
+    ClusterKdkSyncTest ClusterKdkBapChainTest ClusterKdkRendererLifecycleTest
+    com.luka.carplay.rgd.LaneGuidanceLifecycleTest com.luka.carplay.rgd.RgiDeliveryRecoveryTest
+    com.luka.carplay.rgd.CurrentPositionDeliveryTest com.luka.carplay.rgd.RouteInfoTimeoutTest
+    com.luka.carplay.core.RgdTeardownTest com.luka.carplay.core.NativeGuidanceGateTest
+    NativeGuidanceStateTest MostArrowsTest MostViewHandshakeTest ClusterOwnershipTest
+    com.luka.carplay.core.ClusterCoreTest)
+route_runtime=(KomoGraphicsStateTest com.luka.carplay.rgd.CurrentPositionStockChainTest)
+transport_plain=(TouchpadControllerTest com.luka.carplay.bus.CarplayBusTransportTest
+    com.luka.carplay.rgd.RendererServerTransportTest)
+pdc_suites=(PdcResourcePolicyTest PdcExternalEventsTest OpsAudioDrawerTest OpsStatusLineTest)
 sources=()
 if [ "$GROUP" = all ] || [ "$GROUP" = route ]; then
-    for suite in "${route_sources[@]}"; do sources+=("$TESTS/$suite.java"); done
+    for main in VCTextScrollTest LaneGuidanceTransportTest ManeuverChainAudit \
+        "${route_verified[@]}" "${route_stock[@]}" "${route_runtime[@]}"; do
+        sources+=("$TESTS/${main##*.}.java")
+    done
 fi
 if [ "$GROUP" = all ] || [ "$GROUP" = transports ]; then
-    for suite in "${transport_sources[@]}"; do sources+=("$TESTS/$suite.java"); done
+    for main in "${transport_plain[@]}" GatedCombiServiceInitStateTest; do sources+=("$TESTS/${main##*.}.java"); done
 fi
 if [ ${#sources[@]} -gt 0 ]; then
     compile classes "$HOST_CP" "${sources[@]}"
@@ -117,24 +126,19 @@ if [ "$GROUP" = all ] || [ "$GROUP" = route ]; then
     unicode_args=()
     if [ -n "${VC_UNICODE_TEST_DIR:-}" ]; then unicode_args+=("$VC_UNICODE_TEST_DIR"); fi
     queue VCTextScrollTest "$classes:$PATCH_JAR" com.luka.carplay.rgd.VCTextScrollTest yes '' "${unicode_args[@]}"
-    for suite in RouteInfoPresentationTest RendererMapperDirectionTest RouteGuidanceDeltaTest; do
-        queue "$suite" "$classes:$HOST_CP" "$suite" yes ''
+    for main in "${route_verified[@]}"; do
+        queue "${main##*.}" "$classes:$HOST_CP" "$main" yes ''
     done
-    for suite in DistanceBargraphChainTest ManeuverParityTest RendererViewportTest ClusterKdkSyncTest ClusterKdkBapChainTest ClusterKdkRendererLifecycleTest; do
-        queue "$suite" "$classes:$HOST_CP" "$suite" no ''
-    done
-    queue KomoGraphicsStateTest "$classes:$RUNTIME_CP" KomoGraphicsStateTest no ''
-    queue LaneGuidanceTransportTest "$classes:$HOST_CP" com.luka.carplay.rgd.LaneGuidanceTransportTest no '' "$JAVA_OUTPUT/lane-guidance-wire.bin"
-    for suite in LaneGuidanceLifecycleTest RgiDeliveryRecoveryTest CurrentPositionDeliveryTest RouteInfoTimeoutTest; do
-        queue "$suite" "$classes:$HOST_CP" "com.luka.carplay.rgd.$suite" no ''
-    done
-    queue CurrentPositionStockChainTest "$classes:$RUNTIME_CP" com.luka.carplay.rgd.CurrentPositionStockChainTest no ''
-    for main in com.luka.carplay.core.RgdTeardownTest com.luka.carplay.core.NativeGuidanceGateTest NativeGuidanceStateTest MostArrowsTest MostViewHandshakeTest ClusterOwnershipTest com.luka.carplay.core.ClusterCoreTest; do
+    for main in "${route_stock[@]}"; do
         queue "${main##*.}" "$classes:$HOST_CP" "$main" no ''
     done
+    for main in "${route_runtime[@]}"; do
+        queue "${main##*.}" "$classes:$RUNTIME_CP" "$main" no ''
+    done
+    queue LaneGuidanceTransportTest "$classes:$HOST_CP" com.luka.carplay.rgd.LaneGuidanceTransportTest no '' "$JAVA_OUTPUT/lane-guidance-wire.bin"
 fi
 if [ "$GROUP" = all ] || [ "$GROUP" = transports ]; then
-    for main in TouchpadControllerTest com.luka.carplay.bus.CarplayBusTransportTest com.luka.carplay.rgd.RendererServerTransportTest; do
+    for main in "${transport_plain[@]}"; do
         queue "${main##*.}" "$classes:$PATCH_JAR" "$main" yes ''
     done
     queue GatedCombiServiceInitStateTest "$classes:$PATCH_JAR:$STOCK_JAR" com.luka.carplay.rgd.GatedCombiServiceInitStateTest yes ''
@@ -159,10 +163,11 @@ if [ "$GROUP" = all ] || [ "$GROUP" = transports ] || [ "$GROUP" = pdc ]; then
         "$STUBS/pdc/de/esolutions/hmi/widgets/audi/base/AbstractScreenWidget.java"
     pdc_stubs=$COMPILED_DIR
     pdc_base="$pdc_stubs:$PATCH_JAR:$STOCK_RUNTIME_JAR:$OSGI:$ASM"
-    compile pdc-tests "$pdc_base" "$TESTS/PdcResourcePolicyTest.java" \
-        "$TESTS/PdcExternalEventsTest.java" "$TESTS/OpsAudioDrawerTest.java" "$TESTS/OpsStatusLineTest.java"
+    sources=()
+    for suite in "${pdc_suites[@]}"; do sources+=("$TESTS/$suite.java"); done
+    compile pdc-tests "$pdc_base" "${sources[@]}"
     pdc_tests=$COMPILED_DIR
-    for suite in PdcResourcePolicyTest PdcExternalEventsTest OpsAudioDrawerTest OpsStatusLineTest; do
+    for suite in "${pdc_suites[@]}"; do
         queue "$suite" "$pdc_tests:$pdc_base" "$suite" yes ''
     done
     compile pdc-lifecycle "$pdc_base" "$CORE/CarPlayApp.java" "$CORE/Module.java" \
