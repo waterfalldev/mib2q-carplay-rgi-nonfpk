@@ -27,10 +27,10 @@ PROBE_SYS=/mnt/system/etc/eso/production/carplay-rgi-probe.$$
 PROBE_MODE_SMARTPHONE=$TARGET_SMARTPHONE.carplay-rgi-probe.$$
 PROBE_MODE_DIO=$TARGET_DIO.carplay-rgi-probe.$$
 
+# Detail goes to the log on the SD card only; the M.I.B. screen gets [RGI] lines.
 log() {
-    echo "$*"
     echo "$*" >> "$LOG" || {
-        echo "CarPlay-RGI ERROR: cannot append to $LOG; stopping."
+        echo "[RGI] ERROR! Cannot write $LOG"
         exit 1
     }
 }
@@ -43,6 +43,7 @@ cleanup_temps() {
 
 die() {
     log "ERROR: $*"
+    echo "[RGI] ERROR! $*"
     cleanup_temps
     log "No reboot was performed. If a commit had started, run the armed rollback before retrying."
     exit 1
@@ -107,13 +108,15 @@ reset_first_backup() {
 }
 
 [ -f "$LOG" ] || {
-    echo "Missing pre-created install log: $LOG"
+    echo "[RGI] ERROR! Missing install log file $LOG; copy the complete package."
     exit 1
 }
 cat /dev/null > "$LOG" || exit 1
+# Raw utility errors belong in the log too, not on the M.I.B. screen.
+exec 2>> "$LOG"
 log "CarPlay-RGI @@MU@@ install/update started."
 log "Package: @@PACKAGE_TAG@@ / @@PACKAGE_COMMIT@@"
-trap 'cleanup_temps; log "Interrupted; no reboot was performed"; exit 1' 1 2 3 15
+trap 'cleanup_temps; log "Interrupted; no reboot was performed"; echo "[RGI] ERROR! Interrupted"; exit 1' 1 2 3 15
 
 [ -d "$PKG" ] || die "Package directory is missing"
 [ -f "$SD_SMARTPHONE" ] || die "Pre-created SD smartphone backup file is missing"

@@ -355,7 +355,7 @@ $settleFailsBody = {
 # subshell with a simulated SD; do not replace lock acquisition with success.
 $dispatcherSource = if ($DispatcherScript) { $DispatcherScript } else { Join-Path $PackageDirectory 'sdcard/mod/custom.sh' }
 $dispatcherTemplate = [IO.File]::ReadAllText($dispatcherSource)
-$autoRollback = $dispatcherTemplate.Contains('ACTION is now rollback')
+$autoRollback = $dispatcherTemplate.Contains('Next run: Rollback')
 $dispatcherScenarios = @('invalid-action','action-fails','lock-held',
     'lock-io-fails','readonly-fails','app-ro-fails','sd-rw-fails','app-rw-fails',
     'sys-rw-fails','release-fails','missing-utility','normal','rollback','rollback-slots-full',
@@ -477,6 +477,10 @@ exit 0
     Assert ($LASTEXITCODE -eq 0) "$scenario returns to M.I.B. caller"
     $outputText = $output -join "`n"
     WriteText (Join-Path $root 'dispatcher-output.txt') $outputText
+    $consoleNoise = @($output | ForEach-Object { $_.ToString() } | Where-Object { $_ -match '\S' -and $_ -notmatch '^\[RGI\] ' })
+    Assert ($consoleNoise.Count -eq 0) "$scenario shows only [RGI] lines on the M.I.B. screen$(if ($consoleNoise.Count) { ': ' + ($consoleNoise -join ' | ') })"
+    $resultLines = if ($scenario -eq 'two-runs') { 2 } else { 1 }
+    Assert (@($output | Where-Object { $_ -match '^\[RGI\] (Success: 0|Failed: [1-9][0-9]*)$' }).Count -eq $resultLines) "$scenario reports one [RGI] result line per run"
     $trace = Get-Content -Raw (Join-Path $root 'trace.txt')
     $expected = if ($scenario -in @('normal','rollback','rollback-slots-full','rollback-collector-hangs','two-runs',
         'action-stage-fails','action-rename-fails','action-sync-fails','action-settle-fails','action-readback-fails')) {0} else {1}
@@ -493,11 +497,11 @@ exit 0
     }
     if ($scenario -eq 'lock-io-fails') {
         Assert ($outputText.Contains('simulated I/O error')) 'raw lock failure reaches M.I.B. output'
-        Assert ($outputText.Contains('could not create SD lock')) 'I/O failure is not described as a held lock'
-        Assert (-not $outputText.Contains('SD lock path exists')) 'no false lock ownership diagnosis'
+        Assert ($outputText.Contains('[RGI] ERROR! Could not create the SD lock: ')) 'I/O failure is not described as a held lock'
+        Assert (-not $outputText.Contains('Another action holds the SD lock')) 'no false lock ownership diagnosis'
     }
     if ($scenario -eq 'missing-utility') {
-        Assert ($outputText.Contains('required MMX utility is missing: cksum')) 'missing command named before firmware remount'
+        Assert ($outputText.Contains('[RGI] ERROR! Missing MMX tool: cksum')) 'missing command named before firmware remount'
     }
     if ($scenario -in @('normal','rollback','rollback-slots-full','rollback-collector-hangs','action-fails','readonly-fails','app-ro-fails')) {
         Assert ($trace.IndexOf('mount -uw ' + $p + '/sd') -lt $trace.IndexOf('lock-acquire ')) 'SD writable before lock'
@@ -521,12 +525,12 @@ exit 0
         Assert (@(Get-ChildItem (Join-Path $root 'sd/mod/carplay-rgi') -Filter 'ACTION.next.*').Count -eq 0) "$scenario cleans its ACTION staging file"
         if ($scenario -eq 'normal') {
             Assert ($trace.IndexOf('action-publish ') -gt $trace.IndexOf('lock-release ')) 'ACTION changes only after successful lock release'
-            Assert ($outputText.IndexOf('action: install; result: 0') -lt $outputText.IndexOf('ACTION is now rollback')) 'result 0 is reported before ACTION changes'
-            Assert ($outputText.Contains('ACTION is now rollback')) 'success tells the operator the next run uninstalls'
+            Assert ($outputText.IndexOf('[RGI] Success: 0') -lt $outputText.IndexOf('[RGI] Next run: Rollback')) 'result 0 is reported before ACTION changes'
+            Assert ($outputText.Contains('[RGI] Next run: Rollback')) 'success tells the operator the next run uninstalls'
         }
         if ($scenario -like 'action-*-fails') {
-            Assert ($outputText.Contains('ACTION=rollback could not be saved and verified')) 'ACTION publication failure is explicit'
-            Assert ($outputText.Contains('action: install; result: 0') -and $outputText.Contains('WARNING: install result remains 0')) 'setting failure does not rewrite the completed install result'
+            Assert ($outputText.Contains('[RGI] ERROR! Installed, but ACTION=rollback could not be saved')) 'ACTION publication failure is explicit'
+            Assert ($outputText.Contains('[RGI] Success: 0') -and -not $outputText.Contains('[RGI] Failed')) 'setting failure does not rewrite the completed install result'
         }
         if ($expected -ne 0) {
             Assert (-not $trace.Contains('action-publish ')) "$scenario never publishes rollback after a failed action"
@@ -565,16 +569,16 @@ exit 0
             (Get-Content -Raw (Join-Path $capture 'dmdt-gc.txt')).Contains('simulated dmdt gc') -and
             (Get-Content -Raw (Join-Path $capture 'dmdt-gs.txt')).Contains('simulated dmdt gs') -and
             (Get-Content -Raw (Join-Path $capture 'dmdt-gd.txt')).Contains('simulated dmdt gd')) 'rollback snapshot retains RCC and dmdt diagnostics'
-        Assert ($outputText.Contains('logs captured before rollback')) 'M.I.B. output reports the capture'
+        Assert ($outputText.Contains('[RGI] Logs saved to mod/carplay-rgi-runtime-logs')) 'M.I.B. output reports the capture'
     }
     if ($scenario -eq 'rollback-slots-full') {
-        Assert ($outputText.Contains('all nine capture slots are occupied')) 'full capture slots are reported'
-        Assert ($outputText.Contains('WARNING: logs were not fully captured before rollback')) 'failed capture is flagged on the M.I.B. screen'
+        Assert ((Get-Content -Raw (Join-Path $root 'sd/mod/carplay-rgi-collect.out')).Contains('All 9 capture slots are full')) 'full capture slots are recorded in the capture output file'
+        Assert ($outputText.Contains('[RGI] ERROR! Logs only partly saved')) 'failed capture is flagged on the M.I.B. screen'
         Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/10'))) 'no capture slot beyond 09 is invented'
     }
     if ($scenario -eq 'rollback-collector-hangs') {
-        Assert ($outputText.Contains('log capture did not finish within 60 s and was stopped')) 'a hung capture is stopped by the watchdog'
-        Assert ($outputText.Contains('WARNING: logs were not fully captured before rollback')) 'a stopped capture is flagged on the M.I.B. screen'
+        Assert ((Get-Content -Raw (Join-Path $root 'sd/mod/carplay-rgi-collect.out')).Contains('did not finish within 60 s and was stopped')) 'a hung capture is stopped by the watchdog'
+        Assert ($outputText.Contains('[RGI] ERROR! Log capture timed out after 60 s')) 'a stopped capture is flagged on the M.I.B. screen'
         Assert ($elapsed -lt 20) "a hung capture does not hold the rollback (dispatcher returned in $([int]$elapsed) s with a 30 s hang)"
     }
 }
@@ -648,7 +652,7 @@ exit 0
     Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi'))) "standalone $scenario needs no package"
     Assert (-not $trace.Contains('/mnt/')) "standalone $scenario never remounts firmware"
     if ($scenario -in @('sourced','executed','lock-cleanup-fails')) {
-        Assert ($trace.Contains('RETURNED:0') -and $outputText.Contains('ARMED: capture 01') -and $outputText.Contains('arming result: 0')) "standalone $scenario reports successful arming"
+        Assert ($trace.Contains('RETURNED:0') -and $outputText.Contains('[RGI] Capture 01 armed. Return to CarPlay now.') -and $outputText.Contains('[RGI] Success: 0')) "standalone $scenario reports successful arming"
         Assert ($trace.Contains('RETURNED-BEFORE-COMPLETION')) "standalone $scenario returns while its worker is still waiting"
         Assert ($trace.Contains("on -f mmx /bin/sh $p/sd/mod/command.sh arm") -and $trace.Contains("on -d -s -f mmx /bin/sh $p/sd/mod/command.sh background 01")) "standalone $scenario detaches its MMX worker into a new process group"
         $capture = Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/01'
@@ -664,7 +668,7 @@ exit 0
             Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/.live-active'))) "standalone $scenario releases its active lock after completion"
         }
         if ($scenario -eq 'sourced') {
-            Assert ($trace.Contains('DUPLICATE:1') -and $outputText.Contains('already active or awaiting inspection')) 'a second sourced launch refuses an active capture'
+            Assert ($trace.Contains('DUPLICATE:1') -and $outputText.Contains('[RGI] ERROR! A capture is already running or awaiting inspection')) 'a second sourced launch refuses an active capture'
             Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/02'))) 'a refused duplicate does not reserve another slot'
             Assert ($trace.Contains('DUPLICATE-WORKER:1')) 'a second worker cannot reopen the reserved capture'
             Assert ($trace.Contains('WORKER-SURVIVED-HUP')) 'the detached worker survives hangup after arming'
@@ -674,12 +678,12 @@ exit 0
         if ($scenario -ne 'worker-launch-fails') {
             Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/01/RESULT'))) "standalone $scenario claims no completed capture"
         }
-        Assert (-not $outputText.Contains('ARMED:')) "standalone $scenario does not claim successful arming"
+        Assert (-not $outputText.Contains('armed. Return to CarPlay')) "standalone $scenario does not claim successful arming"
         if ($scenario -in @('sd-rw-fails','invalid-argument')) {
             Assert (-not $trace.Contains('on -f')) "standalone $scenario does not dispatch"
         }
         if ($scenario -eq 'slots-full') {
-            Assert ($outputText.Contains('all nine capture slots are occupied')) 'standalone explains full slots'
+            Assert ($outputText.Contains('[RGI] ERROR! All 9 capture slots are full')) 'standalone explains full slots'
             Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/.live-active'))) 'full capture slots do not leave a reservation lock'
         }
         if ($scenario -eq 'worker-launch-fails') {

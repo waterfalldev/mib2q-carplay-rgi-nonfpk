@@ -23,10 +23,10 @@ PROBE_MODE_DIO=$TARGET_DIO.carplay-rgi-probe.$$
 # The renderer's GL program-binary cache (common/gl_program_cache.h GLPC_DIR).
 GL_CACHE=/mnt/persist/var/app/luka_carplay_maneuver
 
+# Detail goes to the log on the SD card only; the M.I.B. screen gets [RGI] lines.
 log() {
-    echo "$*"
     echo "$*" >> "$LOG" || {
-        echo "CarPlay-RGI ERROR: cannot append to $LOG; stopping."
+        echo "[RGI] ERROR! Cannot write $LOG"
         exit 1
     }
 }
@@ -38,6 +38,7 @@ cleanup_temps() {
 
 die() {
     log "ERROR: $*"
+    echo "[RGI] ERROR! $*"
     cleanup_temps
     log "No reboot was performed."
     exit 1
@@ -142,13 +143,15 @@ remove_gl_cache() {
 }
 
 [ -f "$LOG" ] || {
-    echo "Missing pre-created rollback log: $LOG"
+    echo "[RGI] ERROR! Missing rollback log file $LOG; copy the complete package."
     exit 1
 }
 cat /dev/null > "$LOG" || exit 1
+# Raw utility errors belong in the log too, not on the M.I.B. screen.
+exec 2>> "$LOG"
 log "CarPlay-RGI @@MU@@ rollback started."
 log "Package: @@PACKAGE_TAG@@ / @@PACKAGE_COMMIT@@"
-trap 'cleanup_temps; log "Interrupted; no reboot was performed"; exit 1' 1 2 3 15
+trap 'cleanup_temps; log "Interrupted; no reboot was performed"; echo "[RGI] ERROR! Interrupted"; exit 1' 1 2 3 15
 
 check_file "$PKG_OWNER" "@@OWNER_CKSUM@@" "@@OWNER_BYTES@@" "package owner marker" || die "Package owner marker failed validation"
 check_file "$PKG/rollback/smartphone_integrator.stock.json" "@@STOCK_SMARTPHONE_CKSUM@@" "@@STOCK_SMARTPHONE_BYTES@@" "package rollback smartphone" || die "Package rollback smartphone failed validation"

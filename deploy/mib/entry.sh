@@ -4,6 +4,6 @@
 if [ -r /net/mmx/fs/sda0/mod/custom.sh ]; then
     . /net/mmx/fs/sda0/mod/custom.sh
 else
-    echo "CarPlay-RGI refused: copy the complete prepared sdcard overlay."
+    echo "[RGI] ERROR! mod/custom.sh is missing. Copy the complete package overlay."
     return 1
 fi

@@ -581,7 +581,7 @@ without the exact installer-owned marker and valid on-unit backups.
     # Lock only on the SD filesystem, after its remount and before HU remounts.
     # QNX procnto /tmp does not support mkdir. Never regress to that scheme.
     $sdMountIndex = $MibCommandText.IndexOf('mount -uw /net/mmx/fs/sda0')
-    $lockIndex = $MibCommandText.IndexOf('if mkdir "$lock" 2>&1; then')
+    $lockIndex = $MibCommandText.IndexOf('if lock_error=`mkdir "$lock" 2>&1`; then')
     $appMountIndex = $MibCommandText.IndexOf('mount -uw /net/mmx/mnt/app')
     if (
         $MibCommandText.Contains('/tmp/carplay-rgi-install.lock') -or
@@ -599,7 +599,7 @@ without the exact installer-owned marker and valid on-unit backups.
     # directly under the rollback test.
     $collectBlock = [regex]::Match(
         $MibCommandText,
-        '(?s)if \[ "\$CPRGI_ACTION" = "rollback" \]; then\s*\n\s*if on -f mmx /bin/sh -c ''([^'']*)''; then')
+        '(?s)if \[ "\$CPRGI_ACTION" = "rollback" \]; then\s*\n\s*echo "\[RGI\] Saving logs\.\.\."\s*\n\s*on -f mmx /bin/sh -c ''([^'']*)''\s*\n\s*case \$\? in')
     $collectScript = $collectBlock.Groups[1].Value
     if (
         -not $collectBlock.Success -or
@@ -758,7 +758,7 @@ without the exact installer-owned marker and valid on-unit backups.
     if (
         $armRollbackIndex -le $MibCommandText.IndexOf('mount -ur /net/mmx/mnt/app') -or
         $armRollbackIndex -le $MibCommandText.LastIndexOf('rmdir /net/mmx/fs/sda0/mod/carplay-rgi-install.lock') -or
-        $armRollbackIndex -le $MibCommandText.IndexOf('echo "CarPlay-RGI action: $CPRGI_ACTION; result: $CPRGI_RC"') -or
+        $armRollbackIndex -le $MibCommandText.IndexOf('echo "[RGI] Success: 0"') -or
         -not $MibCommandText.Contains('mv -f "$next" "$action" || exit 1') -or
         -not $MibCommandText.Contains('[ "$1:$2" = "$expected_crc:9" ] || exit 1')
     ) {

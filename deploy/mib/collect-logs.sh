@@ -12,14 +12,19 @@
 case "${1:-}" in
     '')
         (
+            echo "[RGI] Starting Log Collection..."
             if ! mount -uw /net/mmx/fs/sda0; then
-                echo "CarPlay-RGI log collection refused: could not remount the SD card read-write."
+                echo "[RGI] ERROR! Could not make the SD card writable."
+                echo "[RGI] Failed: 1"
                 exit 1
             fi
             on -f mmx /bin/sh /net/mmx/fs/sda0/mod/command.sh arm
             result=$?
-            echo "CarPlay-RGI log arming result: $result (not the capture result)"
-            echo "SD output: /net/mmx/fs/sda0/mod/carplay-rgi-runtime-logs"
+            if [ "$result" = 0 ]; then
+                echo "[RGI] Success: 0"
+            else
+                echo "[RGI] Failed: $result"
+            fi
             exit "$result"
         )
         CPRGI_COLLECT_RC=$?
@@ -28,7 +33,7 @@ case "${1:-}" in
         ;;
     arm|background|live|manual|before-rollback) ;;
     *)
-        echo "CarPlay-RGI log collection refused: unknown argument: $1"
+        echo "[RGI] ERROR! Unknown argument: $1"
         return 1 2>/dev/null || exit 1
         ;;
 esac
@@ -64,17 +69,17 @@ trap release_live_lock 0
 
 for utility in cat cksum ls mkdir mv rm rmdir sleep sync; do
     command -v "$utility" >/dev/null 2>&1 || {
-        echo "CarPlay-RGI log collection refused: required MMX utility is missing: $utility"
+        echo "[RGI] ERROR! Missing MMX tool: $utility"
         exit 1
     }
 done
 
 if [ -L "$LOG_BASE" ]; then
-    echo "CarPlay-RGI log collection refused: output path is a symbolic link: $LOG_BASE"
+    echo "[RGI] ERROR! Log folder is a symbolic link: $LOG_BASE"
     exit 1
 fi
 mkdir -p "$LOG_BASE" || {
-    echo "CarPlay-RGI log collection refused: could not create $LOG_BASE"
+    echo "[RGI] ERROR! Could not create $LOG_BASE"
     exit 1
 }
 OUT=
@@ -91,7 +96,7 @@ if [ "$TRIGGER" = background ]; then
 else
     if [ "$TRIGGER" = arm ]; then
         if ! mkdir "$LIVE_LOCK" 2>/dev/null; then
-            echo "CarPlay-RGI live capture already active or awaiting inspection. Check .live-active and the numbered capture; no new capture started."
+            echo "[RGI] ERROR! A capture is already running or awaiting inspection (.live-active). No new capture started."
             exit 1
         fi
         LOCK_OWNED=1
@@ -100,7 +105,7 @@ else
         if [ ! -e "$LOG_BASE/$SLOT" ] && [ ! -L "$LOG_BASE/$SLOT" ]; then
             OUT=$LOG_BASE/$SLOT
             mkdir "$OUT" || {
-                echo "CarPlay-RGI log collection refused: could not create $OUT"
+                echo "[RGI] ERROR! Could not create $OUT"
                 exit 1
             }
             RUN=$SLOT
@@ -109,7 +114,7 @@ else
     done
 fi
 [ -n "$OUT" ] || {
-    echo "CarPlay-RGI log collection refused: all nine capture slots are occupied. Preserve them on the PC."
+    echo "[RGI] ERROR! All 9 capture slots are full. Copy them to the PC, then clear them."
     exit 1
 }
 SUMMARY=$OUT/summary.txt
@@ -129,9 +134,9 @@ else
     cat /dev/null > "$SUMMARY" || exit 1
 fi
 
+# Detail goes to summary.txt only; the M.I.B. screen gets [RGI] lines.
 record()
 {
-    echo "$*"
     echo "$*" >> "$SUMMARY" || exit 1
 }
 
@@ -311,6 +316,7 @@ if [ "$TRIGGER" = arm ]; then
             sync
         fi
         record "ERROR: detached launch failed; inspect worker-output.txt."
+        echo "[RGI] ERROR! Could not start the capture (see $OUT/worker-output.txt)."
         exit 1
     fi
     for ARM_SECOND in 0 1 2 3 4 5; do
@@ -318,12 +324,15 @@ if [ "$TRIGGER" = arm ]; then
             record "ARMED: capture $RUN. Return from Individual Script to CarPlay now."
             record "Recording begins after 30 seconds. Reproduce the ticking; leave the SD inserted and the unit on for at least three minutes."
             record "This is a launch acknowledgement, not collection success. Check RESULT and summary.txt afterwards."
+            echo "[RGI] Capture $RUN armed. Return to CarPlay now."
+            echo "[RGI] Recording starts in 30 s and takes about 2 min; keep the unit on for 3 min."
             exit 0
         fi
         [ "$ARM_SECOND" != 5 ] || break
         sleep 1 || exit 1
     done
     record "ERROR: background startup was not acknowledged within five seconds. Reservation retained; inspect the capture before retrying."
+    echo "[RGI] ERROR! Capture $RUN did not start within 5 s. Inspect it before retrying."
     exit 1
 fi
 
@@ -472,11 +481,13 @@ sync || {
 
 if [ "$COLLECT_ERROR" = 0 ]; then
     record "SUCCESS: runtime evidence copied to $OUT"
+    [ "$TRIGGER" = background ] || echo "[RGI] Logs saved to $OUT"
     sync || exit 1
     COLLECTION_COMPLETE=1
     exit 0
 fi
 
 record "PARTIAL: collection encountered one or more read or SD-write errors."
+[ "$TRIGGER" = background ] || echo "[RGI] ERROR! Logs only partly saved (see $SUMMARY)."
 sync
 exit 1
