@@ -366,17 +366,12 @@ fi
 # buffer: audio messages may use vendor-specific codes or omit audio keywords.
 # -t supplies millisecond timestamps; no -c (clear) or -w (wait indefinitely).
 # Capture early, before other probes can displace messages in the ring buffer.
+# MMX and RCC share this log: v18-v22's `on -f rcc sloginfo -t` returned the same
+# lines, read a moment later.
 if command -v sloginfo >/dev/null 2>&1; then
     collect_probe sloginfo-mmx.txt sloginfo -t
 else
     record "MISSING optional utility: sloginfo (MMX system/audio messages unavailable)"
-fi
-if [ "$TRIGGER" = live ] || [ "$TRIGGER" = background ]; then
-    record "SKIPPED live RCC system-log query: remote launch failed with ENOMEM in the vehicle capture; local MMX snapshots retained."
-elif command -v on >/dev/null 2>&1; then
-    collect_probe sloginfo-rcc.txt on -f rcc sloginfo -t
-else
-    record "MISSING optional utility: on (RCC system/audio messages unavailable)"
 fi
 
 collect_file /tmp/carplay_wrapper.log carplay_wrapper.log || COLLECT_ERROR=1

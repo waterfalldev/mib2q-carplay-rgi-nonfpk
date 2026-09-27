@@ -74,9 +74,7 @@ case "${0##*/}" in
         ;;
     on)
         echo "on $*" >> "$PROBE_TEST_ROOT/trace.txt"
-        if [ "$*" = "-f rcc sloginfo -t" ]; then
-            echo "00:05:12.347 RCC audio diagnostic"
-        elif [ "$1:$2:$3:$4:$5" = '-d:-s:-f:mmx:/bin/sh' ]; then
+        if [ "$1:$2:$3:$4:$5" = '-d:-s:-f:mmx:/bin/sh' ]; then
             [ "${SCENARIO:-}" != worker-launch-fails ] || exit 7
             [ "${SCENARIO:-}" != worker-no-ack ] || exit 0
             shift 5
@@ -663,10 +661,11 @@ exit 0
         $summary = Get-Content -Raw (Join-Path $capture 'summary.txt')
         Assert ($summary.Contains('Capture: 01 (trigger: before-rollback)')) 'capture records its trigger'
         Assert ($summary.Contains('SUCCESS: runtime evidence copied')) 'capture completes before the rollback'
-        Assert ((Get-Content -Raw (Join-Path $capture 'sloginfo-rcc.txt')).Contains('RCC audio diagnostic') -and
+        Assert ((Get-Content -Raw (Join-Path $capture 'sloginfo-mmx.txt')).Contains('io-audio: simulated underrun') -and
+            -not (Test-Path (Join-Path $capture 'sloginfo-rcc.txt')) -and
             (Get-Content -Raw (Join-Path $capture 'dmdt-gc.txt')).Contains('simulated dmdt gc') -and
             (Get-Content -Raw (Join-Path $capture 'dmdt-gs.txt')).Contains('simulated dmdt gs') -and
-            (Get-Content -Raw (Join-Path $capture 'dmdt-gd.txt')).Contains('simulated dmdt gd')) 'rollback snapshot retains RCC and dmdt diagnostics'
+            (Get-Content -Raw (Join-Path $capture 'dmdt-gd.txt')).Contains('simulated dmdt gd')) 'rollback snapshot retains the system log once and the dmdt diagnostics'
         Assert ($outputText.Contains('[RGI] Logs saved to mod/carplay-rgi-runtime-logs')) 'M.I.B. output reports the capture'
     }
     if ($scenario -eq 'rollback-slots-full') {
@@ -839,19 +838,16 @@ $audioBody = {
             }
         }
         Assert ($sampleChecks -notcontains $false) "$scenario preserves all six rounds of audio and renderer samples"
-        Assert (-not $trace.Contains('probe on -f rcc') -and -not $trace.Contains('probe dmdt') -and
-            $summary.Contains('SKIPPED live RCC system-log query') -and $summary.Contains('SKIPPED live dmdt queries')) "$scenario skips disruptive diagnostics and explains the omissions"
+        Assert (-not $trace.Contains('probe dmdt') -and $summary.Contains('SKIPPED live dmdt queries')) "$scenario skips disruptive diagnostics and explains the omissions"
     } else {
         Assert (-not (Test-Path (Join-Path $capture 'sloginfo-live-01.txt'))) "$scenario snapshot does not start live observation"
     }
     Assert ((Get-Content -Raw (Join-Path $capture 'carplay_java.log')) -eq "retained-java-log`n") "audio $scenario preserves the existing runtime capture"
     if ($scenario -eq 'missing') {
-        Assert ($summary.Contains('MMX system/audio messages unavailable') -and $summary.Contains('RCC system/audio messages unavailable')) 'missing audio tools are explicitly reported'
+        Assert ($summary.Contains('MMX system/audio messages unavailable')) 'missing audio tools are explicitly reported'
         Assert (-not (Test-Path (Join-Path $capture 'sloginfo-mmx.txt'))) 'missing tool produces no misleading empty audio log'
     } else {
-        if ($mode -ne 'live') {
-            Assert ((Get-Content -Raw (Join-Path $capture 'sloginfo-rcc.txt')).Contains('RCC audio diagnostic')) "audio $scenario retains the RCC snapshot"
-        }
+        Assert (-not (Test-Path (Join-Path $capture 'sloginfo-rcc.txt')) -and -not $trace.Contains('on -f rcc')) "audio $scenario reads the shared system log once"
         foreach ($process in @('io-audio','audio_service','maneuver_render')) {
             Assert ((Get-Content -Raw (Join-Path $capture "$process-sched.txt")).Contains("-p $process sched")) "audio $scenario captures $process scheduling"
         }
