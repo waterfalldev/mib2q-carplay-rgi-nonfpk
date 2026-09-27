@@ -22,7 +22,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #ifdef PLATFORM_QNX
-#include <sys/neutrino.h>     /* setprio() */
+#include <sys/neutrino.h>     /* getprio() */
 #endif
 
 #include "platform.h"
@@ -490,21 +490,12 @@ int main(int argc, char **argv) {
     }
 
 #ifdef PLATFORM_QNX
-    /* Raise our scheduling priority to match native HMI graphics workers
-     * (typically 13-18 on QNX 6.5).  Default user priority 10 lets busy
-     * iAP2 / dio_manager / Java HMI threads preempt us for ~14-16 vsync
-     * cycles at a time, which manifests as 245 ms render stalls every
-     * ~530 ms.  At priority 15 we sit in the same league as the cluster
-     * compositor's own workers and are no longer starved.
-     *
-     * Failure (EPERM if not root) is non-fatal — we'll still run, just
-     * with stalls. */
-    if (setprio(0, 15) < 0) {
-        fprintf(stderr, "maneuver_render: setprio(15) failed: %s — running at default\n",
-                strerror(errno));
-    } else {
-        fprintf(stderr, "maneuver_render: priority raised to 15\n");
-    }
+    /* Upstream raises the render thread to priority 15, above most audio_service
+     * and several io-audio threads (10-11 on MU1329), against 245 ms stalls it saw
+     * at the default priority.  On the MOST cluster the animation ticks audibly once
+     * per frame; this build keeps the inherited priority to test whether the raised
+     * priority causes it.  Expect the stalls back if it does not. */
+    fprintf(stderr, "maneuver_render: priority left at %d (not raised)\n", getprio(0));
 #endif
 
     /* Initialize TCP server FIRST so Java can connect while display inits.
