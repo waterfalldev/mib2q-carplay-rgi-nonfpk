@@ -203,6 +203,7 @@ public final class MostPresentation {
                 composeSerial++;                      /* retires the window watcher */
             }
             ClusterStateTrace.dump("most-arrows-off");
+            ClusterStreamRate.query("arrows-off");
             return;
         }
         if (applied) {
@@ -247,6 +248,7 @@ public final class MostPresentation {
         /* After the switch: the terminal-1 context and stock's view state (gfxAvailable,
          * komoView*, favored/current view), which decide whether the arrows view is reachable. */
         ClusterStateTrace.dump("most-arrows-on");
+        ClusterStreamRate.query("arrows-on");
     }
 
     /** Extents the renderer can present (protocol.h range); anything else is "unknown". */

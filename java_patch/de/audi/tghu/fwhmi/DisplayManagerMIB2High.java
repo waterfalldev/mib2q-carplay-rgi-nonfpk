@@ -514,6 +514,36 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
         }
     }
 
+    /* Every video-stream rate requested through the HMI, per terminal: stock's map controller
+     * (10/1/0), ScreenModule (30 on the VC's ctx 80) or anything else.  Logged when a terminal's
+     * value changes; ClusterStreamRate logs what the display service reports.  A static array:
+     * it must also exist on an instance the constructor did not initialise. */
+    private static final int[] REQUESTED_RATES = new int[] { -1, -1, -1, -1, -1, -1, -1, -1 };
+
+    public void setUpdateRate(int terminal, int rate) {
+        try {
+            boolean changed = true;
+            synchronized (REQUESTED_RATES) {
+                if (terminal >= 0 && terminal < REQUESTED_RATES.length) {
+                    changed = REQUESTED_RATES[terminal] != rate;
+                    REQUESTED_RATES[terminal] = rate;
+                }
+            }
+            if (changed) {
+                com.luka.carplay.framework.Log.w("DisplayManager", "setUpdateRate terminal " + terminal
+                    + " rate " + rate + " (thread " + Thread.currentThread().getName() + ")");
+            }
+        } catch (Throwable t) { }
+        super.setUpdateRate(terminal, rate);
+    }
+
+    /** The last rate requested through the HMI for terminal, or -1 if none since HMI start. */
+    public static int requestedUpdateRate(int terminal) {
+        synchronized (REQUESTED_RATES) {
+            return terminal >= 0 && terminal < REQUESTED_RATES.length ? REQUESTED_RATES[terminal] : -1;
+        }
+    }
+
     private class DisplayManagerProvider implements DumpInfoProvider {
         public String getName() {
             return "DisplayManager-Info";

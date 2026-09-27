@@ -219,7 +219,15 @@ public class CarPlayKOMOService extends KOMOService {
     }
 
     public void updateDataRate(int rate, int validity) {
-        if (validity == 1) lastDataRate = logChange("cluster KOMO data rate", lastDataRate, rate);
+        if (validity == 1) {
+            boolean changed = rate != lastDataRate;
+            lastDataRate = logChange("cluster KOMO data rate", lastDataRate, rate);
+            /* What the video stream is set to at this data rate (read-only DSI query). */
+            if (changed) {
+                try { com.luka.carplay.cluster.ClusterStreamRate.query("KOMO data rate " + rate); }
+                catch (Throwable t) { }
+            }
+        }
         super.updateDataRate(rate, validity);
     }
 
