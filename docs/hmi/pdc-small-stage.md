@@ -134,8 +134,8 @@ HOME, the full camera and an active PLA must still show `HMIDeactivated.execute`
 
 ## 🧪 Tests
 
-The shared Java runner (`scripts/java/test.sh`, used by the package builder through
-`packaging/Test-Java.ps1` and by `scripts/check_java.sh` / `scripts/test_pdc.sh`) runs the
+The shared Java runner (`scripts/java/test.sh`, used by
+`scripts/check_java.sh` / `scripts/test_pdc.sh`) runs the
 shipping jar against the supplied stock classes (MU1316 when written; also passing against
 MU1329) with the physical HMI faked:
 

@@ -92,18 +92,17 @@ flowchart LR
 
 ## Build, tests and deployment
 
-The [package guide](deploy/install.md) describes the shared build and checked
-installation workflow. It exports one committed source and keeps stock firmware,
-dependency caches, test evidence and packages outside this repository. Java
-compilation, tests and class inspection use the shared Java 8 Docker image and
-the supplied stock bootstrap library; native code uses the QNX Docker image.
-Neither workflow needs a host JDK. The package checks run without a vehicle.
+The [installation guide](deploy/install.md) describes the standard M.I.B. and
+manual workflows. Java compilation, tests and class inspection use the shared
+Java 8 Docker image and the supplied stock bootstrap library; native code uses
+the QNX Docker image. Neither component build needs a host JDK or PowerShell.
 
-The original shell component commands and PowerShell package builder call the
-same Java procedures in `scripts/java/`. The shell commands retain the
-maintainer's `Tools/jxe2jar` defaults without requiring PowerShell; their restored
-macOS/MU1316 paths still need execution verification. For input overrides and
-component development, see the root README. Runtime ownership is described in
+The shell component commands own the shared Java procedures in `scripts/java/`.
+Optional companion packaging consumes those commands from a committed source
+export; the application does not depend on the tooling checkout. The shell
+commands retain the maintainer's `Tools/jxe2jar` defaults; the macOS/MU1316 paths
+still need execution verification. For input overrides and component development,
+see the root README. Runtime ownership is described in
 [supervisor lifecycle](deploy/supervisor-lifecycle.md).
 
 ## 📚 Reverse-engineering references

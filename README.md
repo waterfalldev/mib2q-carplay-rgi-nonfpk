@@ -88,7 +88,7 @@ features below follow it automatically.
 | `maneuver_render/` | GLES maneuver overlay renderer (C, plus the C++11 `scene/` engine) |
 | `common/` | Shared renderer code: QNX Screen surface, GL program-binary cache, log timestamps |
 | `deploy/smartphone_integrator/` | Runtime scripts and child-process configuration for the HU |
-| `packaging/`, `deploy/mib/` | Source package builder, shared installer/rollback and log collector |
+| `install_MoreIncredibleBash/`, `uninstall_MoreIncredibleBash/`, `logging_MoreIncredibleBash/` | M.I.B. installation, removal and diagnostic scripts |
 | `scripts/` | Docker build entry points (Java / hook / renderer) and host test runners |
 | `tests/` | Host tests (C, Java, Python) for the hook, Java bridge and renderer |
 | `toolchain/qnx65-abi/` | QNX Screen ABI headers used only for cross-compilation |
@@ -110,7 +110,7 @@ cd qnx65-armv7-toolchain
 ```
 
 Java compilation and tests use `eclipse-temurin:8-jdk-jammy` through Docker;
-no host JDK is required. The shell commands and Windows package builder share
+no host JDK is required. The shell commands and companion package builder share
 the compiler and test procedures in `scripts/java/`. Compilation targets Java
 1.4 against the car's own Java library, and includes and checks the JAR resources.
 
@@ -135,15 +135,16 @@ the Git-derived build ID; `JAVA_OUTPUT` overrides `build/`.
 `CARPLAY_JAVA_IMAGE` can select an immutable Java image ID or digest; each run
 records its resolved ID in `java-image-id.txt` in the output directory.
 
-The complete package builder uses PowerShell 7, Git and Docker. It exports one
-committed source revision, builds Java against the supplied combined stock JAR,
-builds both native components, runs the checks and emits a guarded M.I.B. overlay.
-Firmware files and generated packages stay outside Git. See
-[package preparation](docs/deploy/install.md) for inputs and commands.
+Optional checked SD-package preparation lives in the separate
+[mib2q-rgi-tooling](https://github.com/waterfalldev/mib2q-rgi-tooling) repository.
+It consumes these component commands and records separate application/tooling
+commits. Component builds and tests do not require that repository or PowerShell.
+Firmware files and generated packages stay outside Git. For the standard M.I.B.
+installation workflow, see [installation](docs/deploy/install.md).
 `scripts/build_hook.sh` and `scripts/build_renderers.sh` retain the native build;
 `QNX_TOOLCHAIN_IMAGE` can pin its immutable image ID.
 
-`scripts/run_tests.sh` runs the native and supervisor checks on Linux/macOS.
+`scripts/run_tests.sh` runs native, supervisor, installer and logger checks on Linux/macOS.
 `tests/most/run-native-tests.sh <checkout>` runs the renderer's MOST output checks against
 the real QNX sources inside the toolchain image.
 `scripts/test_route_info.sh`, `scripts/test_java_transports.sh` and
@@ -155,9 +156,9 @@ that part in Docker.
 `scripts/audit_java_stock.sh` retains the MU1316 source inventory and separate
 final/combined JAR audits. For explicit firmware inputs, set `JAVA_STOCK_SOURCES`
 to include that firmware's source inventory.
-The package builder also exercises install, interrupted install, managed upgrade,
-rollback, collector timeouts, ACTION transitions and archive recovery using local
-fixtures. No test connects to a vehicle. The restored macOS/MU1316 entry points
+The companion tooling tests its own managed package installation and recovery.
+The application retains tests for its standard M.I.B. scripts. No test connects
+to a vehicle. The macOS/MU1316 entry points
 have not yet been execution-tested on that setup.
 
 ## 🚀 Deployment
@@ -174,8 +175,8 @@ unit's coding (sysConst 541):
 - **RGI-only cluster** (541=0): stock cluster state is left alone. Untested.
 
 Preferably flash the latest firmware available for the unit before installing the patch. The
-package builder checks the stock files you supply, but it cannot prove behavior on a firmware
-or cluster that has not been tested in a car.
+patch JAR must be built against the matching stock library. Neither compilation nor
+local tests prove behavior on a firmware or cluster that has not been tested in a car.
 
 A release is eight files plus two config edits; nothing stock is replaced and no firewall profile is
 touched:
@@ -190,18 +191,18 @@ touched:
 Both the `dio_manager.json` IDs and the hook's runtime Identify patch are required: without the IDs
 iOS sends route guidance and the SDK silently drops it.
 
-**With M.I.B.** Build a package for your verified stock inputs and copy the
-generated `sdcard/` contents onto the card. Run **Individual Script** or **Custom
-Script**, according to your M.I.B. version. An install result **0** is announced,
-then changes the package's `ACTION` to `rollback` and shows `[RGI] Success: 0` as the
-last line; the next run captures logs and uninstalls. Failures leave the action
-unchanged. No automatic reboot is performed.
+**With M.I.B.** Copy `install_MoreIncredibleBash/` to the card and put all eight
+release files plus `carplay_child.json` into `mod/carplay/`. With CarPlay
+disconnected, run M.I.B.'s Custom Script / Individual Script action. The script
+checks that the release is complete, copies files using atomic renames, patches
+the two configurations and keeps `.carplay-stock` backups. It never stops
+processes or reboots. Use `uninstall_MoreIncredibleBash/` to remove that install.
+See [installation and recovery](docs/deploy/install.md) for card layouts and
+manual installation.
 
-The builder generates one checked installation system. It replaces the old
-hand-staged flat/tree installer. Existing installations made by that older
-upstream installer must first be removed with their matching original release;
-the new installer refuses to assume ownership of their files. See
-[installation and recovery](docs/deploy/install.md).
+Packages made by the companion tooling use a different managed backup/state
+format. Remove an existing installation using its own matching installer before
+switching workflows; the upstream and companion uninstallers are not interchangeable.
 
 **Reboot.** Disconnect CarPlay, run `sync` and wait a few seconds, then reboot normally: a forced
 reboot (the MMI button combo) right after copying can leave the files truncated or missing. The jar is
@@ -235,11 +236,11 @@ them before restarting.
 
 For raw route-guidance packet dumps, rebuild the hook with `LOG_RGD_PACKET_RAW=1` (see [Build](#-build)).
 
-**No shell? Use M.I.B.** Every rollback from a prepared package first copies the
-runtime logs to `mod/carplay-rgi-runtime-logs/` on the SD card, using the shared
-[collector](deploy/mib/collect-logs.sh). The capture is bounded, and a failed
-capture never prevents the rollback. Captures can contain private identifiers;
-review and redact them before sharing.
+**No shell? Use M.I.B.** Copy `logging_MoreIncredibleBash/` to the card and run it
+like the installer. Each run saves logs into `<card>/carplay_logs/NNN/` and
+enables verbose logging for the next phone connection. Run it again after
+reproducing the issue to save that session. Captures can contain private
+identifiers; review and redact them before sharing.
 
 ## 📚 Documentation
 
