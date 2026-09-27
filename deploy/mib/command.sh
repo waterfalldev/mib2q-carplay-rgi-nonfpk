@@ -156,13 +156,8 @@ install|rollback)
     ;;
 esac
 
-if [ "$CPRGI_RC" = "0" ]; then
-    echo "[RGI] Success: 0"
-else
-    echo "[RGI] Failed: $CPRGI_RC"
-fi
-# Only a fully completed install with a reported result 0 may change ACTION.
-# This follow-up setting does not rewrite the already reported install result.
+# Only a fully completed install with result 0 may change ACTION.  This follow-up
+# setting does not change the install result, which is reported last, below.
 # Rollback and any install/cleanup failure leave ACTION unchanged.
     if [ "$CPRGI_ACTION" = "install" ] && [ "$CPRGI_RC" = "0" ]; then
         if on -f mmx /bin/sh -c '
@@ -193,6 +188,13 @@ fi
             echo "[RGI] ERROR! Installed, but ACTION=rollback could not be saved. Check ACTION on the SD card before the next run."
         fi
     fi
+
+# The result is always the last line on the M.I.B. screen.
+if [ "$CPRGI_RC" = "0" ]; then
+    echo "[RGI] Success: 0"
+else
+    echo "[RGI] Failed: $CPRGI_RC"
+fi
 
 # M.I.B. sources this file; never exit its caller on a failed action.
 return "$CPRGI_RC"

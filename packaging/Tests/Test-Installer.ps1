@@ -563,6 +563,8 @@ exit 0
     Assert ($consoleNoise.Count -eq 0) "$scenario shows only [RGI] lines on the M.I.B. screen$(if ($consoleNoise.Count) { ': ' + ($consoleNoise -join ' | ') })"
     $resultLines = if ($scenario -eq 'two-runs') { 2 } else { 1 }
     Assert (@($output | Where-Object { $_ -match '^\[RGI\] (Success: 0|Failed: [1-9][0-9]*)$' }).Count -eq $resultLines) "$scenario reports one [RGI] result line per run"
+    $screenLines = @($output | ForEach-Object { $_.ToString() } | Where-Object { $_ -match '^\[RGI\] ' })
+    Assert ($screenLines.Count -and $screenLines[-1] -match '^\[RGI\] (Success: 0|Failed: [1-9][0-9]*)$') "$scenario shows its result as the last M.I.B. line"
     $trace = Get-Content -Raw (Join-Path $root 'trace.txt')
     $expected = if ($scenario -in @('normal','rollback','rollback-slots-full','rollback-collector-hangs','two-runs',
         'action-stage-fails','action-rename-fails','action-sync-fails','action-settle-fails','action-readback-fails')) {0} else {1}
@@ -613,7 +615,7 @@ exit 0
         Assert (@(Get-ChildItem (Join-Path $root 'sd/mod/carplay-rgi') -Filter 'ACTION.next.*').Count -eq 0) "$scenario cleans its ACTION staging file"
         if ($scenario -eq 'normal') {
             Assert ($trace.IndexOf('action-publish ') -gt $trace.IndexOf('lock-release ')) 'ACTION changes only after successful lock release'
-            Assert ($outputText.IndexOf('[RGI] Success: 0') -lt $outputText.IndexOf('[RGI] Next run: Rollback')) 'result 0 is reported before ACTION changes'
+            Assert ($outputText.IndexOf('[RGI] Next run: Rollback') -lt $outputText.IndexOf('[RGI] Success: 0')) 'the ACTION change is reported before the result'
             Assert ($outputText.Contains('[RGI] Next run: Rollback')) 'success tells the operator the next run uninstalls'
         }
         if ($scenario -like 'action-*-fails') {
@@ -736,6 +738,9 @@ exit 0
     Assert ($LASTEXITCODE -eq 0) "standalone $scenario returns to caller"
     $outputText = $output -join "`n"
     WriteText (Join-Path $root 'collector-output.txt') $outputText
+    $screenLines = @($output | ForEach-Object { $_.ToString() } | Where-Object { $_ -match '^\[RGI\] ' })
+    $resultAt = @(for ($i = 0; $i -lt $screenLines.Count; $i++) { if ($screenLines[$i] -match '^\[RGI\] (Success: 0|Failed: [1-9][0-9]*)$') { $i } })
+    Assert ($resultAt.Count -eq 0 -or $resultAt[-1] -eq $screenLines.Count - 1) "standalone $scenario shows any result as the last M.I.B. line"
     $trace = Get-Content -Raw (Join-Path $root 'trace.txt')
     Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi'))) "standalone $scenario needs no package"
     Assert (-not $trace.Contains('/mnt/')) "standalone $scenario never remounts firmware"
