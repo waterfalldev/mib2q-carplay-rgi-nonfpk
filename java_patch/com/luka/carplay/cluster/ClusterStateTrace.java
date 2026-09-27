@@ -33,7 +33,6 @@ public final class ClusterStateTrace {
             line.append(" navActive=").append(com.luka.carplay.core.ScreenModule.isNavActive());
             line.append(' ').append(com.luka.carplay.core.ScreenNavStatusGate.describe());
             line.append(' ').append(MostPresentation.describe());
-            line.append(' ').append(ClusterStreamRate.describe());
             line.append(' ').append(clusterService());
             Log.w(TAG, line.toString());
         } catch (Throwable t) {

@@ -196,7 +196,6 @@ public final class MostArrowsTest {
         final List<String> offHmi = Collections.synchronizedList(new ArrayList<String>());
         final Map<Integer, int[]> extentsAnswers = Collections.synchronizedMap(new HashMap<Integer, int[]>());
         volatile long answerDelayMs = 5L;     /* < the DM's 200 ms wait: confirmed in time */
-        volatile boolean failRateQuery;
         Hmi hmi;
         DisplayManagerMIB2High dm;
 
@@ -216,9 +215,6 @@ public final class MostArrowsTest {
                 answerExtents(((Integer) a[0]).intValue());
             } else if (n.equals("setUpdateRate")) {
                 entry = "setUpdateRate " + a[0] + " " + a[1];
-            } else if (n.equals("getUpdateRate")) {
-                if (failRateQuery) throw new IllegalStateException("display service gone");
-                entry = "getUpdateRate " + a[0];
             }
             if (entry != null) {
                 calls.add(entry);
@@ -780,10 +776,8 @@ public final class MostArrowsTest {
     /** The cluster stream rate.  The HMI's setUpdateRate reaches the display service with the
      *  internal id and is remembered per terminal; while CarPlay's arrows view is composed,
      *  stock's full rate 10 is sent as 30 (1 and 0 pass), set on composition and handed back on
-     *  release.  ClusterStreamRate registers one display-management listener, asks the cluster
-     *  display (internal 4) for its rate at connect and on each arrows edge, records the answer,
-     *  survives a failing service and unregisters at disconnect. */
-    static void streamRateLoggedAndRaisedForArrows() throws Exception {
+     *  release.  At the car's default log level only the substituted requests are logged. */
+    static void streamRaisedForArrows() throws Exception {
         Hmi hmi = new Hmi();
         final Dsi dsi = new Dsi();
         Map<Integer, int[]> extents = new HashMap<Integer, int[]>();
@@ -806,95 +800,17 @@ public final class MostArrowsTest {
             && DisplayManagerMIB2High.requestedUpdateRate(8) == -1 && DisplayManagerMIB2High.requestedUpdateRate(-1) == -1,
             "requested rates remembered per terminal");
 
-        final List<String> registry = Collections.synchronizedList(new ArrayList<String>());
-        final Object[] listener = new Object[1];
-        final Object service = Proxy.newProxyInstance(MostArrowsTest.class.getClassLoader(),
-            new Class<?>[]{DSIDisplayManagement.class}, dsi);
-        final Object reference = Proxy.newProxyInstance(MostArrowsTest.class.getClassLoader(),
-            new Class<?>[]{org.osgi.framework.ServiceReference.class}, new InvocationHandler() {
-                public Object invoke(Object p, Method m, Object[] a) { return null; }
-            });
-        final Object registration = Proxy.newProxyInstance(MostArrowsTest.class.getClassLoader(),
-            new Class<?>[]{org.osgi.framework.ServiceRegistration.class}, new InvocationHandler() {
-                public Object invoke(Object p, Method m, Object[] a) {
-                    registry.add(m.getName());
-                    return null;
-                }
-            });
-        final Object manager = Proxy.newProxyInstance(MostArrowsTest.class.getClassLoader(),
-            new Class<?>[]{de.audi.app.terminalmode.osgi.IServiceManager.class}, new InvocationHandler() {
-                public Object invoke(Object p, Method m, Object[] a) {
-                    String n = m.getName();
-                    if (n.equals("getServiceReferences")) {
-                        registry.add("lookup " + ((Class<?>) a[0]).getName());
-                        Object[] refs = (Object[]) java.lang.reflect.Array.newInstance(
-                            org.osgi.framework.ServiceReference.class, 1);
-                        refs[0] = reference;
-                        return refs;
-                    }
-                    if (n.equals("getService")) return a[0] == reference ? service : null;
-                    if (n.equals("registerDSIListener")) {
-                        registry.add("register " + a[0] + " " + a[1]);
-                        listener[0] = a[2];
-                        return registration;
-                    }
-                    registry.add(n);
-                    return null;
-                }
-            });
-        final IFrameworkAccess fw = framework(1);
-        Object context = Proxy.newProxyInstance(MostArrowsTest.class.getClassLoader(),
-            new Class<?>[]{de.audi.app.terminalmode.IContext.class}, new InvocationHandler() {
-                public Object invoke(Object p, Method m, Object[] a) {
-                    if (m.getName().equals("getServiceManager")) return manager;
-                    if (m.getName().equals("getFramework")) return fw;
-                    return null;
-                }
-            });
-
-        com.luka.carplay.cluster.ClusterStreamRate.query("before start");
-        check(dsi.drain().isEmpty(), "no query before the listener is registered");
-
-        com.luka.carplay.cluster.ClusterStreamRate probe = new com.luka.carplay.cluster.ClusterStreamRate();
-        probe.start(new FrameworkRef((de.audi.app.terminalmode.IContext) context));
-        check(registry.contains("lookup org.dsi.ifc.displaymanagement.DSIDisplayManagement")
-            && registry.contains("register 0 org.dsi.ifc.displaymanagement.DSIDisplayManagementListener")
-            && listener[0] instanceof org.dsi.ifc.displaymanagement.DSIDisplayManagementListener,
-            "one instance-0 display-management listener registered: " + registry);
-        c = dsi.drain();
-        check(c.equals(java.util.Arrays.asList("getUpdateRate 4")), "connect asks the cluster display only: " + c);
-        probe.start(new FrameworkRef((de.audi.app.terminalmode.IContext) context));
-        check(count(registry, "register ") == 1 && dsi.drain().isEmpty(), "a second start registers nothing more");
-
-        /* A second query before the first answer: each answer is logged under its own trigger. */
-        com.luka.carplay.cluster.ClusterStreamRate.query("KOMO data rate 2");
-        check(dsi.drain().equals(java.util.Arrays.asList("getUpdateRate 4")), "an overlapping query is sent");
-        org.dsi.ifc.displaymanagement.DSIDisplayManagementListener l =
-            (org.dsi.ifc.displaymanagement.DSIDisplayManagementListener) listener[0];
-        l.getUpdateRateResult(4, 10);
-        l.getUpdateRateResult(4, 10);
-        for (int i = 0; i < 4; i++) l.setUpdateRateResult(4, 0);
-        l.setUpdateRateResult(4, 30);
-        l.activeContext(81, 4, 1);
-        l.asyncException(1, "other request", org.dsi.ifc.displaymanagement.DSIDisplayManagement.RT_SETUPDATERATE + 1000);
-        check("streamRate{requested=10 sent=10 dsi=(4, 10)}".equals(com.luka.carplay.cluster.ClusterStreamRate.describe()),
-            "answer and HMI request recorded: " + com.luka.carplay.cluster.ClusterStreamRate.describe());
-        check(dsi.drain().isEmpty(), "replies trigger no display-service call");
-
         /* Stock is at its full rate (10) when CarPlay composes the arrows view: 30 is sent once,
-         * on the HMI thread, after 81 is composed; the rate query follows. */
+         * on the HMI thread, after 81 is composed. */
         stockSwitch(hmi, dm, 73, 1, null);
         dsi.drain();
         MostPresentation.setActive(true);
         hmi.idle();
         c = dsi.drain();
         check(has(c, "switch 81 term 4") && count(c, "setUpdateRate ") == 1 && has(c, "setUpdateRate 4 30")
-            && c.indexOf("switch 81 term 4") < c.indexOf("setUpdateRate 4 30")
-            && count(c, "getUpdateRate ") == 1 && c.indexOf("setUpdateRate 4 30") < c.indexOf("getUpdateRate 4"),
-            "arrows-on raises stock's 10 to 30 once, after 81, then asks: " + c);
+            && c.indexOf("switch 81 term 4") < c.indexOf("setUpdateRate 4 30"),
+            "arrows-on raises stock's 10 to 30 once, after 81: " + c);
         check(DisplayManagerMIB2High.requestedUpdateRate(1) == 10, "stock's own request stays recorded as 10");
-        check(com.luka.carplay.cluster.ClusterStreamRate.describe().startsWith("streamRate{requested=10 sent=30 "),
-            "the state trace shows the substituted rate: " + com.luka.carplay.cluster.ClusterStreamRate.describe());
 
         /* While composed: stock's 1 and 0 pass through, its 10 becomes 30, other terminals are untouched. */
         final DisplayManagerMIB2High dmRef = dm;
@@ -915,8 +831,8 @@ public final class MostArrowsTest {
         release(hmi);
         c = dsi.drain();
         check(has(c, "switch 73 term 4") && count(c, "setUpdateRate ") == 1 && has(c, "setUpdateRate 4 10")
-            && c.indexOf("switch 73 term 4") < c.indexOf("setUpdateRate 4 10") && count(c, "getUpdateRate ") == 1,
-            "arrows-off hands stock's 10 back once, after 73, then asks: " + c);
+            && c.indexOf("switch 73 term 4") < c.indexOf("setUpdateRate 4 10"),
+            "arrows-off hands stock's 10 back once, after 73: " + c);
         hmi.run(new Runnable() { public void run() { dmRef.setUpdateRate(1, 10); } });
         check(dsi.drain().equals(java.util.Arrays.asList("setUpdateRate 4 10")), "stock's 10 passes after arrows-off");
 
@@ -931,33 +847,13 @@ public final class MostArrowsTest {
         c = dsi.drain();
         check(has(c, "switch 73 term 4") && !hasPrefix(c, "setUpdateRate"), "arrows-off at stock's 1 sends no rate: " + c);
 
-        dsi.failRateQuery = true;
-        com.luka.carplay.cluster.ClusterStreamRate.query("failing service");
-        dsi.failRateQuery = false;
-        check(dsi.drain().isEmpty(), "a failing query is swallowed");
-
-        probe.stop();
-        probe.stop();
-        check(count(registry, "unregister") == 1, "disconnect unregisters the listener once: " + registry);
-        com.luka.carplay.cluster.ClusterStreamRate.query("after stop");
-        check(dsi.drain().isEmpty(), "no query after stop");
-        boolean onlyQueriesOffHmi = true;
+        boolean onlyTestRequestsOffHmi = true;
         synchronized (dsi.offHmi) {
-            for (int i = 0; i < dsi.offHmi.size(); i++) {
-                String e = dsi.offHmi.get(i);
-                onlyQueriesOffHmi &= e.startsWith("getUpdateRate ") || e.startsWith("setUpdateRate ");
-            }
+            for (int i = 0; i < dsi.offHmi.size(); i++) onlyTestRequestsOffHmi &= dsi.offHmi.get(i).startsWith("setUpdateRate ");
         }
-        check(onlyQueriesOffHmi, "only rate calls (the read-only query, the test's own requests) leave the HMI thread: "
-            + dsi.offHmi);
+        check(onlyTestRequestsOffHmi, "only the test's own rate requests leave the HMI thread: " + dsi.offHmi);
         List<String> log = logSince("stream-rate");
         Log.setLevel(-1);
-        check(countContaining(log, "getUpdateRateResult(4, 10) for display 4 after CarPlay connect;") == 1
-            && countContaining(log, "getUpdateRateResult(4, 10) for display 4 after KOMO data rate 2;") == 1,
-            "overlapping answers are logged under their own triggers: " + log);
-        check(count(log, "[CP/W][StreamRate] setUpdateRateResult(4, 0)") == 1
-            && count(log, "[CP/W][StreamRate] setUpdateRateResult(4, 30)") == 1,
-            "repeated setUpdateRateResult replies are logged once: " + log);
         check(countContaining(log, "setUpdateRate terminal ") == 2
             && count(log, "[CP/W][DisplayManager] setUpdateRate terminal 1 rate 10 -> 30 for the CarPlay arrows view") == 2,
             "at WARN only stock's two substituted requests are logged, not its plain rate changes: " + log);
@@ -1614,7 +1510,7 @@ public final class MostArrowsTest {
         freshOutputRequest();
         rendererOutputRequestFile();
         arrowsViewReachesTheDisplayService();
-        streamRateLoggedAndRaisedForArrows();
+        streamRaisedForArrows();
         stockListenerSeesItsOwnContext();
         bufferedReplayAfterDisplayServiceRestart();
         screenModuleActivation();

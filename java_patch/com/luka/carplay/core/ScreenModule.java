@@ -211,9 +211,6 @@ public final class ScreenModule implements Module {
 
     public String name() { return "screen"; }
 
-    private final com.luka.carplay.cluster.ClusterStreamRate streamRate =
-        new com.luka.carplay.cluster.ClusterStreamRate();
-
     public boolean start(FrameworkRef fw) {
         if (fw == null || !fw.isReady() || fw.framework() == null) return false;
         if (!isPlatformSupported(fw)) {
@@ -242,7 +239,6 @@ public final class ScreenModule implements Module {
             com.luka.carplay.cluster.MostPresentation.setActive(false);
             if (com.luka.carplay.cluster.ClusterPlatform.isMost(fw.framework())) {
                 com.luka.carplay.cluster.MostPresentation.prefetchExtents();
-                streamRate.start(fw);                /* read-only rate logging; never fails start */
             }
             Log.w(TAG, "cluster contexts left to stock ("
                 + com.luka.carplay.cluster.ClusterPlatform.describe(fw.framework()) + ")"
@@ -292,7 +288,6 @@ public final class ScreenModule implements Module {
     }
 
     public void stop() {
-        streamRate.stop();                           /* idempotent */
         if (!enabled) return;
         enabled = false;
         /* Disconnect: publish stock (74); the single persistent worker restores it.  We deliberately
