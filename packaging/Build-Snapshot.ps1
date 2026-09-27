@@ -481,7 +481,7 @@ Initial ACTION: $ArmedAction
 
 This package contains private stock configuration and rollback inputs. Do not publish it.
 Copy the contents of sdcard to the M.I.B. card. Run Individual Script once.
-Only a reported install result 0 arms rollback. The next run captures logs and uninstalls.
+Only an install result 0 arms rollback; the result is the last line shown. The next run captures logs and uninstalls.
 Review the result before restarting the unit manually. There is no automatic reboot.
 Local checks do not establish vehicle behavior on an untested firmware or cluster.
 "@

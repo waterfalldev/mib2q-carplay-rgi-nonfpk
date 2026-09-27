@@ -79,9 +79,10 @@ on another one (a different firmware variant, or the same car after a firmware
 update) it may stop the HMI from booting. Rollback does not check it, so a changed
 library never blocks removal.
 
-Only a reported **install result 0** saves and verifies `ACTION=rollback`. A
-later failure saving that setting is reported separately; check the SD action
-before running it again. Every unsuccessful install leaves ACTION unchanged.
+Only an **install result 0** saves and verifies `ACTION=rollback`; the result
+itself is shown after that, as the last line. A failure saving the setting is
+reported separately and leaves the result 0; check the SD action before running
+it again. Every unsuccessful install leaves ACTION unchanged.
 
 The next run captures logs before rollback, then restores verified stock configs
 and removes only recognized, installer-owned files. Rollback requires its exact

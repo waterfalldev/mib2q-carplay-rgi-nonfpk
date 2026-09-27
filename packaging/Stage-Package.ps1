@@ -247,7 +247,7 @@ MU=$FirmwareName
             'commit configuration files after runtime files and commit managed state last'
             'verify every destination, sync, wait at least five seconds, sync again, and never reboot automatically'
             'leave /mnt/app and /mnt/system read-only again once the action has finished'
-            'only after reporting install result 0 including read-only restoration and lock release, save and verify ACTION=rollback'
+            'only after install result 0 including read-only restoration and lock release, save and verify ACTION=rollback, then report the unchanged result last'
         )
     }
 
@@ -773,15 +773,21 @@ without the exact installer-owned marker and valid on-unit backups.
 
     Set-Guard 'installerRestoresReadOnlyMounts' 'PASS (command.sh returns /mnt/app and /mnt/system to read-only)'
 
+    # Rollback is armed only once the install result is final: after read-only restoration
+    # and lock release, and the arming may not change the result. (An earlier dispatcher
+    # armed it before lock release and could then report result 1.) The result line is
+    # printed after it, as the last line on the M.I.B. screen.
     $armRollbackIndex = $MibCommandText.IndexOf('if [ "$CPRGI_ACTION" = "install" ] && [ "$CPRGI_RC" = "0" ]; then')
+    $resultIndex = $MibCommandText.LastIndexOf('echo "[RGI] Success: 0"')
     if (
         $armRollbackIndex -le $MibCommandText.IndexOf('mount -ur /net/mmx/mnt/app') -or
         $armRollbackIndex -le $MibCommandText.LastIndexOf('rmdir /net/mmx/fs/sda0/mod/carplay-rgi-install.lock') -or
-        $armRollbackIndex -le $MibCommandText.IndexOf('echo "[RGI] Success: 0"') -or
+        $resultIndex -le $armRollbackIndex -or
+        $MibCommandText.Substring($armRollbackIndex, $resultIndex - $armRollbackIndex) -match 'CPRGI_RC=' -or
         -not $MibCommandText.Contains('mv -f "$next" "$action" || exit 1') -or
         -not $MibCommandText.Contains('[ "$1:$2" = "$expected_crc:9" ] || exit 1')
     ) {
-        throw 'Dispatcher must save and verify ACTION=rollback only after reporting install result 0, following restoration and lock release.'
+        throw 'Dispatcher must save and verify ACTION=rollback only for a final install result 0 (after restoration and lock release), leave that result unchanged and report it last.'
     }
 
     Set-Guard 'installerPayloadCksums' ("PASS ($PayloadCheckCount payloads + state/rollback/owner)")
@@ -789,5 +795,5 @@ without the exact installer-owned marker and valid on-unit backups.
     Set-Guard 'installerNoAutomaticReboot'
     Set-Guard 'installerEntryPoint' 'PASS (M.I.B. mod/command.sh matches packaged dispatcher)'
     Set-Guard 'installerMibSdExecution' 'PASS (sourced command; MMX dispatch; SD lock before firmware remounts; rollback captures logs first; no TEE/outer SD redirection)'
-    Set-Guard 'installerActionControl' ("PASS (ACTION=$ArmedAction; LF; rollback selected only after reported install result 0; editable on the card)")
+    Set-Guard 'installerActionControl' ("PASS (ACTION=$ArmedAction; LF; rollback selected only after final install result 0, which is reported last; editable on the card)")
     Set-Guard 'rollbackPackage'
