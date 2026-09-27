@@ -27,8 +27,13 @@
 
 #include "platform.h"
 
+/* TARGET_FPS is the unit of every per-frame animation constant (render_frame_step) and the
+ * first idle poll rate.  Frames are drawn at PACED_FPS: slower, evenly spaced frames keep
+ * the head unit's GPU load steady (see frame_pacer.h). */
 #define TARGET_FPS     30
 #define FRAME_TIME_NS  (1000000000L / TARGET_FPS)
+#define PACED_FPS      20
+#include "frame_pacer.h"
 #include "gl_compat.h"
 #include "render.h"
 #include "arrow_progress.h"
@@ -60,6 +65,15 @@ static int timespec_elapsed_at_least(const struct timespec *now,
 
     dns = now->tv_nsec - last->tv_nsec;
     return dns >= nanoseconds;
+}
+
+static int64_t timespec_ns(const struct timespec *t) {
+    return (int64_t)t->tv_sec * 1000000000LL + t->tv_nsec;
+}
+
+static void sleep_ns(int64_t ns) {
+    struct timespec ts = { (time_t)(ns / 1000000000LL), (long)(ns % 1000000000LL) };
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) { }
 }
 
 /* ================================================================
@@ -563,6 +577,9 @@ int main(int argc, char **argv) {
     int dirty = 1;
     int running = 1;
     int announced_first_frame = 0;
+    static cr_frame_pacer_t pacer;
+    cr_pacer_init(&pacer, 1000000000LL / PACED_FPS);
+    fprintf(stderr, "maneuver_render: frames paced at %d fps\n", PACED_FPS);
     g_render_loop_started = 1;
 
 #ifdef CR_DIAG_FRAME_LOG
@@ -621,7 +638,7 @@ int main(int argc, char **argv) {
         int progress_state=CR_PROGRESS_OFF;
         double progress_now=(double)t_start.tv_sec+t_start.tv_nsec*1e-9;
         /* Animations advance by elapsed time, not by frames: at 20 fps a per-frame step
-         * made every slide 1.5x slower.  Iterations that render are paced by the swap, so
+         * made every slide 1.5x slower.  Iterations that render are paced (frame_pacer.h), so
          * the gap since the previous rendering iteration is the frame time.  After idle
          * the first frame is one step; a stall longer than 4 frames slows, never jumps. */
         {
@@ -830,6 +847,7 @@ int main(int argc, char **argv) {
         g_engine.dirty = 0;
 
         int rendered_this_frame = 0;
+        int64_t swap_ns = 0;
         if (dirty) {
             rendered_this_frame = 1;
 #ifdef CR_DIAG_FRAME_LOG
@@ -869,9 +887,13 @@ int main(int argc, char **argv) {
                 save_screenshot(fb_w, fb_h, screenshot_label);
             capture_most_frame(&t_start);
 
+            struct timespec t_swap_start, t_swap_end;
+            clock_gettime(CLOCK_MONOTONIC, &t_swap_start);
             watch_stage(WATCH_SWAP);
             int swap_ok = platform_swap();
             watch_stage(WATCH_IDLE);
+            clock_gettime(CLOCK_MONOTONIC, &t_swap_end);
+            swap_ns = timespec_ns(&t_swap_end) - timespec_ns(&t_swap_start);
             if (!swap_ok) {
                 /* platform_swap recreated the QNX surface.  Repaint it on the
                  * next iteration even when the engine is otherwise idle.  Also
@@ -1021,19 +1043,37 @@ int main(int argc, char **argv) {
             }
         }
 
-        /* Adaptive IDLE pacing (proven approach from the c_render history, commit e26cce5).
-         * ACTIVE output pacing rides eglSwapBuffers (QNX: eglSwapInterval(2); macOS below) — NEVER
-         * nanosleep, because nanosleep on QNX 6.5 rounds up to the kernel timer tick and won't hold
-         * a precise 30 Hz.  But when the loop produced NO frame this iteration (idle: no route / no
-         * maneuver) there is no swap to pace it, so an always-on renderer would busy-spin 100% CPU.
-         * Throttle idle polling: 30 Hz for the first second, then 10 Hz (1–5 s), then 3 Hz (>5 s);
-         * any activity snaps back to 30 Hz.  Idle timing needs no precision → the QNX nanosleep
-         * granularity is harmless here. */
+        /* ACTIVE pacing, every platform: after a rendered frame sleep to the next PACED_FPS
+         * deadline (frame_pacer.h).  It used to ride eglSwapBuffers alone (QNX interval 2),
+         * which the car did not hold: frames came at up to 53/s and the rate wandered.  The
+         * QNX 6.5 nanosleep tick rounding that once ruled out a sleep does not accumulate,
+         * because deadlines chain from the previous deadline, not from the wake-up.
+         *
+         * Adaptive IDLE pacing (proven approach from the c_render history, commit e26cce5):
+         * when the loop produced NO frame this iteration (idle: no route / no maneuver) an
+         * always-on renderer would busy-spin 100% CPU.  Throttle idle polling: 30 Hz for the
+         * first second, then 10 Hz (1–5 s), then 3 Hz (>5 s); any activity snaps back to
+         * 30 Hz.  Idle timing needs no precision. */
         static int idle_frames = 0;
         g_anim_prev_rendered = rendered_this_frame;
+        char pacing_line[160];
+        struct timespec t_end;
+        clock_gettime(CLOCK_MONOTONIC, &t_end);
         if (rendered_this_frame) {
             idle_frames = 0;
+            int64_t wait_ns = cr_pacer_frame_done(&pacer, timespec_ns(&t_start), swap_ns,
+                                                  timespec_ns(&t_end));
+            if (cr_pacer_report(&pacer, timespec_ns(&t_end), pacing_line, sizeof(pacing_line)))
+                fprintf(stderr, "%s pacing: %s\n", log_stamp(), pacing_line);
+            if (wait_ns > 0) {
+                watch_stage(WATCH_SLEEP);
+                sleep_ns(wait_ns);
+                watch_stage(WATCH_IDLE);
+            }
         } else {
+            cr_pacer_idle(&pacer);
+            if (cr_pacer_report(&pacer, timespec_ns(&t_end), pacing_line, sizeof(pacing_line)))
+                fprintf(stderr, "%s pacing: %s\n", log_stamp(), pacing_line);
             if (idle_frames < 10000) idle_frames++;
             long idle_ns = (idle_frames < TARGET_FPS)     ? FRAME_TIME_NS     /* <1 s: 30 Hz */
                          : (idle_frames < TARGET_FPS * 5) ? 100L * 1000000L  /* 1–5 s: 10 Hz */
@@ -1044,29 +1084,9 @@ int main(int argc, char **argv) {
             watch_stage(WATCH_IDLE);
         }
 
-#ifndef PLATFORM_QNX
-        /* macOS/dev only: GLFW swap interval 0 gives no vsync throttle, so pace ACTIVE frames to
-         * 30 FPS here. QNX requests interval 2 on each surface; MOST capture has its own clock. */
-        if (rendered_this_frame) {
-            struct timespec t_end;
-            clock_gettime(CLOCK_MONOTONIC, &t_end);
-            long elapsed_ns = (t_end.tv_sec - t_start.tv_sec) * 1000000000L
-                            + (t_end.tv_nsec - t_start.tv_nsec);
-            long sleep_ns = FRAME_TIME_NS - elapsed_ns;
-            if (sleep_ns > 0) {
-                struct timespec ts = { sleep_ns / 1000000000L, sleep_ns % 1000000000L };
-                watch_stage(WATCH_SLEEP);
-                nanosleep(&ts, NULL);
-                watch_stage(WATCH_IDLE);
-            }
-        }
-#else
-        (void)t_start;
-#endif
-
 #ifdef CR_DIAG_FRAME_LOG
         /* 1 Hz render-loop stats.  Steady state should report
-         * iters≈30 frames≈30 (ARRIVED flag keeps maneuver_needs_redraw
+         * iters≈20 frames≈20 (ARRIVED flag keeps maneuver_needs_redraw
          * true).  Anything else means the loop is being throttled. */
         {
             struct timespec stat_now;

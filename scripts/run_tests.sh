@@ -20,6 +20,11 @@ cc -D_GNU_SOURCE -std=gnu99 -O1 -Wall -Wextra -Werror -Wno-unused-function \
     -Imaneuver_render/hostcheck -Icommon tests/gl_program_cache_test.c $DL_LIB -o "$OUT/gl_program_cache"
 "$OUT/gl_program_cache"
 
+printf '%-32s ' frame_pacer_test
+cc -D_GNU_SOURCE -std=c99 -O1 -Wall -Wextra -Werror -pedantic -Wno-unused-function \
+    -Imaneuver_render tests/frame_pacer_test.c -o "$OUT/frame_pacer"
+"$OUT/frame_pacer"
+
 printf '%-32s ' coverart_safety_test
 cc -D_GNU_SOURCE -std=c99 -O2 -Wall -Wextra -Werror -pedantic -Ihook \
     tests/coverart_safety_test.c hook/coverart/jpeg_safety.c \
