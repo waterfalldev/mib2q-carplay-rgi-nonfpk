@@ -15,6 +15,7 @@ param(
     [Parameter(Mandatory=$true)][string]$OutputRoot,
     [string]$Ref = 'HEAD',
     [string]$JavaHome = '',
+    [string]$JavaImage = 'eclipse-temurin:8-jdk-jammy',
     [string]$ExpectedToolchainImageId = '',
     [string]$HostTestImage = 'carplay-rgi-host-tests:local',
     # Optional name suffix, e.g. a local trial number; the commit still identifies the source.
@@ -65,9 +66,21 @@ New-Item -ItemType Directory -Path $pending | Out-Null
 # Failed exports/staging stay outside the repository for diagnosis. Completed
 # packages move only after every check succeeds; publication restores moved
 # packages if a later archive/publication move fails.
-& (Join-Path $source 'packaging/Build-Snapshot.ps1') -FirmwareRoot $FirmwareRoot -Firmware $firmware `
-    -Dependencies $Dependencies -ScratchRoot $scratch -ReleaseDirectory $pending -Commit $commit `
-    -JavaHome $JavaHome -ExpectedToolchainImageId $ExpectedToolchainImageId -HostTestImage $HostTestImage -ArmRollback:$ArmRollback
+$snapshot = Join-Path $source 'packaging/Build-Snapshot.ps1'
+$snapshotArguments = @{
+    FirmwareRoot=$FirmwareRoot; Firmware=$firmware; Dependencies=$Dependencies
+    ScratchRoot=$scratch; ReleaseDirectory=$pending; Commit=$commit
+    ExpectedToolchainImageId=$ExpectedToolchainImageId; HostTestImage=$HostTestImage
+    ArmRollback=$ArmRollback
+}
+# Historical -Ref exports keep their original requirements and parameter contract.
+# Do not pass a new Docker option to an older builder that only accepts JavaHome.
+if ((Get-Command -Name $snapshot).Parameters.ContainsKey('JavaImage')) {
+    $snapshotArguments.JavaImage = $JavaImage
+} else {
+    $snapshotArguments.JavaHome = $JavaHome
+}
+& $snapshot @snapshotArguments
 Publish-PreparedPackage -Root $OutputRoot -Pending $pending -Final $final -AllowReplace:$ForceRebuild
 Write-Host "Completed package: $final"
 Write-Host "Exact source: $commit"

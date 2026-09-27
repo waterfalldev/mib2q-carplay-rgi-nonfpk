@@ -1,3 +1,8 @@
 #!/bin/bash
-# Compatibility entry point; the shared runner builds and checks the same JAR.
-exec bash "$(dirname "$0")/check_java.sh" "$@"
+# Build fresh and exercise route guidance against the supplied stock firmware.
+set -euo pipefail
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+export RGD_CONTRACT_FRAMES=${RGD_CONTRACT_FRAMES:-${JAVA_OUTPUT:-$ROOT/build}/rgd-native-contract}
+RGD_CONTRACT_STAGE=native RGD_CONTRACT_OUT="$RGD_CONTRACT_FRAMES" \
+    python3 "$ROOT/tests/test_rgd_native_contract.py"
+exec bash "$ROOT/scripts/java/docker.sh" test route "$@"

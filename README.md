@@ -109,24 +109,56 @@ cd qnx65-armv7-toolchain
 ./host-scripts/qnx-run.sh build        # qnx65-armv7-toolchain:latest (GCC 8.5)
 ```
 
-The complete package builder uses PowerShell 7, a host JDK 8 and Docker. It
-exports one committed source revision to an external work directory, builds Java
-against your external stock JAR, builds both native components, runs the checks
-and emits a guarded M.I.B. overlay. Firmware files and generated packages stay
-outside Git. See [package preparation](docs/deploy/install.md) for inputs and commands.
+Java compilation and tests use `eclipse-temurin:8-jdk-jammy` through Docker;
+no host JDK is required. The shell commands and Windows package builder share
+the compiler and test procedures in `scripts/java/`. Compilation targets Java
+1.4 against the car's own Java library, and includes and checks the JAR resources.
 
-For component development, `scripts/build_java.sh` uses the same Java compiler
-implementation. Set `STOCK_JAR`, `CARPLAY_DEPENDENCIES` and `JAVA_HOME` to external
-paths first. `scripts/build_hook.sh` and `scripts/build_renderers.sh` build the
-native components; `QNX_TOOLCHAIN_IMAGE` can pin an immutable image ID.
+For the maintainer's existing macOS/Linux layout, the component command stays:
+
+```sh
+./scripts/build_java.sh             # build/carplay_hook.jar
+```
+
+It uses `../../Tools/jxe2jar`: `out/MU1316-final.jar`, OSGi JARs in `libs/`, and
+the existing car library at `libs/jcl/MHI2Q_US_AUG22_P5087_MU1316/jcl.jar`.
+Tests use `out/MU1316-combined.jar` where executable stock bytecode is required;
+the linkage audit uses ASM from `tools/uninline/lib/`. No PowerShell is needed
+for these component commands. Set `CARPLAY_TOOLS_DIR` to relocate that layout.
+
+For other firmware, set `STOCK_JAR` and `CARPLAY_DEPENDENCIES` to external paths.
+`STOCK_BOOT_JAR` supplies a separate car Java library when it is not embedded in
+the stock JAR; `STOCK_RUNTIME_JAR` supplies a separate executable stock JAR for
+tests. With an explicit `STOCK_JAR`, both default to that JAR. `ASM_JAR` and
+`ASM_TREE_JAR` can override the audit dependencies. `CARPLAY_BUILD_ID` overrides
+the Git-derived build ID; `JAVA_OUTPUT` overrides `build/`.
+`CARPLAY_JAVA_IMAGE` can select an immutable Java image ID or digest; each run
+records its resolved ID in `java-image-id.txt` in the output directory.
+
+The complete package builder uses PowerShell 7, Git and Docker. It exports one
+committed source revision, builds Java against the supplied combined stock JAR,
+builds both native components, runs the checks and emits a guarded M.I.B. overlay.
+Firmware files and generated packages stay outside Git. See
+[package preparation](docs/deploy/install.md) for inputs and commands.
+`scripts/build_hook.sh` and `scripts/build_renderers.sh` retain the native build;
+`QNX_TOOLCHAIN_IMAGE` can pin its immutable image ID.
 
 `scripts/run_tests.sh` runs the native and supervisor checks on Linux/macOS.
 `tests/most/run-native-tests.sh <checkout>` runs the renderer's MOST output checks against
 the real QNX sources inside the toolchain image.
-`scripts/check_java.sh` runs the stock-backed Java suites and linkage audit.
+`scripts/test_route_info.sh`, `scripts/test_java_transports.sh` and
+`scripts/test_pdc.sh` retain their respective test groups; the parking command
+checks an existing JAR. `scripts/check_java.sh` builds and runs all Java groups
+and the linkage audit. The route and complete shell checks also need Python 3
+and a host C compiler for their native contract probe; the package builder runs
+that part in Docker.
+`scripts/audit_java_stock.sh` retains the MU1316 source inventory and separate
+final/combined JAR audits. For explicit firmware inputs, set `JAVA_STOCK_SOURCES`
+to include that firmware's source inventory.
 The package builder also exercises install, interrupted install, managed upgrade,
 rollback, collector timeouts, ACTION transitions and archive recovery using local
-fixtures. No test connects to a vehicle.
+fixtures. No test connects to a vehicle. The restored macOS/MU1316 entry points
+have not yet been execution-tested on that setup.
 
 ## 🚀 Deployment
 

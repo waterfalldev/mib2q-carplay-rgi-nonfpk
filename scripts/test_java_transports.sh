@@ -1,3 +1,4 @@
 #!/bin/bash
-# Compatibility entry point; the shared runner builds and checks the same JAR.
-exec bash "$(dirname "$0")/check_java.sh" "$@"
+# The original transport group includes lifecycle and parking regressions.
+set -euo pipefail
+exec bash "$(dirname "$0")/java/docker.sh" test transports "$@"

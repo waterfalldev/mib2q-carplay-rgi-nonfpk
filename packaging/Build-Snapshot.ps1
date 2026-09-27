@@ -9,6 +9,7 @@ param(
     [Parameter(Mandatory=$true)][string]$ReleaseDirectory,
     [Parameter(Mandatory=$true)][string]$Commit,
     [string]$JavaHome = '',
+    [string]$JavaImage = 'eclipse-temurin:8-jdk-jammy',
     [string]$ExpectedToolchainImageId = '',
     [string]$HostTestImage = 'carplay-rgi-host-tests:local',
     [switch]$ArmRollback
@@ -20,9 +21,8 @@ $ErrorActionPreference = 'Stop'
 $WorkTree = Split-Path -Parent $PSScriptRoot
 $Git = (Get-Command git -ErrorAction Stop).Source
 $GitSh = Find-GitSh $Git
-$JavaHome = Find-Jdk8 $JavaHome
-$Javac = Join-Path $JavaHome ('bin/javac' + $script:ExeSuffix)
-$Javap = Join-Path $JavaHome ('bin/javap' + $script:ExeSuffix)
+. "$PSScriptRoot/JavaDocker.ps1"
+$JavaImageId = Resolve-JavaImage $JavaImage
 $JavaWork = Join-Path $ScratchRoot 'java'
 $DepsDirectory = $Dependencies
 & "$PSScriptRoot/Tests/Test-Profile.ps1" -TestRootParent $ScratchRoot
@@ -178,15 +178,9 @@ Write-Step "Rechecking $FirmwareName DisplayManager compatibility baseline"
 
 $stockDmClass = 'de.audi.tghu.fwhmi.DisplayManagerMIB2High'
 
-$stockBytecodeLines = Invoke-Native `
-    -Exe $Javap `
-    -Arguments @(
-        '-classpath', $LsdJar,
-        '-c',
-        '-p',
-        $stockDmClass
-    ) `
-    -Capture
+$stockBytecodeLines = Invoke-JavaDocker -SourceRoot $WorkTree -StockJar $LsdJar `
+    -Dependencies $Dependencies -OutputRoot (Join-Path $ScratchRoot 'stock-inspection') `
+    -Image $JavaImageId -Action @('javap', $stockDmClass) -Capture
 
 # javap indents each method signature by two spaces and its body by more, so
 # the disassembly splits cleanly into per-method blocks. The class reads
@@ -372,7 +366,7 @@ $nativeJob = Start-ThreadJob -ArgumentList $GitSh, $NativeSteps -ScriptBlock {
 # writing build/ in the scratch tree kept for diagnosis. Stop-Job lets the step in progress
 # finish (it does not kill the native process) and starts no further step.
 try {
-$java = & "$PSScriptRoot/Build-Java.ps1" -SourceRoot $WorkTree -StockJar $LsdJar -Dependencies $Dependencies -OutputRoot $JavaWork -BuildId $BuildId -JavaHome $JavaHome
+$java = & "$PSScriptRoot/Build-Java.ps1" -SourceRoot $WorkTree -StockJar $LsdJar -Dependencies $Dependencies -OutputRoot $JavaWork -BuildId $BuildId -JavaImage $JavaImageId
 $BuiltJavaJar = $java.Jar
 $JavaClassCount = $java.ClassCount
 $JavaResources = $java.Resources
@@ -430,6 +424,8 @@ $manifest = [ordered]@{
         firmwareProfile = [ordered]@{ name = $FirmwareName; sha256 = $FirmwareProfileSha256 }
         javaClassCount = $JavaClassCount
         javaTargetMajorVersion = 48
+        javaToolchainImageId = $JavaImageId
+        javaCompilerVersion = (Get-Content -LiteralPath (Join-Path $JavaWork 'javac-version.txt') -Raw).Trim()
         javaResources = @($JavaResources | ForEach-Object { [ordered]@{ jarEntry=$_.path; bytes=$_.bytes; sha256=$_.sha256 } })
         hostTests = $HostSuiteResults
         shellTemplates = $TemplateProvenance

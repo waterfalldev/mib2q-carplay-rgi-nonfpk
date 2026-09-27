@@ -5,10 +5,10 @@ Extract source functions verbatim for the host: only time, slot assignment and
 linked-lane lookup are fixtures. Does not emulate QNX services or HUD hardware.
 Run after scripts/build_java.sh; generated sources/frames stay under build/.
 
-The Java half (tests/RgdNativeContractProbe.java) takes the inputs scripts/check_java.sh
-uses: JAVA_HOME (JDK 8), STOCK_JAR and CARPLAY_DEPENDENCIES; CARPLAY_HOOK_JAR defaults to
-build/carplay_hook.jar. RGD_CONTRACT_STAGE=native stops after writing the frames, so the
-package builder can run the C half in Docker and the probe with its host JDK.
+The Java half (tests/RgdNativeContractProbe.java) uses scripts/java/docker.sh and
+its stock/dependency overrides; CARPLAY_HOOK_JAR defaults to build/carplay_hook.jar.
+RGD_CONTRACT_STAGE=native stops after writing the frames, so the package builder
+can run the C and Java halves in their respective Docker images. No host JDK is used.
 RGD_CONTRACT_OUT moves the output; RGD_CONTRACT_SANITIZE replaces address,undefined
 (ASan hangs at random in Docker on kernels with high mmap ASLR entropy).
 """
@@ -85,15 +85,8 @@ if os.environ.get('RGD_CONTRACT_STAGE') == 'native':
     print('Native RGI contract frames: ' + ' '.join(frame.name for frame in frames))
     sys.exit(0)
 
-missing = [name for name in ('JAVA_HOME', 'STOCK_JAR', 'CARPLAY_DEPENDENCIES') if not os.environ.get(name)]
-if missing:
-    sys.exit('Set ' + ', '.join(missing) + ' (see scripts/check_java.sh), or RGD_CONTRACT_STAGE=native')
-jdk = Path(os.environ['JAVA_HOME'])
-deps = Path(os.environ['CARPLAY_DEPENDENCIES'])
-hook_jar = os.environ.get('CARPLAY_HOOK_JAR') or ROOT / 'build/carplay_hook.jar'
-cp = os.pathsep.join(map(str, [hook_jar, os.environ['STOCK_JAR'],
-                               deps / 'org.osgi.framework-1.10.0.jar', deps / 'org.osgi.util.tracker-1.5.4.jar']))
-subprocess.run([str(jdk/'bin/javac'),'-encoding','UTF-8','-cp',cp,'-d',str(BUILD),str(ROOT/'tests/ManeuverChainAudit.java'),str(ROOT/'tests/RgdNativeContractProbe.java')],check=True)
-result=subprocess.run([str(jdk/'bin/java'),'-Xverify:none','-cp',str(BUILD)+os.pathsep+cp,'RgdNativeContractProbe',*map(str,frames)],check=True,text=True,capture_output=True)
+environment = dict(os.environ, JAVA_SKIP_BUILD='1', RGD_CONTRACT_FRAMES=str(BUILD.resolve()))
+result = subprocess.run(['bash', str(ROOT / 'scripts/java/docker.sh'), 'test', 'contract'],
+                        env=environment, check=True, text=True, capture_output=True)
 (BUILD/'native-input-result.txt').write_text(result.stdout)
 print(result.stdout,end='')
