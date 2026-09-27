@@ -398,17 +398,28 @@ static void apply_output(void) {
 }
 
 /* Output diagnostics: keep the latest settled maneuver frame, exactly as the MOST encoder
- * gets it, for the log collector.  At most every CR_MOST_FRAME_INTERVAL_S seconds; call
- * after render_end_frame() and before the swap. */
+ * gets it, for the log collector.  Once per settled maneuver, and at most every
+ * CR_MOST_FRAME_INTERVAL_S seconds: the readback stalls the GPU, so a maneuver held for a
+ * long stretch is not captured again.  Call after render_end_frame() and before the swap. */
 static void capture_most_frame(const struct timespec *now) {
     static struct timespec last = {0, 0};
     static int logged_ok = 0, logged_fail = 0;
+    static maneuver_state_t captured;
+    static unsigned captured_output = 0;
+    int ww, wh, x, y, w, h, opaque;
+    unsigned output;
     if (!render_output_is_opaque() || !g_engine.has_current || g_cleared
             || g_engine.current.icon == ICON_NONE || g_engine.phase != ENGINE_IDLE
             || render_is_animating()
             || !timespec_elapsed_at_least(now, &last, CR_MOST_FRAME_INTERVAL_S, 0))
         return;
+    /* The same maneuver in the same output window is already on file. */
+    output = platform_get_output(&ww, &wh, &x, &y, &w, &h, &opaque);
+    if (output == captured_output && memcmp(&captured, &g_engine.current, sizeof(captured)) == 0)
+        return;
     last = *now;
+    captured = g_engine.current;
+    captured_output = output;
     if (render_capture_output(CR_MOST_FRAME_PATH) == 0) {
         if (!logged_ok) fprintf(stderr, "maneuver_render: output frame saved to %s\n", CR_MOST_FRAME_PATH);
         logged_ok = 1;

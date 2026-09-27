@@ -93,7 +93,8 @@ falls back to the platform size and does not try that size again. The log record
 size, offscreen memory and free system memory before and after.
 
 For diagnostics the renderer saves the settled maneuver frame, exactly as streamed, to
-`/tmp/carplay_most_frame.ppm` at most every 10 s. It skips this while animating. The M.I.B.
+`/tmp/carplay_most_frame.ppm` once per settled maneuver, at most every 10 s. It skips this
+while animating, and does not repeat it while the same maneuver stays on screen. The M.I.B.
 collector copies this file and both handshake files.
 
 ## 📝 Guidance text

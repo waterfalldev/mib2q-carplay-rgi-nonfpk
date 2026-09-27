@@ -615,12 +615,18 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
     }
 
     public void refreshViewMode(int i) {
-        /* stock's view decision and its inputs, one WARN line per change. */
-        String state = ClusterViewMode.viewModeToString(i) + " {"
-            + String.valueOf(this.clusterViewMode).replace('\n', ' ').trim() + "}";
-        if (!state.equals(this.lastViewTrace)) {
-            this.lastViewTrace = state;
-            com.luka.carplay.framework.Log.w(VIEW_TAG, "stock view mode " + state);
+        /* stock's view decision and its inputs, one WARN line per change, only while CarPlay is
+         * connected: other drives build no trace string and start no log writer.  The connect
+         * dump records the view, and the first change after it is logged afresh. */
+        if (com.luka.carplay.core.ScreenModule.isConnected()) {
+            String state = ClusterViewMode.viewModeToString(i) + " {"
+                + String.valueOf(this.clusterViewMode).replace('\n', ' ').trim() + "}";
+            if (!state.equals(this.lastViewTrace)) {
+                this.lastViewTrace = state;
+                com.luka.carplay.framework.Log.w(VIEW_TAG, "stock view mode " + state);
+            }
+        } else {
+            this.lastViewTrace = null;
         }
         this.combiBAPListener.setViewMode(i);
     }

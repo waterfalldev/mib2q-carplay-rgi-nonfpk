@@ -130,8 +130,8 @@ typedef struct {
  * rewrite is whole even without truncation. */
 #define CR_MOST_OUTPUT_READY_PATH "/tmp/carplay_most_output_ready"
 #define CR_OUTPUT_READY_LENGTH    32
-/* Diagnostics for the log collector: at most every CR_MOST_FRAME_INTERVAL_S seconds while a
- * maneuver is settled on a MOST output, the window's frame exactly as the encoder gets it,
+/* Diagnostics for the log collector: once per settled maneuver on a MOST output, and at most
+ * every CR_MOST_FRAME_INTERVAL_S seconds, the window's frame exactly as the encoder gets it,
  * as a binary PPM. */
 #define CR_MOST_FRAME_PATH        "/tmp/carplay_most_frame.ppm"
 #define CR_MOST_FRAME_INTERVAL_S  10
