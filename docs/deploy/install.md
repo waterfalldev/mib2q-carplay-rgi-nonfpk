@@ -107,11 +107,9 @@ or replace unknown modifications such as another navigation patch.
 ## Diagnostics and limits
 
 `deploy/mib/collect-logs.sh` is the one collector source. Package preparation
-copies it unchanged for the bounded, foreground pre-rollback capture. Standalone
-live capture launches a detached MMX worker, acknowledges arming, delays so the
-user can return to CarPlay, then takes bounded audio/system/runtime snapshots.
-Follow the timing printed by the script. Check the saved status before treating
-a capture as complete. A failed or timed-out diagnostic never prevents rollback.
+copies it unchanged for the bounded, foreground pre-rollback capture, its only
+use. Check the saved status before treating a capture as complete. A failed or
+timed-out diagnostic never prevents rollback.
 
 Rollback runs from the M.I.B. menu, which needs the HMI to boot. If a JAR ever
 stops the HMI from starting (upstream issue #24: a patch linked against another

@@ -56,84 +56,31 @@ esac
 case "${0##*/}" in
     sloginfo)
         [ "$*" = "-t" ] || exit 99
-        count=0
-        [ ! -r "$PROBE_TEST_ROOT/slog-count" ] || count=$(cat "$PROBE_TEST_ROOT/slog-count")
-        count=$((count + 1))
-        echo "$count" > "$PROBE_TEST_ROOT/slog-count"
-        echo "system snapshot $count"
-        case "${AUDIO_SCENARIO:-}:$count" in
-            live-fails:3) echo 'partial audio diagnostic'; exit 7 ;;
-            live-hangs:3)
-                echo 'partial audio diagnostic'
-                echo "$$" > "$PROBE_TEST_ROOT/probe.pid"
-                exec sleep 30
-                ;;
-        esac
         echo "00:05:12.345 io-audio: simulated underrun"
         echo "00:05:12.346 vendor event without audio keywords"
         ;;
-    on)
-        echo "on $*" >> "$PROBE_TEST_ROOT/trace.txt"
-        if [ "$1:$2:$3:$4:$5" = '-d:-s:-f:mmx:/bin/sh' ]; then
-            [ "${SCENARIO:-}" != worker-launch-fails ] || exit 7
-            [ "${SCENARIO:-}" != worker-no-ack ] || exit 0
-            shift 5
-            /bin/sh "$@" </dev/null &
-        else
-            exit 99
-        fi
-        ;;
-    pidin)
-        if [ "${AUDIO_SCENARIO:-}" = live-interrupt ]; then
-            echo 'partial thread diagnostic'
-            echo "$$" > "$PROBE_TEST_ROOT/active-probe.pid"
-            kill -TERM "$PPID"
-            exec sleep 60
-        fi
-        echo "simulated pidin $*"
-        ;;
+    pidin) echo "simulated pidin $*" ;;
     dmdt) echo "simulated dmdt $*" ;;
 esac
 '@
-    foreach ($probe in @('sloginfo','on','pidin','dmdt')) { WriteText (Join-Path $probeDirectory $probe) $probeMock }
+    foreach ($probe in @('sloginfo','pidin','dmdt')) { WriteText (Join-Path $probeDirectory $probe) $probeMock }
     $text = [IO.File]::ReadAllText($source).Replace("`r`n", "`n")
     $text = $text.Replace('/net/mmx/fs/sda0', "$p/sd").Replace('/tmp/carplay', "$p/tmp/carplay").
         Replace('/tmp/maneuver_render.log', "$p/tmp/maneuver_render.log").
         Replace('/mnt/app/', "$p/app/").Replace('/mnt/system/', "$p/system/").Replace('/eso/bin/apps/dmdt', "$p/probes/dmdt").
-        Replace('/ramdisk/pps/', "$p/ramdisk/pps/").Replace("`nsleep 5 ", "`nsleep 0 ").
-        Replace('sleep 10 ||', 'sleep 0 ||')
-    # Accelerate healthy probe polling only. Keep the real five-second timeout
-    # for hangs, and leave arming acknowledgements and cleanup waits unchanged.
+        Replace('/ramdisk/pps/', "$p/ramdisk/pps/").Replace("`nsleep 5 ", "`nsleep 0 ")
+    # Accelerate healthy probe polling only. Keep the real five-second timeout for hangs.
     $text = $text.Replace("        sleep 1`n    done`n    # Check again", "        probe_poll_delay`n    done`n    # Check again")
-    # This is after the no-argument launcher: it must use the launcher's own on
-    # mock to reach MMX before these worker-only diagnostic mocks take effect.
     $probeSetup = @'
-unset -f on
-# Hold the detached worker until the caller has returned and tested its launch.
-# A bounded gate also prevents an assertion failure leaving a fixture waiting.
-sleep() {
-    if [ "$1" = 30 ] && [ -n "${BACKGROUND_GATE:-}" ]; then
-        for attempt in $(seq 1 200); do
-            [ ! -e "$BACKGROUND_GATE" ] || return 0
-            command sleep 0.1
-        done
-        return 1
-    fi
-    command sleep "$@"
-}
 probe_poll_delay() {
     case "${AUDIO_SCENARIO:-}:${PROBE_NAME:-}" in
-        hangs:sloginfo-mmx.txt|live-hangs:sloginfo-live-03.txt) command sleep 1 ;;
+        hangs:sloginfo-mmx.txt) command sleep 1 ;;
         *) command sleep 0.2 ;;
     esac
 }
-rmdir() {
-    if [ "${SCENARIO:-}" = lock-cleanup-fails ] && [ "${1##*/}" = .live-active ]; then return 1; fi
-    command rmdir "$@"
-}
 command() {
     if [ "${AUDIO_SCENARIO:-}:$1" = 'missing:-v' ]; then
-        case "$2" in sloginfo|on|pidin) return 1 ;; esac
+        case "$2" in sloginfo|pidin) return 1 ;; esac
     fi
     builtin command "$@"
 }
@@ -680,129 +627,9 @@ exit 0
         Assert ($elapsed -lt 20) "a hung capture does not hold the rollback (dispatcher returned in $([int]$elapsed) s with a 30 s hang)"
     }
 }
-# A standalone SD contains only the shared script, with no package at all.
-$standaloneScenarios = @('sourced','executed','lock-cleanup-fails','sd-rw-fails','slots-full','dispatch-fails','worker-launch-fails','worker-no-ack','invalid-argument')
-$standaloneBody = {
-    param($scenario)
-    $root = Join-Path $testRoot "standalone-$scenario"
-    foreach ($dir in @('sd/mod/carplay-rgi-runtime-logs','tmp')) {
-        New-Item -ItemType Directory -Force -Path (Join-Path $root $dir) | Out-Null
-    }
-    $p = Posix $root
-    WriteCollector $root (Join-Path $PSScriptRoot '../../deploy/mib/collect-logs.sh') (Join-Path $root 'sd/mod/command.sh')
-    WriteText (Join-Path $root 'tmp/carplay_java.log') "java-log-$scenario`n"
-    if ($scenario -eq 'slots-full') {
-        foreach ($slot in 1..9) {
-            New-Item -ItemType Directory -Path (Join-Path $root "sd/mod/carplay-rgi-runtime-logs/0$slot") | Out-Null
-        }
-    }
-    $mock = @'
-mount() { echo "mount $*" >> "$TRACE"; [ "$SCENARIO" != sd-rw-fails ] || { echo "mount: simulated failure" >&2; return 1; }; }
-on() {
-    echo "on $*" >> "$TRACE"
-    [ "$1:$2:$3" = '-f:mmx:/bin/sh' ] || return 99
-    [ "$SCENARIO" != dispatch-fails ] || return 1
-    shift 3
-    ( PATH=/usr/bin:/bin; sh "$@" )
-}
-# Exported functions only simulate QNX tools for an executed script on the PC.
-export -f mount on
-BACKGROUND_GATE="${COLLECTOR%/sd/mod/command.sh}/release-worker"
-if [ "$SCENARIO" = executed ]; then AUDIO_SCENARIO=live-fails; fi
-export TRACE SCENARIO BACKGROUND_GATE AUDIO_SCENARIO
-case "$SCENARIO" in
-    executed) /bin/sh "$COLLECTOR" ;;
-    invalid-argument) . "$COLLECTOR" unexpected ;;
-    *) . "$COLLECTOR" ;;
-esac
-result=$?
-echo "RETURNED:$result" >> "$TRACE"
-if [ "$result" = 0 ]; then
-    capture="${COLLECTOR%/command.sh}/carplay-rgi-runtime-logs/01"
-    [ -f "$capture/STARTED" ] && [ ! -e "$capture/RESULT" ] && echo 'RETURNED-BEFORE-COMPLETION' >> "$TRACE"
-    if [ "$SCENARIO" = sourced ]; then
-        . "$COLLECTOR"
-        echo "DUPLICATE:$?" >> "$TRACE"
-        /bin/sh "$COLLECTOR" background 01 >> "$capture/duplicate-output.txt" 2>&1
-        echo "DUPLICATE-WORKER:$?" >> "$TRACE"
-        worker=$(cat "$capture/STARTED")
-        kill -HUP "$worker"
-        sleep 0.1
-        kill -0 "$worker" 2>/dev/null && echo 'WORKER-SURVIVED-HUP' >> "$TRACE"
-    fi
-    echo release > "$BACKGROUND_GATE"
-    for attempt in $(seq 1 1200); do
-        if [ -f "$capture/RESULT" ]; then
-            if [ "$SCENARIO" = lock-cleanup-fails ] || [ ! -e "${capture%/01}/.live-active" ]; then break; fi
-        fi
-        sleep 0.1
-    done
-fi
-exit 0
-'@
-    $prefix = "SCENARIO='$scenario'`nTRACE='$p/trace.txt'`nCOLLECTOR='$p/sd/mod/command.sh'`n"
-    WriteText (Join-Path $root 'collector-test.sh') ($prefix + $mock)
-    $output = & $sh -c 'PATH=/usr/bin:/bin:$PATH; bash "$1"' sh (Posix (Join-Path $root 'collector-test.sh')) 2>&1
-    Assert ($LASTEXITCODE -eq 0) "standalone $scenario returns to caller"
-    $outputText = $output -join "`n"
-    WriteText (Join-Path $root 'collector-output.txt') $outputText
-    $screenLines = @($output | ForEach-Object { $_.ToString() } | Where-Object { $_ -match '^\[RGI\] ' })
-    $resultAt = @(for ($i = 0; $i -lt $screenLines.Count; $i++) { if ($screenLines[$i] -match '^\[RGI\] (Success: 0|Failed: [1-9][0-9]*)$') { $i } })
-    Assert ($resultAt.Count -eq 0 -or $resultAt[-1] -eq $screenLines.Count - 1) "standalone $scenario shows any result as the last M.I.B. line"
-    $trace = Get-Content -Raw (Join-Path $root 'trace.txt')
-    Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi'))) "standalone $scenario needs no package"
-    Assert (-not $trace.Contains('/mnt/')) "standalone $scenario never remounts firmware"
-    if ($scenario -in @('sourced','executed','lock-cleanup-fails')) {
-        Assert ($trace.Contains('RETURNED:0') -and $outputText.Contains('[RGI] Capture 01 armed. Return to CarPlay now.') -and $outputText.Contains('[RGI] Success: 0')) "standalone $scenario reports successful arming"
-        Assert ($trace.Contains('RETURNED-BEFORE-COMPLETION')) "standalone $scenario returns while its worker is still waiting"
-        Assert ($trace.Contains("on -f mmx /bin/sh $p/sd/mod/command.sh arm") -and $trace.Contains("on -d -s -f mmx /bin/sh $p/sd/mod/command.sh background 01")) "standalone $scenario detaches its MMX worker into a new process group"
-        $capture = Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/01'
-        Assert ((Get-Content -Raw (Join-Path $capture 'carplay_java.log')) -eq "java-log-$scenario`n") 'standalone capture holds the live Java log'
-        Assert ((Get-Content -Raw (Join-Path $capture 'summary.txt')).Contains('(trigger: background)')) 'standalone capture records its background trigger'
-        Assert (-not $trace.Contains('probe on -f rcc') -and -not $trace.Contains('probe dmdt')) "standalone $scenario avoids disruptive remote and dmdt probes"
-        $expected = if ($scenario -in @('executed','lock-cleanup-fails')) { '1' } else { '0' }
-        Assert ((Get-Content -Raw (Join-Path $capture 'RESULT')).Trim() -eq $expected) "standalone $scenario saves its eventual collection result"
-        if ($scenario -eq 'lock-cleanup-fails') {
-            Assert ((Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/.live-active')) -and
-                (Get-Content -Raw (Join-Path $capture 'summary.txt')).Contains('ERROR: live reservation cleanup or its flush failed')) 'reservation cleanup failure remains visible and prevents a successful result'
-        } else {
-            Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/.live-active'))) "standalone $scenario releases its active lock after completion"
-        }
-        if ($scenario -eq 'sourced') {
-            Assert ($trace.Contains('DUPLICATE:1') -and $outputText.Contains('[RGI] ERROR! A capture is already running or awaiting inspection')) 'a second sourced launch refuses an active capture'
-            Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/02'))) 'a refused duplicate does not reserve another slot'
-            Assert ($trace.Contains('DUPLICATE-WORKER:1')) 'a second worker cannot reopen the reserved capture'
-            Assert ($trace.Contains('WORKER-SURVIVED-HUP')) 'the detached worker survives hangup after arming'
-        }
-    } else {
-        Assert ($trace.Contains('RETURNED:1')) "standalone $scenario propagates failure"
-        if ($scenario -ne 'worker-launch-fails') {
-            Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/01/RESULT'))) "standalone $scenario claims no completed capture"
-        }
-        Assert (-not $outputText.Contains('armed. Return to CarPlay')) "standalone $scenario does not claim successful arming"
-        if ($scenario -in @('sd-rw-fails','invalid-argument')) {
-            Assert (-not $trace.Contains('on -f')) "standalone $scenario does not dispatch"
-        }
-        if ($scenario -eq 'sd-rw-fails') {
-            Assert ($outputText.Contains('[RGI] ERROR! Could not make the SD card writable: mount: simulated failure.')) 'standalone puts the mount error inside its [RGI] line'
-        }
-        if ($scenario -eq 'slots-full') {
-            Assert ($outputText.Contains('[RGI] ERROR! All 9 capture slots are full')) 'standalone explains full slots'
-            Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/.live-active'))) 'full capture slots do not leave a reservation lock'
-        }
-        if ($scenario -eq 'worker-launch-fails') {
-            Assert ((Get-Content -Raw (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/01/RESULT')).Trim() -eq '1') 'a failed detached launch records failure'
-            Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/.live-active'))) 'a failed detached launch releases its reservation lock'
-        }
-        if ($scenario -eq 'worker-no-ack') {
-            Assert ((Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/.live-active')) -and
-                -not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/01/RESULT'))) 'an unacknowledged worker retains its lock without claiming completion'
-        }
-    }
-}
-# Audio diagnostics: success, empty buffers, missing tools, errors and a hung
-# reader. These run the shared worker directly, just as the package invokes it.
-$audioScenarios = @('normal','empty','missing','fails','hangs','live-normal','live-fails','live-hangs')
+# Collector probes: success, empty buffers, missing tools, errors and a hung
+# reader. These run the shared collector directly, just as the package invokes it.
+$audioScenarios = @('normal','empty','missing','fails','hangs')
 $audioBody = {
     param($scenario)
     $root = Join-Path $testRoot "audio-$scenario"
@@ -814,35 +641,17 @@ $audioBody = {
     WriteCollector $root (Join-Path $PSScriptRoot '../../deploy/mib/collect-logs.sh') $collector
     WriteText (Join-Path $root 'tmp/carplay_java.log') "retained-java-log`n"
     $runner = Join-Path $root 'audio-test.sh'
-    $mode = if ($scenario.StartsWith('live-')) { 'live' } else { 'manual' }
-    WriteText $runner "AUDIO_SCENARIO='$scenario'`nexport AUDIO_SCENARIO`n/bin/sh '$p/sd/mod/command.sh' $mode`n"
+    WriteText $runner "AUDIO_SCENARIO='$scenario'`nexport AUDIO_SCENARIO`n/bin/sh '$p/sd/mod/command.sh' before-rollback`n"
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $output = & $sh -c 'PATH=/usr/bin:/bin:$PATH; bash "$1"' sh (Posix $runner) 2>&1
     $rc = $LASTEXITCODE
     $elapsed = $clock.Elapsed.TotalSeconds
     WriteText (Join-Path $root 'audio-output.txt') ($output -join "`n")
-    $expected = if ($scenario -in @('fails','hangs','live-fails','live-hangs')) { 1 } else { 0 }
+    $expected = if ($scenario -in @('fails','hangs')) { 1 } else { 0 }
     Assert ($rc -eq $expected) "audio $scenario returns the correct collection status"
     $capture = Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/01'
     $summary = Get-Content -Raw (Join-Path $capture 'summary.txt')
     $trace = Get-Content -Raw (Join-Path $root 'trace.txt')
-    if ($mode -eq 'live') {
-        $snapshotChecks = foreach ($round in @('01','02','03','04','05','06')) {
-            (Get-Content -Raw (Join-Path $capture "sloginfo-live-$round.txt")).Contains("system snapshot $([int]$round)")
-            $summary.Contains("CAPTURED sloginfo-live-$round.txt (")
-        }
-        Assert ($snapshotChecks -notcontains $false) "$scenario retains and checksums all six distinct system snapshots"
-        $sampleChecks = foreach ($round in @('01','02','03','04','05','06')) {
-            foreach ($process in @('io-audio','audio_service','maneuver_render')) {
-                (Get-Content -Raw (Join-Path $capture "live-$round-$process-ttimes.txt")).Contains("-p $process ttimes")
-                (Get-Content -Raw (Join-Path $capture "live-$round-$process-sched.txt")).Contains("-p $process sched")
-            }
-        }
-        Assert ($sampleChecks -notcontains $false) "$scenario preserves all six rounds of audio and renderer samples"
-        Assert (-not $trace.Contains('probe dmdt') -and $summary.Contains('SKIPPED live dmdt queries')) "$scenario skips disruptive diagnostics and explains the omissions"
-    } else {
-        Assert (-not (Test-Path (Join-Path $capture 'sloginfo-live-01.txt'))) "$scenario snapshot does not start live observation"
-    }
     Assert ((Get-Content -Raw (Join-Path $capture 'carplay_java.log')) -eq "retained-java-log`n") "audio $scenario preserves the existing runtime capture"
     if ($scenario -eq 'missing') {
         Assert ($summary.Contains('MMX system/audio messages unavailable')) 'missing audio tools are explicitly reported'
@@ -862,7 +671,7 @@ $audioBody = {
             $dmdtChecks = foreach ($query in @('gc','gs','gd')) {
                 (Get-Content -Raw (Join-Path $capture "dmdt-$query.txt")).Contains("simulated dmdt $query")
             }
-            Assert ($dmdtChecks -notcontains $false) 'manual snapshot retains all three dmdt queries'
+            Assert ($dmdtChecks -notcontains $false) 'the snapshot retains all three dmdt queries'
         }
         empty {
             Assert ((Get-Item (Join-Path $capture 'sloginfo-mmx.txt')).Length -eq 0) 'an empty system buffer is allowed'
@@ -879,46 +688,21 @@ $audioBody = {
             & $sh -c 'kill -0 "$1" 2>/dev/null' sh $probePid
             Assert ($LASTEXITCODE -ne 0) 'timed-out audio probe no longer runs'
         }
-        live-normal {
-            Assert ($summary.Contains('SUCCESS:')) 'six-round live observation completes successfully'
-        }
-        live-fails {
-            Assert ($summary.Contains('PROBE sloginfo-live-03.txt exit status: 7') -and $summary.Contains('PARTIAL:')) 'failed live snapshot yields a partial result'
-            Assert ((Get-Content -Raw (Join-Path $capture 'sloginfo-live-03.txt')).Contains('partial audio diagnostic') -and
-                $summary.Contains('PROBE sloginfo-live-06.txt exit status: 0')) 'failed live snapshot preserves its output and later rounds continue'
-        }
-        live-hangs {
-            Assert ($summary.Contains('sloginfo-live-03.txt timed out after 5 s') -and $summary.Contains('PARTIAL:')) 'hung live snapshot is bounded and yields a partial result'
-            Assert ((Get-Content -Raw (Join-Path $capture 'sloginfo-live-03.txt')).Contains('partial audio diagnostic') -and
-                $summary.Contains('PROBE sloginfo-live-06.txt exit status: 0')) 'hung live snapshot preserves its output and later rounds continue'
-            Assert ($elapsed -lt 30) 'hung live snapshot does not hold observation for its full hang'
-            $probePid = (Get-Content -Raw (Join-Path $root 'probe.pid')).Trim()
-            & $sh -c 'kill -0 "$1" 2>/dev/null' sh $probePid
-            Assert ($LASTEXITCODE -ne 0) 'timed-out live snapshot probe no longer runs'
-        }
     }
 }
-# Interrupt a bounded query after the first system snapshot. The worker must
-# return nonzero, retain partial evidence and reap its own active probe.
-$interruptBody = {
-$root = Join-Path $testRoot 'live-interrupted'
-foreach ($dir in @('sd/mod','tmp')) { New-Item -ItemType Directory -Force -Path (Join-Path $root $dir) | Out-Null }
-$p = Posix $root
-$collector = Join-Path $root 'sd/mod/command.sh'
-WriteCollector $root (Join-Path $PSScriptRoot '../../deploy/mib/collect-logs.sh') $collector
-$runner = Join-Path $root 'interrupt-test.sh'
-WriteText $runner "AUDIO_SCENARIO=live-interrupt`nexport AUDIO_SCENARIO`n/bin/sh '$p/sd/mod/command.sh' live`n"
-$output = & $sh -c 'PATH=/usr/bin:/bin:$PATH; bash "$1"' sh (Posix $runner) 2>&1
-Assert ($LASTEXITCODE -eq 1) 'interrupted live observation returns failure'
-WriteText (Join-Path $root 'interrupt-output.txt') ($output -join "`n")
-$readerPid = (Get-Content -Raw (Join-Path $root 'active-probe.pid')).Trim()
-& $sh -c 'kill -0 "$1" 2>/dev/null' sh $readerPid
-Assert ($LASTEXITCODE -ne 0) 'interruption reaps the active query'
-$capture = Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/01'
-Assert ((Get-Content -Raw (Join-Path $capture 'sloginfo-live-01.txt')).Contains('system snapshot 1') -and
-    (Get-Content -Raw (Join-Path $capture 'live-01-io-audio-sched.txt')).Contains('partial thread diagnostic')) 'interruption preserves the preceding snapshot and partial active query output'
+# The collector runs only as the package's pre-rollback capture: no argument, or an
+# old standalone mode, is refused before anything is written to the SD.
+$argumentBody = {
+    $root = Join-Path $testRoot 'collector-arguments'
+    foreach ($dir in @('sd/mod','tmp')) { New-Item -ItemType Directory -Force -Path (Join-Path $root $dir) | Out-Null }
+    $p = Posix $root
+    WriteCollector $root (Join-Path $PSScriptRoot '../../deploy/mib/collect-logs.sh') (Join-Path $root 'sd/mod/command.sh')
+    foreach ($argument in @('', 'arm', 'background', 'live', 'manual')) {
+        $output = & $sh -c 'PATH=/usr/bin:/bin:$PATH; /bin/sh "$1" $2' sh "$p/sd/mod/command.sh" $argument 2>&1
+        Assert ($LASTEXITCODE -eq 1 -and ($output -join "`n").Contains('[RGI] ERROR! Unknown argument')) "collector refuses '$argument'"
+    }
+    Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs'))) 'a refused invocation creates no capture folder'
 }
-
 # Every scenario is a unit with its own fixture under $testRoot, so units can run in
 # parallel. Phase 2 holds the scenarios that assert elapsed time; they run after the
 # others, together, so a loaded machine cannot fail them.
@@ -944,11 +728,10 @@ if (-not $DispatcherOnly) {
 foreach ($scenario in $dispatcherScenarios) {
     Add-Unit "dispatcher-$scenario" $dispatcherBody $scenario $(if ($scenario -eq 'rollback-collector-hangs') { 2 } else { 1 })
 }
-foreach ($scenario in $standaloneScenarios) { Add-Unit "standalone-$scenario" $standaloneBody $scenario }
 foreach ($scenario in $audioScenarios) {
-    Add-Unit "audio-$scenario" $audioBody $scenario $(if ($scenario -in @('hangs','live-hangs')) { 2 } else { 1 })
+    Add-Unit "audio-$scenario" $audioBody $scenario $(if ($scenario -eq 'hangs') { 2 } else { 1 })
 }
-Add-Unit 'live-interrupted' $interruptBody
+Add-Unit 'collector-arguments' $argumentBody
 
 function Invoke-Unit($entry) {
     if ($null -eq $entry.Argument) { & $entry.Body } else { & $entry.Body $entry.Argument }
@@ -982,8 +765,8 @@ if ($CollectorScript) { $unitCall += ' -CollectorScript ' + (Quote-Literal $Coll
 if ($DispatcherScript) { $unitCall += ' -DispatcherScript ' + (Quote-Literal $DispatcherScript) }
 New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
 # The slowest units start first so they do not finish last.
-$slowFirst = @('audio-live-fails','audio-live-normal','dispatcher-two-runs','standalone-sourced','standalone-executed',
-    'normal','upgrade','dispatcher-action-readback-fails','rollback-rename-1','rollback-rename-2','audio-fails')
+$slowFirst = @('dispatcher-two-runs','normal','upgrade','dispatcher-action-readback-fails','rollback-rename-1',
+    'rollback-rename-2','audio-fails')
 $results = @{}
 foreach ($phase in @(1, 2)) {
     $batch = @($units | Where-Object { $_.Phase -eq $phase } |

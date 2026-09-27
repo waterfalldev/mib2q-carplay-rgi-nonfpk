@@ -88,7 +88,7 @@ features below follow it automatically.
 | `maneuver_render/` | GLES maneuver overlay renderer (C, plus the C++11 `scene/` engine) |
 | `common/` | Shared renderer code: QNX Screen surface, GL program-binary cache, log timestamps |
 | `deploy/smartphone_integrator/` | Runtime scripts and child-process configuration for the HU |
-| `packaging/`, `deploy/mib/` | Source package builder, shared installer/rollback and standalone collector |
+| `packaging/`, `deploy/mib/` | Source package builder, shared installer/rollback and log collector |
 | `scripts/` | Docker build entry points (Java / hook / renderer) and host test runners |
 | `tests/` | Host tests (C, Java, Python) for the hook, Java bridge and renderer |
 | `toolchain/qnx65-abi/` | QNX Screen ABI headers used only for cross-compilation |
@@ -235,14 +235,11 @@ them before restarting.
 
 For raw route-guidance packet dumps, rebuild the hook with `LOG_RGD_PACKET_RAW=1` (see [Build](#-build)).
 
-**No shell? Use M.I.B.** The shared [collector](deploy/mib/collect-logs.sh)
-works standalone and is included unchanged in each prepared package for rollback
-capture. For a live capture, copy it to `mod/command.sh`, run Individual Script,
-wait for its arming confirmation, then reproduce the problem. A detached MMX
-worker captures a bounded window after the menu returns; the M.I.B. caller itself
-does not keep running in the background. Read the printed timing and completion
-status on the card. Restore the prepared overlay before installing or rolling back.
-Captures can contain private identifiers; review and redact them before sharing.
+**No shell? Use M.I.B.** Every rollback from a prepared package first copies the
+runtime logs to `mod/carplay-rgi-runtime-logs/` on the SD card, using the shared
+[collector](deploy/mib/collect-logs.sh). The capture is bounded, and a failed
+capture never prevents the rollback. Captures can contain private identifiers;
+review and redact them before sharing.
 
 ## 📚 Documentation
 

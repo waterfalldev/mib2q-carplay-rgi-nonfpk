@@ -1,39 +1,13 @@
 #!/bin/sh
 
-# Shared CarPlay-RGI runtime log collector. No package is needed for standalone use:
-# copy this file to the M.I.B. SD card as mod/command.sh and run Individual Script.
-# The package build also includes this exact file in its installer directory.
-# Standalone use arms a detached worker and returns to M.I.B. Leave the menu
-# and reproduce the ticking after the worker's thirty-second preparation delay.
-# Explicit "live", "manual" or "before-rollback" arguments run in the foreground on MMX;
-# the package dispatcher already remounts the SD and invokes it there.
-# The no-argument launcher returns safely when sourced by M.I.B. The MMX worker
-# stays in the invoked shell so the package watchdog can stop that same process.
+# Shared CarPlay-RGI runtime log collector. The package build includes this exact
+# file in its installer directory. Before a rollback the dispatcher runs it on MMX
+# with the SD writable, in the foreground and bounded by its own watchdog, so the
+# volatile /tmp logs reach the SD card before the uninstall.
 case "${1:-}" in
-    '')
-        (
-            echo "[RGI] Starting Log Collection..."
-            if ! mount_error=`mount -uw /net/mmx/fs/sda0 2>&1`; then
-                echo "[RGI] ERROR! Could not make the SD card writable${mount_error:+: $mount_error}."
-                echo "[RGI] Failed: 1"
-                exit 1
-            fi
-            on -f mmx /bin/sh /net/mmx/fs/sda0/mod/command.sh arm
-            result=$?
-            if [ "$result" = 0 ]; then
-                echo "[RGI] Success: 0"
-            else
-                echo "[RGI] Failed: $result"
-            fi
-            exit "$result"
-        )
-        CPRGI_COLLECT_RC=$?
-        # return is for sourcing; exit is the fallback for direct execution.
-        return "$CPRGI_COLLECT_RC" 2>/dev/null || exit "$CPRGI_COLLECT_RC"
-        ;;
-    arm|background|live|manual|before-rollback) ;;
+    before-rollback) ;;
     *)
-        echo "[RGI] ERROR! Unknown argument: $1"
+        echo "[RGI] ERROR! Unknown argument: ${1:-(none)}"
         return 1 2>/dev/null || exit 1
         ;;
 esac
@@ -42,32 +16,11 @@ PATH=${PATH:+$PATH:}/proc/boot:/bin:/usr/bin:/usr/sbin:/sbin:/mnt/app/armle/bin:
 export PATH
 
 LOG_BASE=/net/mmx/fs/sda0/mod/carplay-rgi-runtime-logs
-LIVE_LOCK=$LOG_BASE/.live-active
-LOCK_OWNED=0
 RUN=
 COLLECT_ERROR=0
-TRIGGER=${1:-manual}
+TRIGGER=$1
 
-# Release only this capture's reservation. A refused or unacknowledged launch
-# must not remove a worker's lock or a later capture's reservation.
-release_live_lock()
-{
-    if [ "$LOCK_OWNED" = 1 ]; then
-        if [ -n "$RUN" ] && [ -r "$LIVE_LOCK/run" ] &&
-           [ "`cat "$LIVE_LOCK/run"`" = "$RUN" ]; then
-            rm -f "$LIVE_LOCK/run" || return 1
-            rmdir "$LIVE_LOCK" 2>/dev/null || return 1
-        elif [ -z "$RUN" ]; then
-            rmdir "$LIVE_LOCK" 2>/dev/null || return 1
-        else
-            return 1
-        fi
-        LOCK_OWNED=0
-    fi
-}
-trap release_live_lock 0
-
-for utility in cat cksum ls mkdir mv rm rmdir sleep sync; do
+for utility in cat cksum ls mkdir mv rm sleep sync; do
     command -v "$utility" >/dev/null 2>&1 || {
         echo "[RGI] ERROR! Missing MMX tool: $utility"
         exit 1
@@ -83,56 +36,23 @@ mkdir -p "$LOG_BASE" || {
     exit 1
 }
 OUT=
-if [ "$TRIGGER" = background ]; then
-    case "${2:-}" in 01|02|03|04|05|06|07|08|09) RUN=$2 ;; *) exit 1 ;; esac
-    OUT=$LOG_BASE/$RUN
-    [ -d "$OUT" ] && [ ! -L "$OUT" ] && [ ! -L "$LIVE_LOCK" ] &&
-        [ ! -L "$LIVE_LOCK/run" ] && [ -r "$LIVE_LOCK/run" ] &&
-        [ "`cat "$LIVE_LOCK/run"`" = "$RUN" ] || exit 1
-    # Keep this marker: even a completed reserved slot must never be rerun.
-    mkdir "$OUT/.worker" || exit 1
-    # on -d detaches parentage; ignoring HUP also survives the M.I.B. session.
-    trap '' 1
-else
-    if [ "$TRIGGER" = arm ]; then
-        if ! mkdir "$LIVE_LOCK" 2>/dev/null; then
-            echo "[RGI] ERROR! A capture is already running or awaiting inspection (.live-active). No new capture started."
+for SLOT in 01 02 03 04 05 06 07 08 09; do
+    if [ ! -e "$LOG_BASE/$SLOT" ] && [ ! -L "$LOG_BASE/$SLOT" ]; then
+        OUT=$LOG_BASE/$SLOT
+        mkdir "$OUT" || {
+            echo "[RGI] ERROR! Could not create $OUT"
             exit 1
-        fi
-        LOCK_OWNED=1
+        }
+        RUN=$SLOT
+        break
     fi
-    for SLOT in 01 02 03 04 05 06 07 08 09; do
-        if [ ! -e "$LOG_BASE/$SLOT" ] && [ ! -L "$LOG_BASE/$SLOT" ]; then
-            OUT=$LOG_BASE/$SLOT
-            mkdir "$OUT" || {
-                echo "[RGI] ERROR! Could not create $OUT"
-                exit 1
-            }
-            RUN=$SLOT
-            break
-        fi
-    done
-fi
+done
 [ -n "$OUT" ] || {
     echo "[RGI] ERROR! All 9 capture slots are full. Copy them to the PC, then clear them."
     exit 1
 }
 SUMMARY=$OUT/summary.txt
-
-if [ "$TRIGGER" = arm ]; then
-    echo "$RUN" > "$LIVE_LOCK/run" || {
-        rm -f "$LIVE_LOCK/run"
-        rmdir "$LIVE_LOCK" 2>/dev/null
-        LOCK_OWNED=0
-        exit 1
-    }
-fi
-# The coordinator leaves the reserved summary for the worker to append to.
-if [ "$TRIGGER" = background ]; then
-    [ -f "$SUMMARY" ] && [ ! -L "$SUMMARY" ] || exit 1
-else
-    cat /dev/null > "$SUMMARY" || exit 1
-fi
+cat /dev/null > "$SUMMARY" || exit 1
 
 # Detail goes to summary.txt only; the M.I.B. screen gets [RGI] lines.
 record()
@@ -181,11 +101,6 @@ collect_probe()
     PROBE_NAME=$1
     shift
     record "PROBE $PROBE_NAME: $* (limit: 5 s)"
-    if [ "$TRIGGER" = live ] || [ "$TRIGGER" = background ]; then
-        if command -v date >/dev/null 2>&1; then
-            record "PROBE $PROBE_NAME unit clock: `date`"
-        fi
-    fi
     "$@" > "$OUT/$PROBE_NAME" 2>&1 &
     PROBE_PID=$!
     PROBE_TIMED_OUT=1
@@ -232,134 +147,26 @@ collect_optional_probe()
     COLLECT_ERROR=$OPTIONAL_COLLECT_ERROR
 }
 
-# Each live query is a bounded snapshot. No indefinite system-log reader or
-# shell resource limit is needed; the latter failed on the vehicle's QNX shell.
-# Stop an active query if the collector is interrupted.
-cleanup_probe()
+# Stop an active query if the collector is interrupted (the dispatcher's watchdog).
+finish_collector()
 {
+    COLLECT_RC=$?
     if [ -n "${PROBE_PID:-}" ]; then
         kill -KILL "$PROBE_PID" 2>/dev/null
         wait "$PROBE_PID" 2>/dev/null
         PROBE_PID=
     fi
-}
-finish_collector()
-{
-    COLLECT_RC=$?
-    cleanup_probe
-    if [ "$LOCK_OWNED" = 1 ]; then
-        if ! release_live_lock || ! sync; then
-            COLLECT_RC=1
-            echo "ERROR: live reservation cleanup or its flush failed." >> "$SUMMARY"
-        fi
-    fi
-    if [ "$TRIGGER" = background ]; then
-        # RESULT is separate from the launch acknowledgement. All normal capture
-        # writes and settling complete before exit 0; early exits stay failures.
-        if [ "$COLLECT_RC" = 0 ] && [ "${COLLECTION_COMPLETE:-0}" != 1 ]; then
-            COLLECT_RC=1
-        fi
-        if ! echo "$COLLECT_RC" > "$OUT/RESULT" || ! sync; then
-            COLLECT_RC=1
-            echo 1 > "$OUT/RESULT"
-            sync
-        fi
-    fi
     trap - 0
     exit "$COLLECT_RC"
 }
 trap finish_collector 0
-trap 'exit 1' 2 15
-if [ "$TRIGGER" = background ]; then
-    trap '' 1
-    LOCK_OWNED=1
-else
-    trap 'exit 1' 1
-fi
-
-collect_live_activity()
-{
-    record "LIVE: keep CarPlay connected; reproduce the ticking now."
-    record "LIVE: six observation rounds, with five ten-second gaps plus probe time."
-    record "LIVE: system messages and sampled thread activity, not recorded sound or an audio-buffer trace."
-
-    for LIVE_ROUND in 01 02 03 04 05 06; do
-        record "LIVE round $LIVE_ROUND started."
-        if command -v date >/dev/null 2>&1; then
-            record "LIVE round $LIVE_ROUND unit clock: `date`"
-        fi
-        if command -v sloginfo >/dev/null 2>&1; then
-            collect_probe "sloginfo-live-$LIVE_ROUND.txt" sloginfo -t
-        else
-            record "MISSING optional utility: sloginfo (live system messages unavailable)"
-        fi
-        if command -v pidin >/dev/null 2>&1; then
-            for LIVE_PROCESS in io-audio audio_service maneuver_render; do
-                collect_probe "live-$LIVE_ROUND-$LIVE_PROCESS-sched.txt" pidin -p "$LIVE_PROCESS" sched
-                collect_probe "live-$LIVE_ROUND-$LIVE_PROCESS-ttimes.txt" pidin -p "$LIVE_PROCESS" ttimes
-            done
-        else
-            record "MISSING optional utility: pidin (live thread activity unavailable)"
-        fi
-        if [ "$LIVE_ROUND" != 06 ]; then
-            sleep 10 || { COLLECT_ERROR=1; break; }
-        fi
-    done
-
-    record "LIVE: observation complete; collecting the final buffers and runtime files."
-}
-
-if [ "$TRIGGER" = arm ]; then
-    record "ARMING: reserved capture $RUN for background observation."
-    # The detached worker owns the reservation from this point. Preserve it on
-    # an unacknowledged launch; don't guess whether a delayed child is still alive.
-    LOCK_OWNED=0
-    if ! (
-        trap '' 1
-        on -d -s -f mmx /bin/sh /net/mmx/fs/sda0/mod/command.sh background "$RUN" \
-            < /dev/null > "$OUT/worker-output.txt" 2>&1
-    ); then
-        if [ ! -d "$OUT/.worker" ]; then
-            LOCK_OWNED=1
-            echo 1 > "$OUT/RESULT"
-            sync
-        fi
-        record "ERROR: detached launch failed; inspect worker-output.txt."
-        echo "[RGI] ERROR! Could not start the capture (see $OUT/worker-output.txt)."
-        exit 1
-    fi
-    for ARM_SECOND in 0 1 2 3 4 5; do
-        if [ -f "$OUT/STARTED" ] && [ ! -L "$OUT/STARTED" ]; then
-            record "ARMED: capture $RUN. Return from Individual Script to CarPlay now."
-            record "Recording begins after 30 seconds. Reproduce the ticking; leave the SD inserted and the unit on for at least three minutes."
-            record "This is a launch acknowledgement, not collection success. Check RESULT and summary.txt afterwards."
-            echo "[RGI] Capture $RUN armed. Return to CarPlay now."
-            echo "[RGI] Recording starts in 30 s and takes about 2 min; keep the unit on for 3 min."
-            exit 0
-        fi
-        [ "$ARM_SECOND" != 5 ] || break
-        sleep 1 || exit 1
-    done
-    record "ERROR: background startup was not acknowledged within five seconds. Reservation retained; inspect the capture before retrying."
-    echo "[RGI] ERROR! Capture $RUN did not start within 5 s. Inspect it before retrying."
-    exit 1
-fi
+trap 'exit 1' 1 2 15
 
 record "CarPlay-RGI runtime log collection started."
 record "This collector writes only to the SD card."
 record "Capture: $RUN (trigger: $TRIGGER)"
 if command -v date >/dev/null 2>&1; then
     record "Unit clock: `date`"
-fi
-
-if [ "$TRIGGER" = background ]; then
-    record "BACKGROUND: armed; allowing 30 seconds to leave M.I.B. before observation."
-    echo "$$" > "$OUT/STARTED" || exit 1
-    sleep 30 || exit 1
-fi
-
-if [ "$TRIGGER" = live ] || [ "$TRIGGER" = background ]; then
-    collect_live_activity
 fi
 
 # QNX 6.5 uses slogger, confirmed in the v12 process capture. Keep the entire
@@ -392,9 +199,7 @@ collect_file /ramdisk/pps/device/usb-1.0.1 usb-1.0.1.txt || COLLECT_ERROR=1
 # dmdt is not on the MMX search path. gc listed the display contexts on the tested firmware; gs and gd may print nothing on some units. All three are
 # display-manager queries (get), never a context switch.
 DMDT=/eso/bin/apps/dmdt
-if [ "$TRIGGER" = live ] || [ "$TRIGGER" = background ]; then
-    record "SKIPPED live dmdt queries: these probes crashed during the vehicle capture; avoiding diagnostic disruption during guidance."
-elif [ -x "$DMDT" ]; then
+if [ -x "$DMDT" ]; then
     # Output may be empty for gs and gd on this firmware.
     collect_optional_probe dmdt-gc.txt "$DMDT" gc
     collect_optional_probe dmdt-gs.txt "$DMDT" gs
@@ -481,13 +286,12 @@ sync || {
 
 if [ "$COLLECT_ERROR" = 0 ]; then
     record "SUCCESS: runtime evidence copied to $OUT"
-    [ "$TRIGGER" = background ] || echo "[RGI] Logs saved to $OUT"
+    echo "[RGI] Logs saved to $OUT"
     sync || exit 1
-    COLLECTION_COMPLETE=1
     exit 0
 fi
 
 record "PARTIAL: collection encountered one or more read or SD-write errors."
-[ "$TRIGGER" = background ] || echo "[RGI] ERROR! Logs only partly saved (see $SUMMARY)."
+echo "[RGI] ERROR! Logs only partly saved (see $SUMMARY)."
 sync
 exit 1

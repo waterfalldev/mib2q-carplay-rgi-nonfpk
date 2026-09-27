@@ -513,7 +513,7 @@ without the exact installer-owned marker and valid on-unit backups.
     Write-LfUtf8 `
         -Path $RollbackPath `
         -Content (Expand-TokenTemplate -Template $RollbackTemplate -Values $RollbackTemplateValues)
-    # Include the shared standalone collector unchanged. The dispatcher invokes it
+    # Include the shared collector unchanged. The dispatcher invokes it
     # on MMX before rollback; it stays on the SD, not in the installed payload.
     Write-LfUtf8 `
         -Path $CollectLogsPath `
