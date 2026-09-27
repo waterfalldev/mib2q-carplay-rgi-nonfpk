@@ -52,6 +52,19 @@ void platform_ensure_focus(void);
  * No-op on non-QNX platforms. */
 void platform_check_and_recover_window(void);
 
+/* presentation window vs rendered content.  A MOST (KOMO video) cluster streams
+ * our window as-is at its KOMO view size (KVS_Most 800x252 on the tested MOST cluster), which differs
+ * from the 328x181 content.  platform_check_output() (every ~1 s) resizes the window to
+ * what Java asked for in CR_MOST_OUTPUT_PATH; platform_get_output() reports the window
+ * size and the rectangle (GL bottom-left origin) the content is fitted into, plus
+ * whether the window is opaque.  Its return value changes whenever any of that does.
+ * Without the Java request the window is the content size and the rectangle covers it. */
+void platform_check_output(void);
+unsigned platform_get_output(int *win_w, int *win_h, int *x, int *y, int *w, int *h, int *opaque);
+
+/* Output diagnostics: free system memory in KB (the GPU allocates from it), or -1. */
+long platform_free_memory_kb(void);
+
 /* Release the displayable binding back to the native owner (QNX:
  * explicit screen_destroy_window on our window).  Counterpart to
  * platform_check_and_recover_window — lets displaymanager re-bind

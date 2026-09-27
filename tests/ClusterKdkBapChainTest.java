@@ -33,6 +33,7 @@ public final class ClusterKdkBapChainTest {
             ClusterKdkBapChainTest.class.getClassLoader(),new Class[]{IDisplayManagerKombiControl.class},capture);
         ClusterKdkSyncTest.field("platformSupported",Boolean.TRUE);
         ClusterKdkSyncTest.field("connected",Boolean.TRUE);ClusterKdkSyncTest.field("navActive",Boolean.TRUE);
+        ClusterKdkSyncTest.virtualCockpit();
         ClusterLayerController.bind(dm,1);
         final int[] acknowledgements={0,0};
         CombiBAPServiceNavi sink=(CombiBAPServiceNavi)Proxy.newProxyInstance(

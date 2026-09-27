@@ -349,7 +349,8 @@ public class CombiMapController extends DisplayControllerEvo implements NaviMoKo
          * clusterActive (set only after the first switch settles) — else a View press during the first
          * ~180ms switch slips the pin and strands the cluster on the stock map.  isConnected() clears
          * on disconnect, so the stock map returns then. */
-        if (this.kombiTerminal == CLUSTER_TERMINAL && com.luka.carplay.core.ScreenModule.isConnected()) {
+        /* pin only the Virtual Cockpit composition; a MOST cluster keeps stock switching. */
+        if (this.kombiTerminal == CLUSTER_TERMINAL && com.luka.carplay.core.ScreenModule.ownsClusterContext()) {
             logDisplay.log(10000000, "CombiMapController#switchToTargetContext SKIPPED — CarPlay owns cluster (ctx 80)");
             return;
         }
