@@ -1,7 +1,8 @@
 /*
  * OpenGL rendering -- single-FBO painter's algorithm architecture.
  *
- * 2 mask FBOs (flat 2D, no lighting):
+ * 2 mask FBOs per set (flat 2D, no lighting); set 0 is the current maneuver, set 1 the
+ * next one during a push (FBO_ROAD_NEXT, FBO_ROUTE_NEXT):
  *   FBO_ROAD  -- combined road: white outline drawn first, grey fill on top
  *               (painter's algorithm -- fill overwrites interior, border remains)
  *   FBO_ROUTE -- blue active route
@@ -223,9 +224,6 @@ static int g_refused_w = 0, g_refused_h = 0;
 float g_3d_offset_adjust = -0.10f;  /* extra Y offset in 3D mode (tuned) */
 static float g_z_bias = 0.0f;
 
-/* Mask cache dirty flag */
-static int g_masks_dirty = 1;
-
 /* Camera pan offset (maneuver space) -- shifts entire scene to follow arrow */
 static float g_cam_pan_x = 0.0f;
 static float g_cam_pan_z = 0.0f;  /* z in 3D = y in maneuver 2D */
@@ -263,12 +261,33 @@ static float g_mvp_ortho_2d[16];   /* pure orthographic for mask rendering */
  * Multi-FBO system
  * ================================================================ */
 
-enum { FBO_ROAD = 0, FBO_ROUTE = 1, FBO_COUNT = 2 };
+/* The transition masks come in two sets of road + route.  Set 0 holds the current maneuver;
+ * set 1 holds the next one while a push crossfades between them.  A set is painted once
+ * after an invalidation and then only composited, so a push no longer clears and repaints
+ * one shared pair twice a frame.  A set is ROAD + 2 * set, ROUTE + 2 * set. */
+enum { FBO_ROAD = 0, FBO_ROUTE = 1, FBO_ROAD_NEXT = 2, FBO_ROUTE_NEXT = 3, FBO_COUNT = 4 };
+#define MASK_SETS 2
 static GLuint g_fbos[FBO_COUNT];
 static GLuint g_fbo_texs[FBO_COUNT];
 static int g_fbo_w = 0, g_fbo_h = 0;
 static GLint g_default_fbo = 0;  /* saved at init -- may not be 0 on macOS */
-static int g_route_mask_ready = 0;
+static int g_mask_set;                           /* set painted and composited */
+static int g_set_dirty[MASK_SETS] = { 1, 1 };    /* to be painted before its next composite */
+static int g_set_road[MASK_SETS];                /* painted a road mask since invalidated */
+static int g_set_route[MASK_SETS];               /* painted a route mask since invalidated */
+static int g_mask_skip;          /* between begin/end_mask of a clean set: replay, no GPU work */
+static int g_mask_hold;          /* the selected set paints in a later frame: render_hold_mask_set */
+static unsigned g_mask_paints;   /* mask clears (painted layers), for the pacing log */
+
+static void invalidate_mask_set(int set) {
+    g_set_dirty[set] = 1;
+    g_set_road[set] = g_set_route[set] = 0;
+}
+
+static void invalidate_mask_sets(void) {
+    int i;
+    for (i = 0; i < MASK_SETS; i++) invalidate_mask_set(i);
+}
 
 /* Supersample FBO — render above window resolution, blit down with GL_LINEAR.
  * QNX uses 1.6x (= 8/5).  The floor comes from the transition masks, which are
@@ -627,6 +646,10 @@ void vb_flush(float r, float g, float b, float a) {
     const material_preset_t *preset;
 
     if (g_vcount == 0) return;
+    if (g_active_pass==PASS_FLAT && g_mask_skip) {
+        g_z_bias+=Z_BIAS_STEP;                  /* as the draw below would */
+        return;
+    }
     if (g_active_pass==PASS_FLAT) {
         glUniform4f(g_flat_color,r,g,b,a);
         glUniform1f(g_flat_zbias,g_z_bias);
@@ -985,7 +1008,7 @@ static void fbos_init(int w, int h) {
 
     glBindTexture(GL_TEXTURE_2D, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    g_route_mask_ready = 0;
+    invalidate_mask_sets();
     fprintf(stderr, "render: %d FBOs init %dx%d (mask half extents %.2f x %.2f)\n",
             FBO_COUNT, g_fbo_w, g_fbo_h, g_mask_half_w, g_mask_half_h);
 }
@@ -994,7 +1017,7 @@ static void fbos_shutdown(void) {
     if (g_fbos[0]) { glDeleteFramebuffers(FBO_COUNT, g_fbos); memset(g_fbos, 0, sizeof(g_fbos)); }
     if (g_fbo_texs[0]) { glDeleteTextures(FBO_COUNT, g_fbo_texs); memset(g_fbo_texs, 0, sizeof(g_fbo_texs)); }
     g_fbo_w = g_fbo_h = 0;
-    g_route_mask_ready = 0;
+    invalidate_mask_sets();
 }
 
 
@@ -1002,7 +1025,7 @@ static void fbos_resize(int w, int h) {
     if (mask_extent(w) == g_fbo_w && mask_extent(h) == g_fbo_h) return;
     fbos_shutdown();
     fbos_init(w, h);
-    g_masks_dirty = 1;
+    invalidate_mask_sets();
 }
 
 /* Bind a specific FBO, clear it, set flat overwrite mode */
@@ -1454,6 +1477,8 @@ static void sync_camera_uniforms(void) {
 
 void render_begin_frame(void) {
     double now=viewport_now();
+    g_mask_skip = 0;                  /* a mask painting that never ended must not skip more */
+    g_mask_hold = 0;                  /* a hold lasts one frame at most */
     cr_rect_animate(&g_visible_area,now);
     cr_rect_animate(&g_content_offset,now);
     /* Render into 2x supersample FBO */
@@ -1501,6 +1526,7 @@ void render_get_content_framing(float *x,float *y,float *dolly) {
 
 void render_begin_overlay(cr_rect_t clip) {
     float identity[16]={0};
+    g_mask_skip = 0;                  /* overlays are never mask painting */
     identity[0]=identity[5]=identity[10]=identity[15]=1;
     use_flat_program(3.0f);
     render_set_mask_entry_fade(0,0);
@@ -1667,6 +1693,7 @@ void render_sync_camera(void) {
 
 void render_end_frame(void) {
     static const float quad[] = { -1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1 };
+    g_mask_skip = 0;                  /* pass 2's blit is a flat draw, never mask painting */
 
     /* Pass 1: FXAA on SSAA FBO → FXAA FBO (same resolution, smoothed edges) */
 #if FXAA_ENABLED
@@ -1830,12 +1857,28 @@ void render_set_material(render_material_t material) {
 }
 
 void render_invalidate_masks(void) {
-    g_masks_dirty = 1;
-    g_route_mask_ready = 0;
+    invalidate_mask_sets();
+}
+
+void render_invalidate_next_masks(void) {
+    invalidate_mask_set(1);
 }
 
 int render_masks_dirty(void) {
-    return g_masks_dirty;
+    return g_set_dirty[0];
+}
+
+void render_select_mask_set(int set) {
+    g_mask_set = set == 1 ? 1 : 0;
+    g_mask_hold = 0;
+}
+
+void render_hold_mask_set(void) {
+    g_mask_hold = 1;
+}
+
+unsigned render_mask_paint_count(void) {
+    return g_mask_paints;
 }
 
 /* ================================================================
@@ -2020,7 +2063,16 @@ void render_shutdown(void) {
  * ================================================================ */
 
 static void begin_mask(int fbo_idx) {
-    fbo_bind(fbo_idx);
+    /* A clean set keeps its layers: the caller's painting replays without GPU work (vb_flush
+     * only advances the depth bias, as the composite that follows reads it).  So does a held
+     * set, which stays dirty and is painted in a later frame. */
+    g_mask_skip = !g_set_dirty[g_mask_set] || g_mask_hold;
+    if (!g_mask_skip) {
+        fbo_bind(fbo_idx + 2 * g_mask_set);
+        g_mask_paints++;
+        if (fbo_idx == FBO_ROAD) g_set_road[g_mask_set] = 1;
+        else g_set_route[g_mask_set] = 1;
+    }
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
@@ -2030,6 +2082,7 @@ static void begin_mask(int fbo_idx) {
 }
 
 static void end_mask(void) {
+    g_mask_skip = 0;
     fbo_unbind();
     glEnable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -2073,7 +2126,6 @@ void render_begin_outline_mask(void) { begin_mask(FBO_ROAD); }
 void render_end_outline_mask(void)   { end_mask(); }
 
 void render_begin_route_mask(void) {
-    g_route_mask_ready = 1;
     begin_mask(FBO_ROUTE);
 }
 
@@ -2085,12 +2137,21 @@ void render_begin_route_mask(void) {
  * No subtraction needed -- border/fill distinction is baked into FBO colors.
  * ================================================================ */
 
+/* The layer a set composites.  Set 1 falls back to set 0's layer when the next maneuver
+ * painted none: with one shared pair, that texture still held the current maneuver's. */
+static int composite_layer(int layer, const int *painted) {
+    int set = g_mask_set;
+    if (!painted[set] && set == 1 && painted[0]) set = 0;
+    return painted[set] ? layer + 2 * set : -1;
+}
+
 /* The road FBO supplies fill and border RGB for one lit ground-plane quad. */
 static void composite_road_layer(void) {
     const material_preset_t *preset = material_preset(RENDER_MAT_ROAD_ASPHALT);
+    int road = composite_layer(FBO_ROAD, g_set_road);
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_fbo_texs[FBO_ROAD]);
+    glBindTexture(GL_TEXTURE_2D, g_fbo_texs[road >= 0 ? road : FBO_ROAD + 2 * g_mask_set]);
     glUniform1i(g_uni_tex, 0);
     glUniform1f(g_uni_tex_mode, 7.0f);
 
@@ -2137,10 +2198,11 @@ void render_composite(void) {
     /* Layer 2: Route shadow on road surface. Only sample the route mask when it
      * was actually rendered; otherwise skip the pass instead of reading an
      * uninitialized texture. */
-    if (g_route_mask_ready) {
+    int route = composite_layer(FBO_ROUTE, g_set_route);
+    if (route >= 0) {
         float gx = g_mask_half_w * 3.0f, gz = g_mask_half_h * 3.0f;
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, g_fbo_texs[FBO_ROUTE]);
+        glBindTexture(GL_TEXTURE_2D, g_fbo_texs[route]);
         use_shadow_program(9.0f);
         glUniform1f(g_shadow_zbias, g_z_bias);
         g_z_bias += Z_BIAS_STEP;
@@ -2161,7 +2223,7 @@ void render_composite(void) {
 
     use_lit_program();
 
-    g_masks_dirty = 0;
+    if (!g_mask_hold) g_set_dirty[g_mask_set] = 0;
 }
 
 void render_reset_depth(void) {

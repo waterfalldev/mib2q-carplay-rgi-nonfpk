@@ -50,8 +50,8 @@ void render_set_viewport(int fb_width, int fb_height);
 /* present the frame into (x, y, w, h) of a win_w x win_h window (GL origin
  * bottom-left) instead of filling the window; opaque = everything else black and every
  * pixel alpha 1 (a MOST KOMO stream).  win_w <= 0 restores "fill the window".
- * On an opaque output the scene renders at w x h itself (2x supersampled, resolved
- * exactly 2:1), falling back to the render_init/render_set_viewport size if those render
+ * On an opaque output the scene renders at w x h itself (no supersampling, FXAA, copied
+ * 1:1), falling back to the render_init/render_set_viewport size if those render
  * targets cannot be allocated.  Returns 1 when the render targets changed size. */
 int render_set_output(int win_w, int win_h, int x, int y, int w, int h, int opaque);
 int render_output_is_opaque(void);
@@ -168,12 +168,30 @@ void render_reset_depth(void);
 /* Mark masks as needing re-render (call on maneuver state change) */
 void render_invalidate_masks(void);
 
+/* Mark only set 1, the next maneuver's masks, as needing re-render: the next maneuver changed
+ * but the current one did not, so its set 0 stays valid. */
+void render_invalidate_next_masks(void);
+
 /* Apply/remove a 2D rigid transform for mask rendering (second maneuver). */
 void render_push_mask_transform(float tx, float ty, float cos_r, float sin_r);
 void render_pop_mask_transform(void);
 
-/* Returns 1 if masks need re-rendering */
+/* Returns 1 if the current maneuver's masks (set 0) need re-rendering */
 int render_masks_dirty(void);
+
+/* Mask set for painting and render_composite(): 0 = current maneuver, 1 = the next one
+ * during a push.  A set invalidated since its last composite is painted; a clean set
+ * replays the painting calls without GPU work.  maneuver_draw leaves set 0 selected. */
+void render_select_mask_set(int set);
+
+/* Until the next render_select_mask_set, the selected set's painting waits for a later frame:
+ * it replays without GPU work, as for a clean set, and render_composite leaves the set dirty
+ * (it composites set 0's layers in its place).  For a set composited invisibly, so a frame
+ * that already painted set 0 does not paint set 1 as well. */
+void render_hold_mask_set(void);
+
+/* Mask layers painted (FBO clears) since start, for the pacing log. */
+unsigned render_mask_paint_count(void);
 
 /* ================================================================
  * Flag sprite API

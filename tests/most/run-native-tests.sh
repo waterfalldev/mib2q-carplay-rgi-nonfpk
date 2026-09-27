@@ -37,10 +37,12 @@ docker run --rm --platform=linux/amd64 -v "$SRC_DIR":/src:ro -v "$TESTS_DIR":/te
           -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
           -I/src/maneuver_render -I/src/common -I/tmp/inc -I/tests/hostshim"
   failed=0
-  for test in most_output_platform_test most_output_render_test; do
+  for test in most_output_platform_test most_output_render_test most_mask_cache_test; do
     [ -f "/tests/$test.c" ] || { echo "Missing suite $test"; exit 1; }
     echo "--- $test ---"
-    gcc $CFLAGS "/tests/$test.c" -lm -o "/tmp/bin/$test"
+    extra=""
+    [ "$test" = most_mask_cache_test ] && extra="/src/maneuver_render/maneuver.c /src/maneuver_render/route_path.c"
+    gcc $CFLAGS "/tests/$test.c" $extra -lm -o "/tmp/bin/$test"
     if ! timeout 60 "/tmp/bin/$test" 2>"/tmp/bin/$test.stderr"; then
       failed=1
       tail -20 "/tmp/bin/$test.stderr"

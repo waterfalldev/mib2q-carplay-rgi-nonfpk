@@ -20,6 +20,16 @@ cc -D_GNU_SOURCE -std=gnu99 -O1 -Wall -Wextra -Werror -Wno-unused-function \
     -Imaneuver_render/hostcheck -Icommon tests/gl_program_cache_test.c $DL_LIB -o "$OUT/gl_program_cache"
 "$OUT/gl_program_cache"
 
+printf '%-32s ' frame_pacer_test
+cc -D_GNU_SOURCE -std=c99 -O1 -Wall -Wextra -Werror -pedantic -Wno-unused-function \
+    -Imaneuver_render tests/frame_pacer_test.c -o "$OUT/frame_pacer"
+"$OUT/frame_pacer"
+
+printf '%-32s ' frame_profile_test
+cc -D_GNU_SOURCE -std=c99 -O1 -Wall -Wextra -Werror -pedantic -Wno-unused-function \
+    -Imaneuver_render tests/frame_profile_test.c -o "$OUT/frame_profile"
+"$OUT/frame_profile"
+
 printf '%-32s ' coverart_safety_test
 cc -D_GNU_SOURCE -std=c99 -O2 -Wall -Wextra -Werror -pedantic -Ihook \
     tests/coverart_safety_test.c hook/coverart/jpeg_safety.c \
@@ -81,14 +91,14 @@ cc -D_GNU_SOURCE -std=c99 -O2 -Wall -Wextra -Werror -Ihook \
 printf '%-32s ' local_protocols
 python3 scripts/check_local_protocols.py
 
+printf '%-32s ' supervisor_lifecycle_test
+sh scripts/test_supervisor_lifecycle.sh
+
 printf '%-32s ' install_dio_test
 sh scripts/test_install_dio.sh
 
 printf '%-32s ' logging_mib_test
 sh scripts/test_logging_mib.sh
-
-printf '%-32s ' supervisor_lifecycle_test
-sh scripts/test_supervisor_lifecycle.sh
 
 printf '%-32s ' install_listing_test
 sh scripts/test_install_listing.sh
