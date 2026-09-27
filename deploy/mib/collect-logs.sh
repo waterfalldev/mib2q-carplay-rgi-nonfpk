@@ -445,7 +445,8 @@ do
 done
 
 if command -v pidin >/dev/null 2>&1; then
-    collect_probe processes.txt pidin ar
+    # No process list: `pidin ar` records every command line, and those carry the
+    # vehicle's identifiers into logs that get shared.
     # Free and total memory, for the renderer's render-target size.
     collect_optional_probe memory.txt pidin info
     # One scheduling snapshot per relevant process, not a live CPU trace.

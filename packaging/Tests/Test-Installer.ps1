@@ -666,6 +666,7 @@ exit 0
             (Get-Content -Raw (Join-Path $capture 'dmdt-gc.txt')).Contains('simulated dmdt gc') -and
             (Get-Content -Raw (Join-Path $capture 'dmdt-gs.txt')).Contains('simulated dmdt gs') -and
             (Get-Content -Raw (Join-Path $capture 'dmdt-gd.txt')).Contains('simulated dmdt gd')) 'rollback snapshot retains the system log once and the dmdt diagnostics'
+        Assert (-not (Test-Path (Join-Path $capture 'processes.txt')) -and -not $trace.Contains('probe pidin ar')) 'rollback snapshot records no process command lines'
         Assert ($outputText.Contains('[RGI] Logs saved to mod/carplay-rgi-runtime-logs')) 'M.I.B. output reports the capture'
     }
     if ($scenario -eq 'rollback-slots-full') {
