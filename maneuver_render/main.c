@@ -71,6 +71,15 @@ static int64_t timespec_ns(const struct timespec *t) {
     return (int64_t)t->tv_sec * 1000000000LL + t->tv_nsec;
 }
 
+/* One pacing line, with the transition-mask layers painted since the previous one: a push
+ * paints four once (current + next road and route), not four every frame. */
+static void log_pacing(const char *line) {
+    static unsigned last;
+    unsigned painted = render_mask_paint_count();
+    fprintf(stderr, "%s pacing: %s masks=%u\n", log_stamp(), line, painted - last);
+    last = painted;
+}
+
 static void sleep_ns(int64_t ns) {
     struct timespec ts = { (time_t)(ns / 1000000000LL), (long)(ns % 1000000000LL) };
     while (nanosleep(&ts, &ts) != 0 && errno == EINTR) { }
@@ -139,9 +148,12 @@ static void prepare_engine_scene(cr_scene_t *scene,const maneuver_state_t *m) {
         fprintf(stderr,"scene: invalid input; ordinary maneuver fallback\n");return;
     }
     const cr_scene_info_t *info=cr_scene_info(scene);
-    if(info->builds!=before)
+    if(info->builds!=before) {
         fprintf(stderr,"scene: kind=%d fallback=%d commands=%u\n",
             info->kind,info->fallback,info->command_count);
+        /* A rebuilt scene paints different masks; cached mask sets must not outlive it. */
+        render_invalidate_masks();
+    }
 }
 static void prepare_engine_scenes(void) {
     prepare_engine_scene(g_engine.current_scene,&g_engine.current);
@@ -1064,7 +1076,7 @@ int main(int argc, char **argv) {
             int64_t wait_ns = cr_pacer_frame_done(&pacer, timespec_ns(&t_start), swap_ns,
                                                   timespec_ns(&t_end));
             if (cr_pacer_report(&pacer, timespec_ns(&t_end), pacing_line, sizeof(pacing_line)))
-                fprintf(stderr, "%s pacing: %s\n", log_stamp(), pacing_line);
+                log_pacing(pacing_line);
             if (wait_ns > 0) {
                 watch_stage(WATCH_SLEEP);
                 sleep_ns(wait_ns);
@@ -1073,7 +1085,7 @@ int main(int argc, char **argv) {
         } else {
             cr_pacer_idle(&pacer);
             if (cr_pacer_report(&pacer, timespec_ns(&t_end), pacing_line, sizeof(pacing_line)))
-                fprintf(stderr, "%s pacing: %s\n", log_stamp(), pacing_line);
+                log_pacing(pacing_line);
             if (idle_frames < 10000) idle_frames++;
             long idle_ns = (idle_frames < TARGET_FPS)     ? FRAME_TIME_NS     /* <1 s: 30 Hz */
                          : (idle_frames < TARGET_FPS * 5) ? 100L * 1000000L  /* 1–5 s: 10 Hz */

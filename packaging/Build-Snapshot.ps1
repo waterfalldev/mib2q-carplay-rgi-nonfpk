@@ -416,7 +416,7 @@ foreach ($result in $NativeResults) {
 if ($NativeResults.Count -ne $NativeSteps.Count) { throw 'Not every native step ran.' }
 # MOST host suites: a zero exit is not enough, each must report exactly once, with no failures.
 $mostOutput = $NativeResults[-1].Output
-$MostSuiteResults = @(foreach ($suite in @('most_output_platform_test','most_output_render_test')) {
+$MostSuiteResults = @(foreach ($suite in @('most_output_platform_test','most_output_render_test','most_mask_cache_test')) {
     $lines = @($mostOutput | Where-Object { $_ -match ('^' + $suite + ': [1-9][0-9]* checks, 0 failures$') })
     if ($lines.Count -ne 1) { throw "Native host suite $suite did not report one passing result." }
     [ordered]@{ name = $suite; result = $lines[0] }

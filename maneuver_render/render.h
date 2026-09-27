@@ -172,8 +172,16 @@ void render_invalidate_masks(void);
 void render_push_mask_transform(float tx, float ty, float cos_r, float sin_r);
 void render_pop_mask_transform(void);
 
-/* Returns 1 if masks need re-rendering */
+/* Returns 1 if the current maneuver's masks (set 0) need re-rendering */
 int render_masks_dirty(void);
+
+/* Mask set for painting and render_composite(): 0 = current maneuver, 1 = the next one
+ * during a push.  A set invalidated since its last composite is painted; a clean set
+ * replays the painting calls without GPU work.  maneuver_draw leaves set 0 selected. */
+void render_select_mask_set(int set);
+
+/* Mask layers painted (FBO clears) since start, for the pacing log. */
+unsigned render_mask_paint_count(void);
 
 /* ================================================================
  * Flag sprite API

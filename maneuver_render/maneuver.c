@@ -2208,12 +2208,14 @@ void maneuver_draw(const maneuver_state_t *s, const maneuver_state_t *next_state
     }
 
     /* Combined path: when pushing with a known next maneuver, build joined route
-     * after the draw_* pass so arrow slides continuously between maneuvers. */
+     * after the draw_* pass so arrow slides continuously between maneuvers.  The current
+     * maneuver's masks are set 0 and the next one's set 1; each is painted once after an
+     * invalidation (every state change invalidates) and then only composited.  Push frames
+     * still run the whole draw below, whose painting replays without GPU work once clean. */
     int combined = (next_state != NULL && maneuver_is_pushing());
+    render_select_mask_set(0);
     if (!combined)
         g_combined_window_active = 0;
-    else
-        render_invalidate_masks();  /* force re-render every frame for crossfade */
 
     if (!combined) {
         if (!g_camera_prepared_this_frame) {
@@ -2262,8 +2264,9 @@ void maneuver_draw(const maneuver_state_t *s, const maneuver_state_t *next_state
     }
 
     /* If masks are cached and still valid, just re-composite + rebuild mesh at current slide
-     * (handles perspective animation and route animation without re-rendering masks) */
-    if (!render_masks_dirty()) {
+     * (handles perspective animation and route animation without re-rendering masks).
+     * Not for a push: its second pass and joined route are built below. */
+    if (!combined && !render_masks_dirty()) {
         compute_slide_params();
         if (combined)
             update_combined_camera();
@@ -2483,9 +2486,10 @@ void maneuver_draw(const maneuver_state_t *s, const maneuver_state_t *next_state
             /* Reset depth so second composite doesn't fight first */
             render_reset_depth();
 
-            /* Pass 2: draw next maneuver masks into FBO, composite fading in.
+            /* Pass 2: draw next maneuver masks into set 1, composite fading in.
              * Save combined route path — DISPATCH_DRAW overwrites g_route_path. */
             g_saved_path = g_route_path;
+            render_select_mask_set(1);
             g_masks_only_mode = 1;
             if(scene_supplied(next_state))draw_supplied_scene(next_state,tx,ty,cos_r,sin_r);
             else {
@@ -2499,6 +2503,7 @@ void maneuver_draw(const maneuver_state_t *s, const maneuver_state_t *next_state
 
             render_set_global_alpha(base_alpha * pp);
             render_composite();
+            render_select_mask_set(0);
 
             render_set_global_alpha(base_alpha);
         }

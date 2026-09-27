@@ -1,0 +1,286 @@
+/*
+ * Transition-mask cache: host test of the real render.c + maneuver.c against a GLES2 fake
+ * that records, per frame, the clears and draws that reach each mask framebuffer and the
+ * texture and depth bias of every draw into the scene framebuffer.
+ *
+ * Checks that a push paints the current (set 0) and next (set 1) masks once and then only
+ * composites them, that a cached push frame composites exactly what the painted frame did
+ * (same textures, same depth bias, no extra draws), that an invalidation repaints both sets,
+ * that the commit repaints set 0, and that set 1 composites set 0's route when the next
+ * maneuver painted none (as the single shared route texture did).
+ */
+#define PLATFORM_QNX 1
+
+#include "render.c"                 /* -I <renderer tree>/maneuver_render */
+#include "maneuver.h"
+
+#include <stdarg.h>
+
+/* ---------------------------------------------------------------- GL model */
+
+static GLuint g_bound_fbo, g_bound_tex[8], g_active_unit, g_next_name = 1;
+static float g_last_zbias;
+#define NAMES_MAX 64
+static const char *g_uniform_names[NAMES_MAX];
+static int g_uniform_count;
+
+typedef struct {
+    int clears[FBO_COUNT];           /* per mask framebuffer */
+    int mask_draws;                  /* draws into any mask framebuffer */
+    int scene_draws;                 /* draws into the scene (SSAA) framebuffer */
+    char scene[8192];                /* "tex:zbias " per scene draw */
+} frame_rec_t;
+static frame_rec_t R;
+
+static int mask_index(GLuint fbo) {
+    for (int i = 0; i < FBO_COUNT; i++) if (g_fbos[i] && g_fbos[i] == fbo) return i;
+    return -1;
+}
+
+static const char *tex_name(GLuint tex) {
+    static const char *names[FBO_COUNT] = { "road0", "route0", "road1", "route1" };
+    for (int i = 0; i < FBO_COUNT; i++) if (g_fbo_texs[i] == tex) return names[i];
+    return "other";
+}
+
+void glBindFramebuffer(GLenum target, GLuint fb) { (void)target; g_bound_fbo = fb; }
+void glClear(GLbitfield mask) {
+    int i = mask_index(g_bound_fbo);
+    (void)mask;
+    if (i >= 0) R.clears[i]++;
+}
+void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
+    (void)mode; (void)first; (void)count;
+    if (mask_index(g_bound_fbo) >= 0) { R.mask_draws++; return; }
+    if (g_bound_fbo != g_ss_fbo) return;
+    R.scene_draws++;
+    size_t n = strlen(R.scene);
+    if (n + 48 < sizeof(R.scene))
+        snprintf(R.scene + n, sizeof(R.scene) - n, "%s:%.6g ", tex_name(g_bound_tex[0]), g_last_zbias);
+}
+void glActiveTexture(GLenum unit) { g_active_unit = unit - GL_TEXTURE0; }
+void glBindTexture(GLenum target, GLuint tex) { (void)target; if (g_active_unit < 8) g_bound_tex[g_active_unit] = tex; }
+
+/* Uniform locations by name, so the depth bias can be told apart from other uniforms. */
+GLint glGetUniformLocation(GLuint p, const char *n) {
+    (void)p;
+    for (int i = 0; i < g_uniform_count; i++) if (!strcmp(g_uniform_names[i], n)) return i;
+    if (g_uniform_count == NAMES_MAX) return NAMES_MAX;
+    g_uniform_names[g_uniform_count] = n;
+    return g_uniform_count++;
+}
+void glUniform1f(GLint l, GLfloat a) {
+    if (l >= 0 && l < g_uniform_count && !strcmp(g_uniform_names[l], "u_z_bias")) g_last_zbias = a;
+}
+
+static void gen(GLsizei n, GLuint *out) { for (GLsizei i = 0; i < n; i++) out[i] = g_next_name++; }
+void glGenTextures(GLsizei n, GLuint *t) { gen(n, t); }
+void glGenFramebuffers(GLsizei n, GLuint *t) { gen(n, t); }
+void glGenRenderbuffers(GLsizei n, GLuint *t) { gen(n, t); }
+GLuint glCreateShader(GLenum type) { (void)type; return g_next_name++; }
+GLuint glCreateProgram(void) { return g_next_name++; }
+void glGetShaderiv(GLuint s, GLenum p, GLint *v) { (void)s; *v = p == GL_COMPILE_STATUS ? GL_TRUE : 0; }
+void glGetProgramiv(GLuint s, GLenum p, GLint *v) { (void)s; *v = p == GL_LINK_STATUS ? GL_TRUE : 0; }
+GLenum glCheckFramebufferStatus(GLenum t) { (void)t; return GL_FRAMEBUFFER_COMPLETE; }
+void glGetIntegerv(GLenum p, GLint *v) { *v = (p == GL_MAX_TEXTURE_SIZE || p == GL_MAX_RENDERBUFFER_SIZE) ? 8192 : 0; }
+GLenum glGetError(void) { return GL_NO_ERROR; }
+#ifdef GL_PROGRAM_CACHE_H
+const GLubyte *glGetString(GLenum name) { (void)name; return (const GLubyte *)"fake"; }
+__eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *name) { (void)name; return NULL; }
+#endif
+GLint glGetAttribLocation(GLuint p, const char *n) { (void)p; (void)n; return 1; }
+void glGetShaderInfoLog(GLuint s, GLsizei n, GLsizei *l, char *log) { (void)s; (void)n; if (l) *l = 0; if (log && n) log[0] = 0; }
+void glGetProgramInfoLog(GLuint s, GLsizei n, GLsizei *l, char *log) { (void)s; (void)n; if (l) *l = 0; if (log && n) log[0] = 0; }
+void glReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLenum f, GLenum t, void *out) {
+    (void)x; (void)y; (void)f; (void)t; memset(out, 0, (size_t)w * (size_t)h * 4);
+}
+
+/* State the mask cache does not depend on. */
+void glViewport(GLint x, GLint y, GLsizei w, GLsizei h) { (void)x; (void)y; (void)w; (void)h; }
+void glClearColor(GLclampf r, GLclampf g, GLclampf b, GLclampf a) { (void)r; (void)g; (void)b; (void)a; }
+void glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) { (void)r; (void)g; (void)b; (void)a; }
+void glEnable(GLenum cap) { (void)cap; }
+void glDisable(GLenum cap) { (void)cap; }
+void glScissor(GLint x, GLint y, GLsizei w, GLsizei h) { (void)x; (void)y; (void)w; (void)h; }
+void glAttachShader(GLuint p, GLuint s) { (void)p; (void)s; }
+void glDetachShader(GLuint p, GLuint s) { (void)p; (void)s; }
+void glBindAttribLocation(GLuint p, GLuint i, const char *n) { (void)p; (void)i; (void)n; }
+void glBindRenderbuffer(GLenum t, GLuint r) { (void)t; (void)r; }
+void glBlendFuncSeparate(GLenum a, GLenum b, GLenum c, GLenum d) { (void)a; (void)b; (void)c; (void)d; }
+void glCompileShader(GLuint s) { (void)s; }
+void glDeleteFramebuffers(GLsizei n, const GLuint *f) { (void)n; (void)f; }
+void glDeleteProgram(GLuint p) { (void)p; }
+void glDeleteRenderbuffers(GLsizei n, const GLuint *r) { (void)n; (void)r; }
+void glDeleteShader(GLuint s) { (void)s; }
+void glDeleteTextures(GLsizei n, const GLuint *t) { (void)n; (void)t; }
+void glDepthFunc(GLenum f) { (void)f; }
+void glDepthMask(GLboolean f) { (void)f; }
+void glDisableVertexAttribArray(GLuint i) { (void)i; }
+void glEnableVertexAttribArray(GLuint i) { (void)i; }
+void glFramebufferRenderbuffer(GLenum a, GLenum b, GLenum c, GLuint d) { (void)a; (void)b; (void)c; (void)d; }
+void glFramebufferTexture2D(GLenum a, GLenum b, GLenum c, GLuint d, GLint e) { (void)a; (void)b; (void)c; (void)d; (void)e; }
+void glLinkProgram(GLuint p) { (void)p; }
+void glRenderbufferStorage(GLenum a, GLenum b, GLsizei c, GLsizei d) { (void)a; (void)b; (void)c; (void)d; }
+void glShaderSource(GLuint s, GLsizei c, const char **str, const GLint *l) { (void)s; (void)c; (void)str; (void)l; }
+void glTexImage2D(GLenum a, GLint b, GLenum c, GLsizei d, GLsizei e, GLint f, GLenum g, GLenum h, const void *i) {
+    (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; (void)i;
+}
+void glTexParameteri(GLenum a, GLenum b, GLint c) { (void)a; (void)b; (void)c; }
+void glUniform1i(GLint l, GLint a) { (void)l; (void)a; }
+void glUniform2f(GLint l, GLfloat a, GLfloat b) { (void)l; (void)a; (void)b; }
+void glUniform3f(GLint l, GLfloat a, GLfloat b, GLfloat c) { (void)l; (void)a; (void)b; (void)c; }
+void glUniform3fv(GLint l, GLsizei n, const GLfloat *v) { (void)l; (void)n; (void)v; }
+void glUniform4f(GLint l, GLfloat a, GLfloat b, GLfloat c, GLfloat d) { (void)l; (void)a; (void)b; (void)c; (void)d; }
+void glUniform4fv(GLint l, GLsizei n, const GLfloat *v) { (void)l; (void)n; (void)v; }
+void glUniformMatrix4fv(GLint l, GLsizei n, GLboolean t, const GLfloat *v) { (void)l; (void)n; (void)t; (void)v; }
+void glUseProgram(GLuint p) { (void)p; }
+void glVertexAttrib1f(GLuint i, GLfloat a) { (void)i; (void)a; }
+void glVertexAttribPointer(GLuint i, GLint s, GLenum t, GLboolean n, GLsizei st, const void *p) {
+    (void)i; (void)s; (void)t; (void)n; (void)st; (void)p;
+}
+
+/* ---------------------------------------------------------------- checks */
+
+static int g_checks, g_failures;
+
+static void check(int ok, const char *fmt, ...) {
+    va_list ap;
+    g_checks++;
+    if (ok) return;
+    g_failures++;
+    printf("FAIL: ");
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+    printf("\n");
+}
+
+/* One loop iteration as main.c renders it. */
+static void frame(const maneuver_state_t *cur, const maneuver_state_t *next) {
+    memset(&R, 0, sizeof(R));
+    maneuver_prepare_frame(cur, next);
+    render_begin_frame();
+    maneuver_draw(cur, next);
+    render_end_frame();
+}
+
+static int clears(void) { int n = 0; for (int i = 0; i < FBO_COUNT; i++) n += R.clears[i]; return n; }
+
+/* The composite draws of a frame: the scene draws that sample a mask texture. */
+static void composites(char *out, size_t size) {
+    const char *p = R.scene;
+    out[0] = '\0';
+    while (*p) {
+        const char *end = strchr(p, ' ');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (strncmp(p, "other", 5) != 0 && strlen(out) + len + 2 < size) {
+            strncat(out, p, len);
+            strcat(out, " ");
+        }
+        p += len + (end ? 1 : 0);
+    }
+}
+
+/* A push from one built-in maneuver to another: both mask sets painted once. */
+static void push_paints_each_set_once(void) {
+    maneuver_state_t cur, next;
+    char first[1024], cached[1024], now[1024];
+    int frames = 0;
+    memset(&cur, 0, sizeof(cur));
+    memset(&next, 0, sizeof(next));
+    cur.icon = ICON_TURN;  cur.exit_angle = 90.0f;
+    next.icon = ICON_TURN; next.exit_angle = -90.0f;
+
+    maneuver_set_slide(1.0f);
+    render_invalidate_masks();
+    frame(&cur, NULL);
+    check(R.clears[FBO_ROAD] == 1 && clears() == 1 && R.mask_draws > 0,
+          "settled: set 0's road painted once (clears %d/%d/%d/%d, mask draws %d)",
+          R.clears[0], R.clears[1], R.clears[2], R.clears[3], R.mask_draws);
+    frame(&cur, NULL);
+    check(clears() == 0 && R.mask_draws == 0, "settled, cached: nothing painted (%d clears, %d draws)",
+          clears(), R.mask_draws);
+
+    maneuver_start_push();
+    render_invalidate_masks();                     /* engine_apply_maneuver */
+    frame(&cur, &next);
+    check(R.clears[FBO_ROAD] == 1 && R.clears[FBO_ROAD_NEXT] == 1 && clears() == 2 && R.mask_draws > 0,
+          "push start: both roads painted once (clears %d/%d/%d/%d)",
+          R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
+    composites(first, sizeof(first));
+    check(strstr(first, "road0:") && strstr(first, "road1:") && strstr(first, "road0:") < strstr(first, "road1:"),
+          "push start: current fades out from set 0, next fades in from set 1: %s", first);
+    int painted_scene_draws = R.scene_draws;
+
+    frame(&cur, &next);
+    composites(cached, sizeof(cached));
+    check(clears() == 0 && R.mask_draws == 0, "push, cached: nothing painted (%d clears, %d draws)",
+          clears(), R.mask_draws);
+    check(!strcmp(first, cached), "push, cached: same composites and depth bias as when painted\n  painted %s\n  cached  %s",
+          first, cached);
+    check(R.scene_draws == painted_scene_draws, "push, cached: no extra scene draws (%d, painted %d)",
+          R.scene_draws, painted_scene_draws);
+
+    render_invalidate_masks();                     /* engine_refresh_maneuver mid-push */
+    frame(&cur, &next);
+    check(R.clears[FBO_ROAD] == 1 && R.clears[FBO_ROAD_NEXT] == 1 && clears() == 2,
+          "refresh mid-push: both sets repainted (clears %d/%d/%d/%d)",
+          R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
+
+    int repaints = 0;
+    while (maneuver_is_pushing() && frames < 2000) {
+        frame(&cur, &next);
+        repaints += clears() + R.mask_draws;
+        frames++;
+    }
+    check(!maneuver_is_pushing() && frames > 10, "the push ran to its end (%d frames)", frames);
+    check(repaints == 0, "no mask work in the rest of the push (%d clears + draws)", repaints);
+    composites(now, sizeof(now));
+    check(strstr(now, "road1:") != NULL, "the last push frame still composites set 1: %s", now);
+
+    maneuver_commit_pushed_state(&next);           /* engine_tick */
+    render_invalidate_masks();
+    frame(&next, NULL);
+    composites(now, sizeof(now));
+    check(R.clears[FBO_ROAD] == 1 && clears() == 1, "commit: set 0 repainted with the new current (clears %d/%d/%d/%d)",
+          R.clears[0], R.clears[1], R.clears[2], R.clears[3]);
+    check(strstr(now, "road0:") && !strstr(now, "road1:") && !strstr(now, "route1:"),
+          "settled after the push: set 0 only: %s", now);
+}
+
+/* Set 1 without a route layer composites set 0's route, as the one shared texture did. */
+static void next_without_route_uses_current_route(void) {
+    char c[1024];
+    render_invalidate_masks();
+    render_select_mask_set(0);
+    render_begin_frame();
+    memset(&R, 0, sizeof(R));
+    render_begin_outline_mask(); render_triangle(0, 0, 1, 0, 0, 1, 1, 1, 1, 1); render_end_outline_mask();
+    render_begin_route_mask();   render_triangle(0, 0, 1, 0, 0, 1, 0, 0, 1, 1); render_end_outline_mask();
+    render_composite();
+    render_select_mask_set(1);
+    render_begin_outline_mask(); render_triangle(0, 0, 1, 0, 0, 1, 1, 1, 1, 1); render_end_outline_mask();
+    render_composite();
+    render_select_mask_set(0);
+    composites(c, sizeof(c));
+    check(R.clears[FBO_ROAD] == 1 && R.clears[FBO_ROUTE] == 1 && R.clears[FBO_ROAD_NEXT] == 1
+          && R.clears[FBO_ROUTE_NEXT] == 0, "painted: road+route in set 0, road in set 1");
+    check(strstr(c, "road0:") && strstr(c, "route0:") && strstr(c, "road1:")
+          && strstr(strstr(c, "road1:"), "route0:") && !strstr(c, "route1:"),
+          "set 1 composites its road and set 0's route: %s", c);
+    render_end_frame();
+}
+
+int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    if (render_init(CR_DEFAULT_WIDTH, CR_DEFAULT_HEIGHT) != 0) {
+        printf("FAIL: render_init\n");
+        return 1;
+    }
+    check(g_fbos[FBO_ROAD_NEXT] != 0 && g_fbo_texs[FBO_ROUTE_NEXT] != 0, "init: four mask framebuffers");
+    push_paints_each_set_once();
+    next_without_route_uses_current_route();
+    render_shutdown();
+    printf("most_mask_cache_test: %d checks, %d failures\n", g_checks, g_failures);
+    return g_failures ? 1 : 0;
+}
