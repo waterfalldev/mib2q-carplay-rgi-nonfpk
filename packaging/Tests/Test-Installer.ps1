@@ -182,7 +182,13 @@ function Fixture($name) {
         $text = $text.Replace('/net/mmx/fs/sda0', "$p/sd").Replace('/mnt/app', "$p/app").Replace('/mnt/system', "$p/system").Replace('/mnt/persist', "$p/persist").Replace('/ifs/lsd.jxe', "$p/ifs/lsd.jxe")
         $text = $text -replace '(?m)^HMI_LIBRARY_IDENTITY=\d+:\d+$', "HMI_LIBRARY_IDENTITY=$hmiIdentity"
         $mocks = @'
-sync() { [ "${FAIL_SYNC:-0}" != 1 ]; }
+SYNC_COUNT=0
+sync() {
+    SYNC_COUNT=$((SYNC_COUNT + 1))
+    # Lose the SD log at this sync: every later log line fails.
+    if [ "$SYNC_COUNT" = "${LOSE_LOG_AT_SYNC:-0}" ]; then rm -f "$LOG" && mkdir "$LOG"; fi
+    [ "${FAIL_SYNC:-0}" != 1 ]
+}
 sleep() { [ "${FAIL_SLEEP:-0}" != 1 ]; }
 cp() { [ "${FAIL_CP:-0}" != 1 ] && command cp "$@"; }
 # In the Codex Windows sandbox, Git Bash mkdir -p reopens protected ancestor
@@ -358,6 +364,20 @@ $settleFailsBody = {
     Recovered $root
 }
 
+# The SD log lost after every destination is staged (third sync): the installer
+# must still remove what it staged and probed beside the firmware files.
+$logLostBody = {
+    $root = Fixture 'log-lost'
+    Assert ((Run $root 'install' 'LOSE_LOG_AT_SYNC=3') -ne 0) 'install stops when its log can no longer be written'
+    Assert ((Get-Content -Raw (Join-Path $root 'install-last-output.txt')).Contains('[RGI] ERROR! Cannot write')) 'a lost log is reported on the screen'
+    $left = @(Get-ChildItem -LiteralPath (Join-Path $root 'app'), (Join-Path $root 'system') -Recurse -File |
+        Where-Object { $_.Name -match '\.carplay-rgi-new\.|carplay-rgi-probe\.' })
+    Assert ($left.Count -eq 0) "a lost log leaves no staged or probe file on the unit$(if ($left.Count) { ': ' + (@($left | ForEach-Object Name) -join ', ') })"
+    Assert (IsStock $root) 'a lost log leaves stock configs intact'
+    Assert (-not (Test-Path (Join-Path $root 'app/eso/hmi/lsd/jars/carplay_hook.jar'))) 'a lost log commits no JAR'
+    Recovered $root
+}
+
 # The JAR must only reach the HMI library it was linked against (a firmware update
 # can change it); rollback must still work when it has changed.
 $hmiLibraryBody = {
@@ -370,7 +390,8 @@ $hmiLibraryBody = {
         Assert ((Run $root 'install') -ne 0) "$label is refused"
         Assert (IsStock $root) "$label leaves stock configs intact"
         Assert (-not (Test-Path (Join-Path $root 'app/eso/hmi/lsd/jars/carplay_hook.jar'))) "$label installs no JAR"
-        Assert ((Get-Content -Raw (Join-Path $root 'install-last-output.txt')).Contains('[RGI] ERROR! ')) "$label shows one [RGI] ERROR! line"
+        $shown = @(Get-Content (Join-Path $root 'install-last-output.txt') | Where-Object { $_ -match '\S' })
+        Assert ($shown.Count -eq 1 -and $shown[0] -match '^\[RGI\] ERROR! ') "$label shows one [RGI] ERROR! line"
     }
     switch ($case) {
         mismatch {
@@ -378,6 +399,24 @@ $hmiLibraryBody = {
             & $refused 'a different HMI library'
             Assert ((Get-Content -Raw $installLog).Contains('MISMATCH HMI library')) 'the install log records the HMI library found'
             Assert ((Get-Content -Raw (Join-Path $root 'install-last-output.txt')).Contains('not the')) 'the refusal names the HMI library mismatch'
+        }
+        cksum-differs {
+            # Same size, other bytes: the checksum alone must refuse it.
+            $original = [IO.File]::ReadAllText($hmiLibrary)
+            WriteText $hmiLibrary $original.ToUpperInvariant()
+            Assert ((Get-Item -LiteralPath $hmiLibrary).Length -eq $original.Length) 'the other HMI library has the same size'
+            & $refused 'an HMI library of the same size'
+            Assert ((Get-Content -Raw $installLog).Contains('MISMATCH HMI library')) 'the install log records the same-size HMI library found'
+        }
+        size-differs {
+            # The expected checksum with another size: the byte count alone must refuse it.
+            $install = Join-Path $root 'install.sh'
+            $text = [IO.File]::ReadAllText($install)
+            $changed = $text -replace '(?m)^(HMI_LIBRARY_IDENTITY=\d+):(\d+)$', { '{0}:{1}' -f $_.Groups[1].Value, ([long]$_.Groups[2].Value + 1) }
+            Assert ($changed -ne $text) 'the installer now expects the same checksum at another size'
+            WriteText $install $changed
+            & $refused 'an HMI library of another size'
+            Assert ((Get-Content -Raw $installLog).Contains('MISMATCH HMI library')) 'the install log records the HMI library size found'
         }
         missing {
             Remove-Item -LiteralPath $hmiLibrary
@@ -433,17 +472,18 @@ $dispatcherBody = {
     $lockPath = Join-Path $root 'sd/mod/carplay-rgi-install.lock'
     if ($scenario -eq 'lock-held') { New-Item -ItemType Directory -Path $lockPath | Out-Null }
     $mock = @'
-SD_WRITABLE=0
+# A file, not a variable: the dispatcher runs mount in a command substitution.
 mount() {
     echo "mount $*" >> "$TRACE"
     case "$SCENARIO:$*" in
-        sd-rw-fails:*sd) return 1 ;;
-        app-rw-fails:'-uw /net/mmx/mnt/app') return 1 ;;
-        sys-rw-fails:'-uw /net/mmx/mnt/system') return 1 ;;
-        readonly-fails:'-ur /net/mmx/mnt/system') return 1 ;;
-        app-ro-fails:'-ur /net/mmx/mnt/app') return 1 ;;
+        sd-rw-fails:*sd|app-rw-fails:'-uw /net/mmx/mnt/app'|sys-rw-fails:'-uw /net/mmx/mnt/system'|\
+        readonly-fails:'-ur /net/mmx/mnt/system'|app-ro-fails:'-ur /net/mmx/mnt/app')
+            # Like the real tool, say why on stderr.
+            echo "mount: simulated failure" >&2
+            return 1
+            ;;
     esac
-    case "$*" in *sd) SD_WRITABLE=1 ;; esac
+    case "$*" in *sd) : > "$ROOT/sd-writable" ;; esac
     return 0
 }
 # This is a Bash-only test mock, never emitted into a QNX script.
@@ -456,7 +496,7 @@ command() {
 mkdir() {
     echo "lock-acquire $*" >> "$TRACE"
     case "$*" in */tmp/*) echo "mkdir: Function not implemented" >&2; return 1 ;; esac
-    [ "$SD_WRITABLE" = 1 ] || { echo "mkdir: SD is read-only" >&2; return 1; }
+    [ -e "$ROOT/sd-writable" ] || { echo "mkdir: SD is read-only" >&2; return 1; }
     [ "$SCENARIO" != lock-io-fails ] || { echo "mkdir: simulated I/O error" >&2; return 1; }
     command mkdir "$@" || return 1
     if [ "$SCENARIO" = action-changed ]; then
@@ -483,7 +523,7 @@ cksum() {
 }
 rmdir() {
     echo "lock-release $*" >> "$TRACE"
-    [ "$SCENARIO" != release-fails ] || return 1
+    [ "$SCENARIO" != release-fails ] || { echo "rmdir: simulated failure" >&2; return 1; }
     command rmdir "$@"
 }
 on() {
@@ -544,6 +584,12 @@ exit 0
     }
     if ($scenario -eq 'missing-utility') {
         Assert ($outputText.Contains('[RGI] ERROR! Missing MMX tool: cksum')) 'missing command named before firmware remount'
+    }
+    if ($scenario -in @('sd-rw-fails','app-rw-fails','sys-rw-fails','readonly-fails','app-ro-fails')) {
+        Assert ($outputText -match '\[RGI\] ERROR! [^\n]*: mount: simulated failure') "$scenario puts the mount error inside its [RGI] line"
+    }
+    if ($scenario -eq 'release-fails') {
+        Assert ($outputText.Contains('[RGI] ERROR! Could not release the SD lock: rmdir: simulated failure.')) 'the lock release error is inside its [RGI] line'
     }
     if ($scenario -in @('normal','rollback','rollback-slots-full','rollback-collector-hangs','action-fails','readonly-fails','app-ro-fails')) {
         Assert ($trace.IndexOf('mount -uw ' + $p + '/sd') -lt $trace.IndexOf('lock-acquire ')) 'SD writable before lock'
@@ -615,7 +661,7 @@ exit 0
     }
     if ($scenario -eq 'rollback-slots-full') {
         Assert ((Get-Content -Raw (Join-Path $root 'sd/mod/carplay-rgi-collect.out')).Contains('All 9 capture slots are full')) 'full capture slots are recorded in the capture output file'
-        Assert ($outputText.Contains('[RGI] ERROR! Logs only partly saved')) 'failed capture is flagged on the M.I.B. screen'
+        Assert ($outputText.Contains('[RGI] ERROR! Logs not saved or incomplete')) 'a capture that saved nothing is not reported as partly saved'
         Assert (-not (Test-Path (Join-Path $root 'sd/mod/carplay-rgi-runtime-logs/10'))) 'no capture slot beyond 09 is invented'
     }
     if ($scenario -eq 'rollback-collector-hangs') {
@@ -641,7 +687,7 @@ $standaloneBody = {
         }
     }
     $mock = @'
-mount() { echo "mount $*" >> "$TRACE"; [ "$SCENARIO" != sd-rw-fails ]; }
+mount() { echo "mount $*" >> "$TRACE"; [ "$SCENARIO" != sd-rw-fails ] || { echo "mount: simulated failure" >&2; return 1; }; }
 on() {
     echo "on $*" >> "$TRACE"
     [ "$1:$2:$3" = '-f:mmx:/bin/sh' ] || return 99
@@ -723,6 +769,9 @@ exit 0
         Assert (-not $outputText.Contains('armed. Return to CarPlay')) "standalone $scenario does not claim successful arming"
         if ($scenario -in @('sd-rw-fails','invalid-argument')) {
             Assert (-not $trace.Contains('on -f')) "standalone $scenario does not dispatch"
+        }
+        if ($scenario -eq 'sd-rw-fails') {
+            Assert ($outputText.Contains('[RGI] ERROR! Could not make the SD card writable: mount: simulated failure.')) 'standalone puts the mount error inside its [RGI] line'
         }
         if ($scenario -eq 'slots-full') {
             Assert ($outputText.Contains('[RGI] ERROR! All 9 capture slots are full')) 'standalone explains full slots'
@@ -879,7 +928,8 @@ if (-not $DispatcherOnly) {
     Add-Unit 'unknown-modification' $unknownModificationBody
     foreach ($n in 1..2) { Add-Unit "rollback-rename-$n" $rollbackRenameBody $n }
     Add-Unit 'settle-fails' $settleFailsBody
-    foreach ($case in @('mismatch','missing','changed')) { Add-Unit "hmi-library-$case" $hmiLibraryBody $case }
+    Add-Unit 'log-lost' $logLostBody
+    foreach ($case in @('mismatch','cksum-differs','size-differs','missing','changed')) { Add-Unit "hmi-library-$case" $hmiLibraryBody $case }
 }
 foreach ($scenario in $dispatcherScenarios) {
     Add-Unit "dispatcher-$scenario" $dispatcherBody $scenario $(if ($scenario -eq 'rollback-collector-hangs') { 2 } else { 1 })
@@ -943,7 +993,10 @@ foreach ($item in $units) {
     $checksLine = @($result.Output | Where-Object { $_ -match '^UNIT-CHECKS: \d+$' })
     foreach ($line in $result.Output) { if ($line -notmatch '^UNIT-CHECKS: ') { Write-Host $line } }
     if ($result.ExitCode -ne 0 -or $checksLine.Count -ne 1) { $failed.Add($item.Name); continue }
-    $script:checks += [int]($checksLine[0] -replace '^UNIT-CHECKS: ', '')
+    $unitChecks = [int]($checksLine[0] -replace '^UNIT-CHECKS: ', '')
+    # A unit that asserted nothing (for example an unmatched scenario) has not passed.
+    if ($unitChecks -lt 1) { $failed.Add("$($item.Name) (no assertions)"); continue }
+    $script:checks += $unitChecks
 }
 if ($failed.Count) { throw "Installer test units failed: $($failed -join ', '). Fixtures: $testRoot" }
 Write-Host "All $script:checks assertions passed in $($units.Count) parallel units. Fixtures: $testRoot"

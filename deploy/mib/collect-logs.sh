@@ -13,8 +13,8 @@ case "${1:-}" in
     '')
         (
             echo "[RGI] Starting Log Collection..."
-            if ! mount -uw /net/mmx/fs/sda0; then
-                echo "[RGI] ERROR! Could not make the SD card writable."
+            if ! mount_error=`mount -uw /net/mmx/fs/sda0 2>&1`; then
+                echo "[RGI] ERROR! Could not make the SD card writable${mount_error:+: $mount_error}."
                 echo "[RGI] Failed: 1"
                 exit 1
             fi
@@ -223,6 +223,15 @@ collect_probe()
     fi
 }
 
+# The same five-second limit for a diagnostic whose failure or overrun is only
+# noted in the summary, not reported as a partial capture.
+collect_optional_probe()
+{
+    OPTIONAL_COLLECT_ERROR=$COLLECT_ERROR
+    collect_probe "$@"
+    COLLECT_ERROR=$OPTIONAL_COLLECT_ERROR
+}
+
 # Each live query is a bounded snapshot. No indefinite system-log reader or
 # shell resource limit is needed; the latter failed on the vehicle's QNX shell.
 # Stop an active query if the collector is interrupted.
@@ -391,12 +400,10 @@ DMDT=/eso/bin/apps/dmdt
 if [ "$TRIGGER" = live ] || [ "$TRIGGER" = background ]; then
     record "SKIPPED live dmdt queries: these probes crashed during the vehicle capture; avoiding diagnostic disruption during guidance."
 elif [ -x "$DMDT" ]; then
-    "$DMDT" gc > "$OUT/dmdt-gc.txt" 2>&1
-    record "OPTIONAL dmdt gc exit status: $?"
-    "$DMDT" gs > "$OUT/dmdt-gs.txt" 2>&1
-    record "OPTIONAL dmdt gs exit status: $? (output may be empty on this firmware)"
-    "$DMDT" gd > "$OUT/dmdt-gd.txt" 2>&1
-    record "OPTIONAL dmdt gd exit status: $? (output may be empty on this firmware)"
+    # Output may be empty for gs and gd on this firmware.
+    collect_optional_probe dmdt-gc.txt "$DMDT" gc
+    collect_optional_probe dmdt-gs.txt "$DMDT" gs
+    collect_optional_probe dmdt-gd.txt "$DMDT" gd
 else
     record "MISSING optional utility: $DMDT"
 fi
@@ -443,12 +450,9 @@ do
 done
 
 if command -v pidin >/dev/null 2>&1; then
-    pidin ar > "$OUT/processes.txt" 2>&1 || {
-        record "NOTE: pidin ar failed."
-        COLLECT_ERROR=1
-    }
+    collect_probe processes.txt pidin ar
     # Free and total memory, for the renderer's render-target size.
-    pidin info > "$OUT/memory.txt" 2>&1 || record "NOTE: pidin info failed."
+    collect_optional_probe memory.txt pidin info
     # One scheduling snapshot per relevant process, not a live CPU trace.
     # Missing/exited processes and unsupported queries remain visible in output.
     for AUDIO_PROCESS in io-audio audio_service maneuver_render; do
@@ -459,8 +463,8 @@ else
 fi
 
 if command -v netstat >/dev/null 2>&1; then
-    netstat -an > "$OUT/netstat-an.txt" 2>&1 || record "NOTE: netstat -an failed."
-    netstat -in > "$OUT/netstat-in.txt" 2>&1 || record "NOTE: netstat -in failed."
+    collect_optional_probe netstat-an.txt netstat -an
+    collect_optional_probe netstat-in.txt netstat -in
 else
     record "MISSING optional utility: netstat"
 fi

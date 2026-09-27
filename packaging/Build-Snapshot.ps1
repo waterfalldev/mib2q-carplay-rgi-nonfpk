@@ -96,20 +96,24 @@ Assert-FileExists $LsdJar "$FirmwareName lsd.jar"
 $lsdJxeInfo = Get-Item -LiteralPath $LsdJxe
 $lsdJarInfo = Get-Item -LiteralPath $LsdJar
 
+# The installer refuses a unit whose /ifs/lsd.jxe differs from this pinned file, the
+# library the JAR is compiled and link-checked against. The car has cksum, not SHA-256;
+# one read of the 60 MB file gives both.
+$lsdJxeIdentity = Get-PosixCksum $LsdJxe -Sha256
+
 # The pinned hashes subsume any size comparison, so these are the only gate.
 Assert-Sha256 `
     -Path $LsdJxe `
     -Expected $ExpectedLsdJxeSha256 `
-    -Description "$FirmwareName lsd.jxe"
+    -Description "$FirmwareName lsd.jxe" `
+    -Digest $lsdJxeIdentity.Sha256
 
 Assert-Sha256 `
     -Path $LsdJar `
     -Expected $ExpectedLsdJarSha256 `
     -Description "$FirmwareName lsd.jar (Java compile input)"
 
-# The installer refuses a unit whose /ifs/lsd.jxe differs from this pinned file, the
-# library the JAR is compiled and link-checked against. The car has cksum, not SHA-256.
-$ExpectedLsdJxeCksum = Get-PosixCksum $LsdJxe
+$ExpectedLsdJxeCksum = $lsdJxeIdentity.Cksum
 $ExpectedLsdJxeBytes = $lsdJxeInfo.Length
 Write-Host "lsd.jxe identity for the installer: $ExpectedLsdJxeCksum`:$ExpectedLsdJxeBytes"
 
@@ -362,6 +366,10 @@ $nativeJob = Start-ThreadJob -ArgumentList $GitSh, $NativeSteps -ScriptBlock {
         if ($LASTEXITCODE -ne 0) { break }
     }
 }
+# Until the native steps are collected, a failure here must also stop them, or they go on
+# writing build/ in the scratch tree kept for diagnosis. Stop-Job lets the step in progress
+# finish (it does not kill the native process) and starts no further step.
+try {
 $java =& "$PSScriptRoot/Build-Java.ps1" -SourceRoot $WorkTree -StockJar $LsdJar -Dependencies $Dependencies -OutputRoot $JavaWork -BuildId $BuildId -JavaHome $JavaHome
 $BuiltJavaJar = $java.Jar
 $JavaClassCount = $java.ClassCount
@@ -374,8 +382,13 @@ New-Item -ItemType Directory -Force -Path $RgdContractFrames | Out-Null
 Invoke-Native -Exe $Docker -Arguments @('run','--rm','--network','none','--mount',('type=bind,source=' + $WorkTree + ',target=/src,readonly'),'--mount',('type=bind,source=' + $RgdContractFrames + ',target=/out'),'--workdir','/src',$HostTestImageId,'bash','-c','export PATH=/usr/sbin:/usr/bin:/sbin:/bin PYTHONDONTWRITEBYTECODE=1 RGD_CONTRACT_STAGE=native RGD_CONTRACT_OUT=/out RGD_CONTRACT_SANITIZE=undefined; python3 tests/test_rgd_native_contract.py')
 . "$PSScriptRoot/Test-Java.ps1"
 Write-Step 'Collecting the native build'
-try { $NativeResults = @(Receive-Job -Job $nativeJob -Wait -AutoRemoveJob) }
-finally { $env:QNX_TOOLCHAIN_IMAGE = $savedImage }
+$NativeResults = @(Receive-Job -Job $nativeJob -Wait -AutoRemoveJob)
+}
+finally {
+    $env:QNX_TOOLCHAIN_IMAGE = $savedImage
+    if ($nativeJob.State -eq 'Running') { Stop-Job -Job $nativeJob }
+    Remove-Job -Job $nativeJob -Force -ErrorAction SilentlyContinue
+}
 foreach ($result in $NativeResults) {
     $result.Output | ForEach-Object { Write-Host $_ }
     if ($result.ExitCode -ne 0) { throw "Native step failed ($($result.ExitCode)): $($result.Step)" }

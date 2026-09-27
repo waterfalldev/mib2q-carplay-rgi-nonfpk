@@ -23,8 +23,9 @@ install|rollback)
     # QNX /tmp may be procnto shared memory: it does not support directories.
     # Remount only the SD first, then acquire on its real filesystem from MMX.
     # A losing invocation must not remount either firmware partition.
-    if ! mount -uw /net/mmx/fs/sda0; then
-        echo "[RGI] ERROR! Could not make the SD card writable."
+    # Tool error text goes into the [RGI] line, never onto the screen by itself.
+    if ! CPRGI_MOUNT_ERROR=`mount -uw /net/mmx/fs/sda0 2>&1`; then
+        echo "[RGI] ERROR! Could not make the SD card writable${CPRGI_MOUNT_ERROR:+: $CPRGI_MOUNT_ERROR}."
         echo "[RGI] Failed: 1"
         return 1
     fi
@@ -55,11 +56,11 @@ install|rollback)
     # was acquiring the lock. Never run an action selected from stale contents.
     if [ "`cat "$CPRGI_ACTION_FILE" 2>/dev/null`" != "$CPRGI_ACTION" ]; then
         echo "[RGI] ERROR! ACTION changed while starting. Run Individual Script again."
-        on -f mmx /bin/sh -c '
+        CPRGI_RELEASE_ERROR=`on -f mmx /bin/sh -c '
             PATH=${PATH:+$PATH:}/proc/boot:/bin:/usr/bin:/usr/sbin:/sbin:/mnt/app/armle/bin:/mnt/app/armle/sbin:/mnt/app/armle/usr/bin:/mnt/app/armle/usr/sbin
             export PATH
             rmdir /net/mmx/fs/sda0/mod/carplay-rgi-install.lock
-        ' || echo "[RGI] ERROR! Could not release the SD lock."
+        ' 2>&1` || echo "[RGI] ERROR! Could not release the SD lock${CPRGI_RELEASE_ERROR:+: $CPRGI_RELEASE_ERROR}."
         echo "[RGI] Failed: 1"
         return 1
     fi
@@ -90,6 +91,9 @@ install|rollback)
                     sleep 1
                 done
             done
+            # TERM first, so the collector stops its own running probe on the way out.
+            kill "$collector" 2>/dev/null
+            sleep 2
             kill -9 "$collector" 2>/dev/null
             echo "Log capture did not finish within 60 s and was stopped." >> "$out"
             exit 2
@@ -97,20 +101,21 @@ install|rollback)
         case $? in
         0) echo "[RGI] Logs saved to mod/carplay-rgi-runtime-logs" ;;
         2) echo "[RGI] ERROR! Log capture timed out after 60 s. Continuing with rollback." ;;
-        *) echo "[RGI] ERROR! Logs only partly saved (see mod/carplay-rgi-collect.out). Continuing with rollback." ;;
+        # Any other failure may have saved nothing at all (for example, every slot full).
+        *) echo "[RGI] ERROR! Logs not saved or incomplete (see mod/carplay-rgi-collect.out). Continuing with rollback." ;;
         esac
     fi
     # /mnt/app and /mnt/system are read-only in normal operation. Each one is
     # only put back read-write for the length of the action and is restored
     # below, including when a later step refuses. The SD card is deliberately
     # left writable: the launcher writes its own log after this script returns.
-    if ! mount -uw /net/mmx/mnt/app; then
-        echo "[RGI] ERROR! Could not make /mnt/app writable."
+    if ! CPRGI_MOUNT_ERROR=`mount -uw /net/mmx/mnt/app 2>&1`; then
+        echo "[RGI] ERROR! Could not make /mnt/app writable${CPRGI_MOUNT_ERROR:+: $CPRGI_MOUNT_ERROR}."
     else
         CPRGI_APP_RW=1
 
-        if ! mount -uw /net/mmx/mnt/system; then
-            echo "[RGI] ERROR! Could not make /mnt/system writable."
+        if ! CPRGI_MOUNT_ERROR=`mount -uw /net/mmx/mnt/system 2>&1`; then
+            echo "[RGI] ERROR! Could not make /mnt/system writable${CPRGI_MOUNT_ERROR:+: $CPRGI_MOUNT_ERROR}."
         else
             CPRGI_SYS_RW=1
 
@@ -125,24 +130,24 @@ install|rollback)
     fi
 
     if [ "$CPRGI_SYS_RW" = "1" ]; then
-        if ! mount -ur /net/mmx/mnt/system; then
-            echo "[RGI] ERROR! /mnt/system could not be made read-only again. Keep the logs; do not reboot to bypass this."
+        if ! CPRGI_MOUNT_ERROR=`mount -ur /net/mmx/mnt/system 2>&1`; then
+            echo "[RGI] ERROR! /mnt/system could not be made read-only again${CPRGI_MOUNT_ERROR:+: $CPRGI_MOUNT_ERROR}. Keep the logs; do not reboot to bypass this."
             CPRGI_RC=1
         fi
     fi
 
     if [ "$CPRGI_APP_RW" = "1" ]; then
-        if ! mount -ur /net/mmx/mnt/app; then
-            echo "[RGI] ERROR! /mnt/app could not be made read-only again. Keep the logs; do not reboot to bypass this."
+        if ! CPRGI_MOUNT_ERROR=`mount -ur /net/mmx/mnt/app 2>&1`; then
+            echo "[RGI] ERROR! /mnt/app could not be made read-only again${CPRGI_MOUNT_ERROR:+: $CPRGI_MOUNT_ERROR}. Keep the logs; do not reboot to bypass this."
             CPRGI_RC=1
         fi
     fi
-    if ! on -f mmx /bin/sh -c '
+    if ! CPRGI_RELEASE_ERROR=`on -f mmx /bin/sh -c '
         PATH=${PATH:+$PATH:}/proc/boot:/bin:/usr/bin:/usr/sbin:/sbin:/mnt/app/armle/bin:/mnt/app/armle/sbin:/mnt/app/armle/usr/bin:/mnt/app/armle/usr/sbin
         export PATH
         rmdir /net/mmx/fs/sda0/mod/carplay-rgi-install.lock
-    '; then
-        echo "[RGI] ERROR! Could not release the SD lock."
+    ' 2>&1`; then
+        echo "[RGI] ERROR! Could not release the SD lock${CPRGI_RELEASE_ERROR:+: $CPRGI_RELEASE_ERROR}."
         CPRGI_RC=1
     fi
     ;;

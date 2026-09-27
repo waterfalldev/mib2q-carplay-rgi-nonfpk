@@ -34,6 +34,8 @@ PROBE_MODE_DIO=$TARGET_DIO.carplay-rgi-probe.$$
 log() {
     echo "$*" >> "$LOG" || {
         echo "[RGI] ERROR! Cannot write $LOG"
+        # Without a log, still leave nothing staged or probed on the unit.
+        cleanup_temps
         exit 1
     }
 }

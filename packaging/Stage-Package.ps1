@@ -694,7 +694,9 @@ without the exact installer-owned marker and valid on-unit backups.
         # partition, so an unusable mount is a refusal and not a half-install.
         $probeIndex = $vehicleText.IndexOf("`nprobe_writable `"`$PROBE_APP`"")
         $lastProbeIndex = $vehicleText.IndexOf("`nprobe_preserve `"`$TARGET_DIO`"")
-        $firstCommitIndex = $vehicleText.IndexOf("`nmv -f ")
+        # Indented commits count too (the first-install HU backups).
+        $firstCommit = [regex]::Match($vehicleText, '(?m)^[ \t]*mv -f ')
+        $firstCommitIndex = if ($firstCommit.Success) { $firstCommit.Index } else { -1 }
 
         if (
             $probeIndex -lt 0 -or

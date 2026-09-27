@@ -27,6 +27,8 @@ GL_CACHE=/mnt/persist/var/app/luka_carplay_maneuver
 log() {
     echo "$*" >> "$LOG" || {
         echo "[RGI] ERROR! Cannot write $LOG"
+        # Without a log, still leave nothing staged or probed on the unit.
+        cleanup_temps
         exit 1
     }
 }

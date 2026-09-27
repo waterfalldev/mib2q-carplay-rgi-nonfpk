@@ -457,10 +457,12 @@ function Assert-Sha256 {
     param(
         [string]$Path,
         [string]$Expected,
-        [string]$Description
+        [string]$Description,
+        # A digest already taken in the same read (Get-PosixCksum -Sha256).
+        [string]$Digest = ''
     )
 
-    $actual = Get-Sha256 $Path
+    $actual = if ($Digest) { $Digest.ToUpperInvariant() } else { Get-Sha256 $Path }
     $wanted = $Expected.ToUpperInvariant()
 
     if ($actual -ne $wanted) {
@@ -486,7 +488,9 @@ namespace CarPlayRgi {
             }
             return table;
         }
-        public static uint Compute(string path) {
+        public static uint Compute(string path) { return Compute(path, null); }
+        // alongside, when given, hashes the same bytes in the same read.
+        public static uint Compute(string path, System.Security.Cryptography.HashAlgorithm alongside) {
             uint crc = 0;
             long length = 0;
             byte[] buffer = new byte[1 << 16];
@@ -494,10 +498,12 @@ namespace CarPlayRgi {
                 int read;
                 while ((read = stream.Read(buffer, 0, buffer.Length)) > 0) {
                     length += read;
+                    if (alongside != null) alongside.TransformBlock(buffer, 0, read, null, 0);
                     for (int i = 0; i < read; i++)
                         crc = (crc << 8) ^ Table[((crc >> 24) ^ buffer[i]) & 0xFF];
                 }
             }
+            if (alongside != null) alongside.TransformFinalBlock(buffer, 0, 0);
             for (long remaining = length; remaining > 0; remaining >>= 8)
                 crc = (crc << 8) ^ Table[((crc >> 24) ^ (uint)(remaining & 0xFF)) & 0xFF];
             return ~crc;
@@ -508,8 +514,15 @@ namespace CarPlayRgi {
 }
 
 function Get-PosixCksum {
-    param([string]$Path)
-    return [long][CarPlayRgi.PosixCksum]::Compute([IO.Path]::GetFullPath($Path))
+    # -Sha256 returns @{ Cksum; Sha256 } from one read of the file.
+    param([string]$Path, [switch]$Sha256)
+    if (-not $Sha256) { return [long][CarPlayRgi.PosixCksum]::Compute([IO.Path]::GetFullPath($Path)) }
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try {
+        $cksum = [long][CarPlayRgi.PosixCksum]::Compute([IO.Path]::GetFullPath($Path), $hash)
+        return [pscustomobject]@{ Cksum = $cksum; Sha256 = [Convert]::ToHexString($hash.Hash) }
+    }
+    finally { $hash.Dispose() }
 }
 
 function Assert-StockBaseline {
