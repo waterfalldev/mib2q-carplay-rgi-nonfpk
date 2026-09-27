@@ -50,8 +50,8 @@ void render_set_viewport(int fb_width, int fb_height);
 /* present the frame into (x, y, w, h) of a win_w x win_h window (GL origin
  * bottom-left) instead of filling the window; opaque = everything else black and every
  * pixel alpha 1 (a MOST KOMO stream).  win_w <= 0 restores "fill the window".
- * On an opaque output the scene renders at w x h itself (2x supersampled, resolved
- * exactly 2:1), falling back to the render_init/render_set_viewport size if those render
+ * On an opaque output the scene renders at w x h itself (no supersampling, FXAA, copied
+ * 1:1), falling back to the render_init/render_set_viewport size if those render
  * targets cannot be allocated.  Returns 1 when the render targets changed size. */
 int render_set_output(int win_w, int win_h, int x, int y, int w, int h, int opaque);
 int render_output_is_opaque(void);

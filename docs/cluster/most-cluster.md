@@ -9,12 +9,14 @@ sources:
   - code: java_patch/de/audi/tghu/fwhmi/DisplayManagerMIB2High.java
   - code: maneuver_render/platform_qnx.c
   - code: maneuver_render/render.c
+  - code: maneuver_render/maneuver.c
   - code: maneuver_render/protocol.h
   - test: tests/ClusterOwnershipTest.java
   - test: tests/MostArrowsTest.java
   - test: tests/MostViewHandshakeTest.java
   - test: tests/most/most_output_platform_test.c
   - test: tests/most/most_output_render_test.c
+  - test: tests/most/most_mask_cache_test.c
 ---
 
 # MOST clusters - CarPlay maneuvers in the stock arrows view
@@ -84,9 +86,14 @@ composes once with an explicit unconfirmed-output log. That output may be blank.
 The 328x181 frame is aspect-fitted into the window and centred: at 800x252 the content is
 457x252 at x=171, and everything else is opaque black with alpha 1.
 
-On an opaque MOST output the scene renders at the content size (457x252), 2x supersampled
-(914x504) with FXAA, and resolves exactly 2:1 into the window. The Virtual Cockpit keeps
-upstream's 1.6x supersampling. The layout stays in the same 328x181 logical units.
+On an opaque MOST output the scene renders at the content size (457x252) with FXAA and no
+supersampling, and the final pass copies it 1:1 into the window. The transition masks keep 1.6x
+density (2560x1411 at this size, covering the whole slide): below about 1.5 the arrow shows dark
+notches. The Virtual Cockpit keeps upstream's 1.6x supersampling. The layout stays in the same
+328x181 logical units. Frames are paced evenly at 30 fps.
+
+Each push paints the current and next maneuver's masks once into two mask sets and then only
+composites them. A frame paints at most one set while the next maneuver is still invisible.
 
 If the render targets exceed the GL size limits, fail to allocate or are incomplete, the renderer
 falls back to the platform size and does not try that size again. The log records the render
@@ -96,6 +103,14 @@ For diagnostics the renderer saves the settled maneuver frame, exactly as stream
 `/tmp/carplay_most_frame.ppm` once per settled maneuver, at most every 10 s. It skips this
 while animating, and does not repeat it while the same maneuver stays on screen. The M.I.B.
 collector copies this file and both handshake files.
+
+## 🎞️ Stream rate
+
+The encoder captures the arrows view at the rate stock sets for terminal 1: 10 fps at KOMO data
+rate 2, and 1 fps at data rate 1, which the cluster reports for 1-2 s after every view change.
+While CarPlay's arrows view is composed, `MostPresentation` has `DisplayManagerMIB2High` send
+stock's 10 as 30. Stock's 1 and 0 pass unchanged. 30 is applied when the view is composed and
+stock's rate is handed back on release.
 
 ## 📝 Guidance text
 
@@ -112,6 +127,7 @@ encoding where none exists.
 - Vehicle-tested on one MHI2Q unit with 541=1 and an 800x252 arrows view: CarPlay maneuvers in
   the arrows view at native size, map-view round trips and stock-state release on disconnect.
   Other trains and cluster variants have not been tested.
-- A rapid electronic ticking has been reported during animated guidance on that unit, not with a
-  still arrow. Its cause is unknown.
+- A rapid electronic ticking during animated guidance on that unit, never with a still arrow,
+  followed the renderer's GPU load. Every frame of a slide used to repaint the 2560x1411 masks;
+  painting them once per push removed nearly all of it.
 - Upstream's REPLACE mode still cancels an active Audi route when the phone connects.
