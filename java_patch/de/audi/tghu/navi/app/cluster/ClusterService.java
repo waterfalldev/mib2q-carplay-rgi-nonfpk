@@ -1119,4 +1119,11 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
     public synchronized void refreshInitializingScreenAfterCarPlay() {
         this.combiBAPListener.forceShowInitScreen(this.initScreenNeededOnKombi());
     }
+
+    public void replayCombiBAPStateAfterCarPlay() {
+        CombiBAPServiceNavi current = this.combiBAPListener.combiservice;
+        if (current != null) {
+            this.combiBAPListener.setCombiService(current);
+        }
+    }
 }

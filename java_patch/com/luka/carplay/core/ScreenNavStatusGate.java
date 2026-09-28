@@ -61,10 +61,19 @@ public final class ScreenNavStatusGate {
                 Log.i(TAG, "native route-guidance gate installed/reused");
             }
 
+            /* an applied block being lifted is the moment stock regains the cluster. */
+            boolean reopened = appliedRouteBlocked && !desiredRouteBlocked;
             gate.setRouteGuidanceBlocked(desiredRouteBlocked);
             gate.setCurrentPositionInfoBlocked(desiredCurrentPositionBlocked);
             appliedRouteBlocked = desiredRouteBlocked;
+            if (reopened) {
+                /* Everything stock sent while gated was dropped, and CombiBAPListener only
+                 * re-sends on change: replay its whole cache now (we are on NavigationJobs). */
+                cs.replayCombiBAPStateAfterCarPlay();
+                Log.i(TAG, "native route-guidance gate reopened; stock CombiBAP state replayed");
+            }
         } catch (Throwable t) {
+            Log.w(TAG, "gate install/replay failed: " + t);
         }
     }
 
@@ -110,7 +119,14 @@ public final class ScreenNavStatusGate {
         desiredRouteBlocked = blocked;
         if (!blocked) {
             desiredCurrentPositionBlocked = false;
-            if (gate != null) gate.setCurrentPositionInfoBlocked(false);
+            if (gate != null) {
+                gate.setCurrentPositionInfoBlocked(false);
+                /* open the installed wrapper at once.  These are volatile policy bits on
+                 * our own object (no CombiBAPListener.combiservice write), so any thread may flip
+                 * them; the scheduled NavigationJobs pass still performs the stock replay.  Before,
+                 * the release waited on that pass and never happened without a dispatcher. */
+                gate.setRouteGuidanceBlocked(false);
+            }
         }
         if (gate == null || changed || appliedRouteBlocked != blocked) scheduleInstallLocked();
         return gate != null && appliedRouteBlocked == blocked && !installScheduled;
