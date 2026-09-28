@@ -150,7 +150,9 @@ the real QNX sources inside the toolchain image.
 `scripts/test_route_info.sh`, `scripts/test_java_transports.sh` and
 `scripts/test_pdc.sh` retain their respective test groups; the parking command
 checks an existing JAR. `scripts/check_java.sh` builds and runs all Java groups
-and the linkage audit. The route and complete shell checks also need Python 3
+and the linkage audit. The suites run two JVMs at a time by default;
+`JAVA_TEST_JOBS` overrides that limit. `scripts/test_java_build.sh` checks
+reproducible builds, resource failures and the original macOS input layout. The route and complete shell checks also need Python 3
 and a host C compiler for their native contract probe; the package builder runs
 that part in Docker.
 `scripts/audit_java_stock.sh` retains the MU1316 source inventory and separate

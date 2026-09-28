@@ -60,7 +60,9 @@ OSGI="$OSGI_FRAMEWORK:$OSGI_TRACKER"
 ASM="$ASM_JAR:$ASM_TREE_JAR"
 HOST_CP="$PATCH_JAR:$STOCK_JAR:$OSGI"
 RUNTIME_CP="$PATCH_JAR:$STOCK_RUNTIME_JAR:$OSGI"
-JOBS=${JAVA_TEST_JOBS:-$(getconf _NPROCESSORS_ONLN)}
+# Each suite launches a JVM that loads the stock HMI library. Keep the default
+# bounded on hosts that expose many CPUs but give Docker only a small memory VM.
+JOBS=${JAVA_TEST_JOBS:-2}
 case "$JOBS" in ''|*[!0-9]*|0) echo 'JAVA_TEST_JOBS must be a positive integer' >&2; exit 2;; esac
 names=() defects=() logs=() statuses=()
 active=0

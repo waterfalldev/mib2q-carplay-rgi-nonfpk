@@ -4,8 +4,6 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 if [ "${1:-}" != --inside ]; then
-    : "${STOCK_JAR:?Set STOCK_JAR to an external firmware JAR}"
-    : "${CARPLAY_DEPENDENCIES:?Set CARPLAY_DEPENDENCIES to the dependency directory}"
     export JAVA_OUTPUT=${JAVA_BUILD_TEST_OUTPUT:-$ROOT/build/java-build-tests}
     exec bash "$ROOT/scripts/java/docker.sh" build-tests
 fi
@@ -68,6 +66,7 @@ project="$layout/Repositories/fork"
 tools="$layout/Tools/jxe2jar"
 mkdir -p "$project/scripts/java" "$tools/out" "$tools/libs/jcl/MHI2Q_US_AUG22_P5087_MU1316" "$tools/tools/uninline/lib" "$work/launcher-bin"
 cp "$ROOT/scripts/java/docker.sh" "$project/scripts/java/docker.sh"
+cp "$ROOT/scripts/test_java_build.sh" "$project/scripts/test_java_build.sh"
 touch "$tools/out/MU1316-final.jar" "$tools/out/MU1316-combined.jar" \
     "$tools/libs/jcl/MHI2Q_US_AUG22_P5087_MU1316/jcl.jar" \
     "$tools/tools/uninline/lib/asm-9.7.jar" "$tools/tools/uninline/lib/asm-tree-9.7.jar"
@@ -101,4 +100,16 @@ done
 grep -Fxq "type=bind,source=$tools/out/MU1316-final.jar,target=/inputs/stock/MU1316-final.jar,readonly" "$BUILD_TEST_RESULTS/launcher-arguments.txt"
 grep -Fxq "type=bind,source=$project/build,target=/out" "$BUILD_TEST_RESULTS/launcher-arguments.txt"
 echo 'PASS upstream launcher defaults (stock basename, boot/runtime JARs, transport ASM, paths with spaces; no host Java or PowerShell)'
+
+# The public regression command must accept the maintainer's existing layout
+# without requiring explicit STOCK_JAR or CARPLAY_DEPENDENCIES.
+(
+    unset STOCK_JAR STOCK_BOOT_JAR STOCK_RUNTIME_JAR CARPLAY_DEPENDENCIES CARPLAY_TOOLS_DIR JAVA_OUTPUT JAVA_BUILD_TEST_OUTPUT ASM_JAR ASM_TREE_JAR
+    export PATH="$work/launcher-bin:$PATH"
+    bash "$project/scripts/test_java_build.sh"
+)
+grep -Fxq 'STOCK_JAR=/inputs/stock/MU1316-final.jar' "$BUILD_TEST_RESULTS/launcher-arguments.txt"
+grep -Fxq "type=bind,source=$project/build/java-build-tests,target=/out" "$BUILD_TEST_RESULTS/launcher-arguments.txt"
+grep -Fxq '/src/scripts/test_java_build.sh' "$BUILD_TEST_RESULTS/launcher-arguments.txt"
+echo 'PASS build regression command with upstream default layout'
 echo 'Java build contracts: PASS'

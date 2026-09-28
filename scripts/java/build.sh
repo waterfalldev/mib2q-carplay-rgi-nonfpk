@@ -26,8 +26,8 @@ sed "s/@BUILD_ID@/$BUILD_ID/g" "$work/src/$app" > "$work/generated/$app"
 find "$work/src" -type f -name '*.java' ! -path "*/$app" -print | LC_ALL=C sort > "$work/source-paths"
 printf '%s\n' "$work/generated/$app" >> "$work/source-paths"
 while IFS= read -r path; do printf '"%s"\n' "$path"; done < "$work/source-paths" > "$work/sources.txt"
-framework=${OSGI_FRAMEWORK_JAR:-$CARPLAY_DEPENDENCIES/org.osgi.framework-1.10.0.jar}
-tracker=${OSGI_TRACKER_JAR:-$CARPLAY_DEPENDENCIES/org.osgi.util.tracker-1.5.4.jar}
+framework=$CARPLAY_DEPENDENCIES/org.osgi.framework-1.10.0.jar
+tracker=$CARPLAY_DEPENDENCIES/org.osgi.util.tracker-1.5.4.jar
 echo "Compiling $(wc -l < "$work/sources.txt") Java files (build $BUILD_ID)..."
 javac -encoding UTF-8 -source 1.4 -target 1.4 -bootclasspath "$boot" \
     -cp "$work/stock.jar:$framework:$tracker" -sourcepath "$work/generated:$work/src" \
