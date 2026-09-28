@@ -57,7 +57,19 @@ final class RgdModule implements Module {
     }
 
     public void stop() {
-        if (rg != null) { rg.stop(); rg.disengageTakeover(); rg = null; }
-        if (naviHandle != null) { naviHandle.release(); naviHandle = null; }
+        /* the native RG gate must reopen even when the route-guidance teardown
+         * throws; before, a throw from rg.stop() skipped disengageTakeover() and left stock
+         * route guidance blocked on the cluster for the rest of the ignition cycle. */
+        RouteGuidance r = rg;
+        rg = null;
+        try {
+            if (r != null) {
+                try { r.stop(); }
+                catch (Throwable t) { Log.w(TAG, "route guidance stop failed: " + t); }
+                finally { r.disengageTakeover(); }
+            }
+        } finally {
+            if (naviHandle != null) { naviHandle.release(); naviHandle = null; }
+        }
     }
 }
