@@ -17,9 +17,15 @@ if [ -n "${BOOT_JAR:-}" ] && [ "$BOOT_JAR" != "$STOCK_JAR" ]; then
     cp "$BOOT_JAR" "$work/boot.jar"; boot="$work/boot.jar"
 fi
 jar tf "$boot" > "$work/boot-entries"
-grep -qx 'java/lang/Object.class' "$work/boot-entries" || {
-    echo 'Stock Java library missing. Supply STOCK_BOOT_JAR (the car JCL), or a stock JAR containing it.' >&2; exit 1;
-}
+bootargs=(-bootclasspath "$boot")
+if ! grep -qx 'java/lang/Object.class' "$work/boot-entries"; then
+    if [ -n "${BOOT_JAR:-}" ]; then
+        echo 'Stock Java library missing. Supply STOCK_BOOT_JAR (the car JCL), or a stock JAR containing it.' >&2; exit 1
+    fi
+    # As the original build: JDK 8's classes. The car library only adds a stricter API check.
+    echo 'Boot classes: JDK 8 (no car Java library supplied; STOCK_BOOT_JAR enables that check)'
+    bootargs=()
+fi
 app=com/luka/carplay/core/CarPlayApp.java
 grep -q '@BUILD_ID@' "$work/src/$app" || { echo 'Missing BUILD_ID token' >&2; exit 1; }
 sed "s/@BUILD_ID@/$BUILD_ID/g" "$work/src/$app" > "$work/generated/$app"
@@ -29,7 +35,7 @@ while IFS= read -r path; do printf '"%s"\n' "$path"; done < "$work/source-paths"
 framework=$CARPLAY_DEPENDENCIES/org.osgi.framework-1.10.0.jar
 tracker=$CARPLAY_DEPENDENCIES/org.osgi.util.tracker-1.5.4.jar
 echo "Compiling $(wc -l < "$work/sources.txt") Java files (build $BUILD_ID)..."
-javac -encoding UTF-8 -source 1.4 -target 1.4 -bootclasspath "$boot" \
+javac -encoding UTF-8 -source 1.4 -target 1.4 "${bootargs[@]}" \
     -cp "$work/stock.jar:$framework:$tracker" -sourcepath "$work/generated:$work/src" \
     -d "$work/classes" -Xlint:-options @"$work/sources.txt"
 resources="$SOURCE_ROOT/java_resources"

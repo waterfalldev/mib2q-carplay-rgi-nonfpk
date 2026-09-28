@@ -59,6 +59,26 @@ export BOOT_JAR="$work/no-bootstrap-classes.jar"
 expect_failure invalid-boot 'Stock Java library missing'
 export BOOT_JAR=$original_boot
 
+# Neither the stock JAR nor an input supplies the car's class library: build
+# as the original script did, against JDK 8's classes.
+mkdir "$work/stock-no-jcl"
+(cd "$work/stock-no-jcl" && jar xf "$STOCK_JAR" && rm -rf java)
+jar cf "$work/stock-no-jcl.jar" -C "$work/stock-no-jcl" .
+(
+    unset BOOT_JAR
+    export STOCK_JAR="$work/stock-no-jcl.jar"
+    build no-car-library
+) || { cat "$BUILD_TEST_RESULTS/no-car-library.log" >&2; exit 1; }
+grep -Fq 'Boot classes: JDK 8' "$BUILD_TEST_RESULTS/no-car-library.log" || {
+    echo 'FAIL no-car-library: JDK 8 fallback not reported' >&2; exit 1;
+}
+if cmp -s "$work/reproducible first/carplay_hook.jar" "$work/no-car-library/carplay_hook.jar"; then
+    same='same JAR as the car-library build'
+else
+    same='JAR differs from the car-library build'
+fi
+echo "PASS no-car-library (JDK 8 boot classes; $same)"
+
 # Exercise the original Mac directory conventions without requiring or claiming
 # execution on macOS. Fake Docker records exact arguments; Java remains in Docker.
 layout="$work/upstream workspace with spaces"
@@ -100,6 +120,20 @@ done
 grep -Fxq "type=bind,source=$tools/out/MU1316-final.jar,target=/inputs/stock/MU1316-final.jar,readonly" "$BUILD_TEST_RESULTS/launcher-arguments.txt"
 grep -Fxq "type=bind,source=$project/build,target=/out" "$BUILD_TEST_RESULTS/launcher-arguments.txt"
 echo 'PASS upstream launcher defaults (stock basename, boot/runtime JARs, transport ASM, paths with spaces; no host Java or PowerShell)'
+
+# Without the default jcl.jar, the build must not require it.
+mv "$tools/libs/jcl/MHI2Q_US_AUG22_P5087_MU1316/jcl.jar" "$work/jcl.jar.fixture"
+(
+    unset STOCK_JAR STOCK_BOOT_JAR STOCK_RUNTIME_JAR CARPLAY_DEPENDENCIES CARPLAY_TOOLS_DIR JAVA_OUTPUT ASM_JAR ASM_TREE_JAR
+    export PATH="$work/launcher-bin:$PATH"
+    bash "$project/scripts/java/docker.sh" build
+)
+mv "$work/jcl.jar.fixture" "$tools/libs/jcl/MHI2Q_US_AUG22_P5087_MU1316/jcl.jar"
+grep -Fxq 'STOCK_JAR=/inputs/stock/MU1316-final.jar' "$BUILD_TEST_RESULTS/launcher-arguments.txt"
+if grep -q 'BOOT_JAR\|/inputs/boot' "$BUILD_TEST_RESULTS/launcher-arguments.txt"; then
+    echo 'FAIL launcher: optional car library was required' >&2; exit 1
+fi
+echo 'PASS upstream layout without jcl.jar (build does not require the car library)'
 
 # The public regression command must accept the maintainer's existing layout
 # without requiring explicit STOCK_JAR or CARPLAY_DEPENDENCIES.

@@ -112,7 +112,8 @@ cd qnx65-armv7-toolchain
 Java compilation and tests use `eclipse-temurin:8-jdk-jammy` through Docker;
 no host JDK is required. The shell commands and companion package builder share
 the compiler and test procedures in `scripts/java/`. Compilation targets Java
-1.4 against the car's own Java library, and includes and checks the JAR resources.
+1.4 against the car's own Java library when one is supplied (otherwise against
+JDK 8's classes), and includes and checks the JAR resources.
 
 For the maintainer's existing macOS/Linux layout, the component command stays:
 
@@ -121,7 +122,8 @@ For the maintainer's existing macOS/Linux layout, the component command stays:
 ```
 
 It uses `../../Tools/jxe2jar`: `out/MU1316-final.jar`, OSGi JARs in `libs/`, and
-the existing car library at `libs/jcl/MHI2Q_US_AUG22_P5087_MU1316/jcl.jar`.
+the existing car library at `libs/jcl/MHI2Q_US_AUG22_P5087_MU1316/jcl.jar`. The
+car library is optional for the build but required by the stock linkage audit.
 Tests use `out/MU1316-combined.jar` where executable stock bytecode is required;
 the linkage audit uses ASM from `tools/uninline/lib/`. No PowerShell is needed
 for these component commands. Set `CARPLAY_TOOLS_DIR` to relocate that layout.

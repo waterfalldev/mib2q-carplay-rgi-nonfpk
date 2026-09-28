@@ -7,8 +7,8 @@ Run after scripts/build_java.sh; generated sources/frames stay under build/.
 
 The Java half (tests/RgdNativeContractProbe.java) uses scripts/java/docker.sh and
 its stock/dependency overrides; CARPLAY_HOOK_JAR defaults to build/carplay_hook.jar.
-RGD_CONTRACT_STAGE=native stops after writing the frames, so the package builder
-can run the C and Java halves in their respective Docker images. No host JDK is used.
+RGD_CONTRACT_STAGE=native stops after writing the frames, so the C and Java halves
+can run separately (for example in different Docker images). No host JDK is used.
 RGD_CONTRACT_OUT moves the output; RGD_CONTRACT_SANITIZE replaces address,undefined
 (ASan hangs at random in Docker on kernels with high mmap ASLR entropy).
 """

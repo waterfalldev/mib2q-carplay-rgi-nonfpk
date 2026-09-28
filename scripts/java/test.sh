@@ -55,6 +55,11 @@ case "$GROUP" in
 esac
 if [ "$GROUP" = all ] || [ "$GROUP" = linkage ]; then
     stage_jar "$BOOT_JAR" boot; BOOT_JAR=$STAGED_JAR
+    # Unlike the build, the linkage audit needs the car's class library.
+    jar tf "$BOOT_JAR" > "$WORK/boot-entries"
+    grep -qx 'java/lang/Object.class' "$WORK/boot-entries" || {
+        echo 'Stock linkage needs the car Java library: set STOCK_BOOT_JAR (the car JCL).' >&2; exit 1;
+    }
 fi
 OSGI="$OSGI_FRAMEWORK:$OSGI_TRACKER"
 ASM="$ASM_JAR:$ASM_TREE_JAR"
@@ -196,7 +201,7 @@ if [ "$GROUP" = all ] || [ "$GROUP" = route ] || [ "$GROUP" = contract ]; then
     elif [ "$GROUP" = contract ]; then
         echo 'RGD_CONTRACT_FRAMES is required for the contract group' >&2; exit 1
     else
-        echo 'SKIPPED RgdNativeContractProbe: no native frames supplied (the package build supplies them)'
+        echo 'SKIPPED RgdNativeContractProbe: no native frames supplied (set RGD_CONTRACT_FRAMES, or run check_java.sh)'
     fi
 fi
 if [ "$GROUP" = maneuvers ]; then

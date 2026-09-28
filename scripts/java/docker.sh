@@ -11,7 +11,9 @@ JAVA_OUTPUT=${JAVA_OUTPUT:-$ROOT/build}
 CARPLAY_BUILD_ID=${CARPLAY_BUILD_ID:-$(git -C "$ROOT" describe --always --dirty 2>/dev/null || echo unknown)}
 CARPLAY_BUILD_ID=$(printf '%s' "$CARPLAY_BUILD_ID" | tr -cd 'A-Za-z0-9._-')
 if [ "$default_stock" = 1 ]; then
-    STOCK_BOOT_JAR=${STOCK_BOOT_JAR:-$TOOLS/libs/jcl/MHI2Q_US_AUG22_P5087_MU1316/jcl.jar}
+    # The car's class library is optional for building; use it when it is present.
+    default_boot=$TOOLS/libs/jcl/MHI2Q_US_AUG22_P5087_MU1316/jcl.jar
+    if [ -z "${STOCK_BOOT_JAR:-}" ] && [ -f "$default_boot" ]; then STOCK_BOOT_JAR=$default_boot; fi
     STOCK_RUNTIME_JAR=${STOCK_RUNTIME_JAR:-$TOOLS/out/MU1316-combined.jar}
 fi
 host_path() {
