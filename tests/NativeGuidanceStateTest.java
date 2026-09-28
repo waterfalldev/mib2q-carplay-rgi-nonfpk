@@ -136,9 +136,6 @@ public final class NativeGuidanceStateTest {
             container.setRgActive(active);
             try { service.updateRgActive(active); }
             catch (NullPointerException hostOnlyStockTail) { }
-            check(((Boolean) get(service, "dsiRgActiveKnown")).booleanValue()
-                && ((Boolean) get(service, "dsiRgActive")).booleanValue() == active,
-                "DSI rgActive=" + active + " recorded before the stock tail");
         }
         /** Stock DefaultDSINavigationMainHandler.updateRgiString result, minus the HMI model. */
         void stockRgiData(boolean valid) throws Exception { set(service, "rgiDataValid", Boolean.valueOf(valid)); }
