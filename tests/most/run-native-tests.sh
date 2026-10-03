@@ -37,7 +37,7 @@ docker run --rm --platform=linux/amd64 -v "$SRC_DIR":/src:ro -v "$TESTS_DIR":/te
           -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
           -I/src/maneuver_render -I/src/common -I/tmp/inc -I/tests/hostshim"
   failed=0
-  for test in most_output_platform_test most_output_render_test most_mask_cache_test; do
+  for test in most_output_platform_test most_output_render_test most_mask_cache_test map_layer_nv12_test; do
     [ -f "/tests/$test.c" ] || { echo "Missing suite $test"; exit 1; }
     echo "--- $test ---"
     extra=""

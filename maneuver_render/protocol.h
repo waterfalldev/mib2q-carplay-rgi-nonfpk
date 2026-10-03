@@ -130,6 +130,13 @@ typedef struct {
  * rewrite is whole even without truncation. */
 #define CR_MOST_OUTPUT_READY_PATH "/tmp/carplay_most_output_ready"
 #define CR_OUTPUT_READY_LENGTH    32
+/* The MOST MAP view (MostPresentation.MAP): the same request/ready format for window 99,
+ * which Java composes as ctx 82 = {99} in place of stock map 33 (ctx 72).  Unlike 98, the
+ * window exists only while the request does: no file means no window. */
+#define CR_MAP_DISPLAYABLE_ID          99
+#define CR_MOST_MAP_OUTPUT_PATH        "/tmp/carplay_most_map_output"
+#define CR_MOST_MAP_OUTPUT_READY_PATH  "/tmp/carplay_most_map_output_ready"
+/* Window 99 is a CPU-written NV12 video window, reported ready once its first frame is posted. */
 /* Diagnostics for the log collector: once per settled maneuver on a MOST output, and at most
  * every CR_MOST_FRAME_INTERVAL_S seconds, the window's frame exactly as the encoder gets it,
  * as a binary PPM. */

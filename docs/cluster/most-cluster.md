@@ -26,6 +26,10 @@ On a map-over-MOST coding the head unit H.264-encodes the cluster's map and arro
 streams them over MOST. CarPlay's maneuver is shown in the stock **arrows view** on these
 cars; the stock map view keeps the Audi map, with CarPlay's guidance text in its fields.
 
+This experimental branch also carries CarPlay into the stock [MAP view](most-map-view.md)
+during CarPlay route guidance, through the same engine as the arrows view: the phone's own
+cluster map, decoded by the renderer.
+
 ## 📋 Context
 
 > [display-contexts](display-contexts.md) - which planes each context selects.

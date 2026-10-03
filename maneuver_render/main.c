@@ -45,6 +45,8 @@
 #include "scene/scene.h"
 #include "lane_guidance.h"
 #include "lane_panel.h"
+#include "map_layer.h"
+#include "cluster_video.h"
 
 #define WINDOW_W CR_DEFAULT_WIDTH
 #define WINDOW_H CR_DEFAULT_HEIGHT
@@ -196,7 +198,8 @@ typedef enum {
     WATCH_SCENE_DRAW, WATCH_LANE_DRAW, WATCH_END_FRAME,
     WATCH_SCREENSHOT, WATCH_SWAP, WATCH_WINDOW_PROBE,
     WATCH_HEARTBEAT, WATCH_SLEEP, WATCH_IDLE,
-    WATCH_SCENE_PREPARE, WATCH_CAPTURE, WATCH_YIELD, WATCH_FOCUS, WATCH_OUTPUT_CHECK
+    WATCH_SCENE_PREPARE, WATCH_CAPTURE, WATCH_YIELD, WATCH_FOCUS, WATCH_OUTPUT_CHECK,
+    WATCH_MAP
 } renderer_watch_stage_t;
 static unsigned long g_loop_progress;
 static int g_watch_stage = WATCH_STARTUP;
@@ -234,6 +237,7 @@ static const char *watch_stage_name(int stage) {
     case WATCH_YIELD: return "yield";
     case WATCH_FOCUS: return "focus";
     case WATCH_OUTPUT_CHECK: return "output-check";
+    case WATCH_MAP: return "map-draw";
     default: return "unknown";
     }
 }
@@ -603,6 +607,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     apply_output();
+    cluster_video_start();               /* the phone's cluster stream, from the hook's frame ring */
 
     /* Runtime has one colocated asset.  Keep one relative development/deploy
      * lookup and one explicit HU production fallback — no argv/CWD guessing. */
@@ -1031,6 +1036,11 @@ int main(int argc, char **argv) {
                  || g_arrow.active || g_arrow.tint_active;
         }
 
+        /* The MOST MAP view window: the newest decoded picture, after the scene's frame. */
+        watch_stage(WATCH_MAP);
+        map_layer_tick();
+        watch_stage(WATCH_IDLE);
+
         /* dmdt focus watchdog: spawn one-shot detached thread to run
          * the popen("dmdt gs") + optional sc on a worker.  The render
          * loop never blocks on the ~150 ms popen cost.
@@ -1061,7 +1071,7 @@ int main(int argc, char **argv) {
          *      collision, so this is rare.
          *
          * On either signal, cluster_surface recreates the managed window (id 98,
-         * 100 ms backoff inside) and platform_recreate_window re-binds EGL. */
+         * 100 ms backoff inside) and recreate_output re-binds EGL. */
         {
             static struct timespec health_last = {0, 0};
             if (timespec_elapsed_at_least(&t_start, &health_last, 5, 0)) {
@@ -1187,6 +1197,7 @@ int main(int argc, char **argv) {
         watch_stage(WATCH_IDLE);
     }
 
+    cluster_video_stop();
     cr_server_shutdown();
     maneuver_set_scene_provider(NULL);
     cr_scene_destroy(g_engine.current_scene);cr_scene_destroy(g_engine.next_scene);

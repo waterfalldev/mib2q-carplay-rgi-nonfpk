@@ -24,15 +24,17 @@ typedef void (*hook_state_callback_t)(hook_context_t* ctx, int event, void* even
 typedef void (*hook_transport_callback_t)(hook_context_t* ctx, uint16_t msgid);
 
 /* ---- AirPlay seams -------------------------------------------------------
- * Three stock libairplay entry points are needed by more than one module, and
- * an ELF symbol can only have one definition in this shared object.  The
- * framework owns them (framework/airplay_seams.c) and modules subscribe here
- * instead of one module interposing on another's behalf.
+ * Stock libairplay entry points that modules need.  An ELF symbol can only
+ * have one definition in this shared object, so the framework owns them
+ * (framework/airplay_seams.c) and modules subscribe here instead of one module
+ * interposing on another's behalf.  Their dictionaries are CF property lists
+ * (framework/cflite.h).
  *
- * Callbacks run in module priority order.  `result` starts as stock's return
- * value; a module that cannot fulfil its part of the negotiation writes a
- * non-zero error into it, and later callbacks see it — the same threading the
- * single hand-written wrapper used to do with a local `ret`. */
+ * Callbacks run in module priority order, in dio_manager only.  A request
+ * callback may replace `request` with its own CF object, which the seam
+ * releases once stock has returned (response callbacks see the original);
+ * `result` starts as stock's return value, `response` as stock's reply, and a
+ * response callback may change either. */
 typedef struct {
     void* session;
     void* request;
@@ -42,22 +44,27 @@ typedef struct {
 } hook_setup_ctx_t;
 
 typedef void (*hook_setup_callback_t)(hook_setup_ctx_t* setup);
-typedef void (*hook_server_info_callback_t)(void* session, void* info);
-typedef void (*hook_teardown_callback_t)(void* session, void* request, int reason);
+/* `*info` is the /info dictionary stock just built (the caller's to release); a module
+ * that changes it replaces *info with its own copy and releases the one it replaced. */
+typedef void (*hook_server_info_callback_t)(void* session, void** info);
+/* The session's 16-byte master key and IV, as stock just stored them (the key every stream's
+ * keys are derived from). */
+typedef void (*hook_security_info_callback_t)(void* session, const uint8_t* key, const uint8_t* iv);
+/* Stock just tore `session` down: `whole` when the whole session ended, 0 when only the
+ * streams a TEARDOWN named (the phone ends single streams mid-session).  Stock's caller still
+ * holds the session; a module must not make the last release here. */
+typedef void (*hook_session_teardown_callback_t)(void* session, int whole);
 
 typedef struct {
-    /* AirPlayReceiverSessionSetup: before stock, after stock, and after every
-     * module has finished merging the response (for capture/diagnostics). */
+    /* AirPlayReceiverSessionSetup: before stock, and after stock. */
     hook_setup_callback_t on_setup_request;
     hook_setup_callback_t on_setup_response;
-    hook_setup_callback_t on_setup_response_final;
     /* AirPlayCopyServerInfo: the /info dictionary stock just built. */
     hook_server_info_callback_t on_server_info;
-    hook_server_info_callback_t on_server_info_final;
-    /* AirPlayReceiverSessionTearDown, before stock frees the session.
-     * Full teardown (NULL or absent/empty streams) is normalized to request=NULL;
-     * a non-NULL request always has a nonempty, selective stream list. */
-    hook_teardown_callback_t on_teardown;
+    /* AirPlayReceiverSessionSetSecurityInfo: after stock accepted the key. */
+    hook_security_info_callback_t on_security_info;
+    /* AirPlayReceiverSessionTearDown: after stock tore the session or some of its streams down. */
+    hook_session_teardown_callback_t on_session_teardown;
 } hook_airplay_seams_t;
 
 /* State Events */

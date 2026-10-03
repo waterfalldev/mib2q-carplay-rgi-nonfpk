@@ -49,14 +49,14 @@ docker run --rm --platform=linux/amd64 -v "$PROJECT_DIR":/host "$IMG" bash -c '
   READELF=arm-unknown-nto-qnx6.5.0eabi-readelf
   # The 32-bit QNX binutils cannot read Docker Desktop bind-mount inode numbers.
   mkdir -p /src/build
-  cp -a /host/hook /src/
+  cp -a /host/hook /host/common /src/
   cd /src/hook
   SRCS="framework/logging.c framework/state_trace.c framework/signal_guard.c framework/bus.c \
-        framework/iap2_protocol.c framework/hook_framework.c \
+        framework/iap2_protocol.c framework/hook_framework.c framework/cflite.c framework/airplay_seams.c \
         routeguidance/rgd_tlv.c routeguidance/rgd_hook.c coverart/jpeg_safety.c coverart/coverart_stream.c coverart/coverart_hook.c \
-        main.c"
+        altscreen/altscreen_hook.c main.c"
   $CC -shared -fPIC -O2 -std=gnu99 -fvisibility=hidden -fdata-sections -ffunction-sections '"$CFLAGS_EXTRA"' \
-      -I. $SRCS -o /src/build/libcarplay_hook.so -Wl,--gc-sections \
+      -I. -I../common $SRCS -o /src/build/libcarplay_hook.so -Wl,--gc-sections \
       -Wl,--version-script=/src/hook/carplay_hook.exports.map -lz -lsocket
   # The LD_PRELOAD ABI is an exact allowlist: hidden-by-default compilation plus
   # the version script, checked against what actually landed in .dynsym.
