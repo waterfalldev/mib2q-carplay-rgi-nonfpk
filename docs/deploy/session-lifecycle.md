@@ -27,10 +27,15 @@ reconciles:
 
 This note carries the **shipping-relevant** half of the RE session-lifecycle audit. The audit's
 altScreen/cluster-video findings (stream-111 RTSP, the `-6030`/`-6031` port collision, the
-loader->video Adreno handoff, the OMX back-pressure budget) are **excluded**: this branch ships **no
-cluster altScreen** - there is no `altscreen_hook`, no `altscreen_render`, no `AltScreenModule`, and
-no stream-111 listener anywhere in the tree. The cluster shows the head unit's own native map with a
-transparent [maneuver overlay](../cluster/display-contexts.md) composited over it, not a decoded iOS video plane.
+loader->video Adreno handoff, the OMX back-pressure budget) are **excluded**: this branch decodes
+**no cluster video** yet. Its only altScreen code is the `altscreen` module
+([most-map-view](../cluster/most-map-view.md)), which receives and decrypts the stream on its own
+port and hands it to `maneuver_render` through a shared-memory ring it never waits on. Its stock
+commands go out from their own thread with their own session reference, never under a lock of the
+hook's nor from the receive thread; the held reference is released when stock tears the session
+down (R5), its stream ends, a new Identify arrives or no stream connects within 5 s.
+The cluster shows the head unit's own native map with a transparent
+[maneuver overlay](../cluster/display-contexts.md) composited over it, not a decoded iOS video plane.
 
 ## 🔍 Watchdog hang is a separate class from any RTSP trigger
 
@@ -135,6 +140,16 @@ Renderer adoption runs in **`carplay_monitor.sh`, in the background, while the w
 `maneuver_render` exists (no altScreen renderer). An adopted renderer that fails the identity check is
 re-checked after 2 s, then replaced with a **1 s** TERM grace (`cp_kill_renderer "$MON_NAME" 1`).
 `dio` churn never kills the persistent renderer at all.
+
+### R5 - a stock session reference outliving stock's teardown [x] (fix); (!) on-unit replay
+
+map14: a cable pulled mid-stream never closes the cluster stream's TCP connection, so the module
+kept its session reference past stock's teardown, and SI killed `dio_manager` 9.5 s later for
+missing the 8 s `stopTimeout` (`TIMEOUT_SHUTDOWN`). The module now hears stock's whole-session
+teardown (`AirPlayReceiverSessionTearDown` seam, [integration-seam](../hook/integration-seam.md))
+and, within 250 ms, ends that connection and releases the reference on its receiver thread. map15,
+one pull mid-route: released 0.3 s after it, CarPlay stopped cleanly in about 1 s. The log collector
+copies SI's dumps (`si_dumps/`). (!) Repeated pulls and replugs are still to be run.
 
 ## ✅ Cleared as primary session killers [x]
 

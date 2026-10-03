@@ -67,6 +67,11 @@ features below follow it automatically.
   native size. The map view keeps the Audi map with CarPlay's distance, street and arrival text.
   Stock view selection stays in charge, and Audi guidance returns on disconnect
   ([details](docs/cluster/most-cluster.md)).
+- **Experimental MOST MAP view.** This branch drives the MOST cluster's MAP view through
+  the same engine as the arrows view, and always offers the phone a second, cluster-map
+  CarPlay display. Its stream is received, decrypted and decoded by the head unit's hardware
+  decoder, and the phone's cluster map takes the MAP view during CarPlay route guidance.
+  It retains the existing arrows ([status and limits](docs/cluster/most-map-view.md)).
 - **Route text in the Virtual Cockpit.** A text line names the exit sign or the next road (the
   current road when there is nothing else); long names scroll. Press **OK** (the left steering-wheel
   roller) to switch it to arrival time and time left, and press again to go back; it returns by itself

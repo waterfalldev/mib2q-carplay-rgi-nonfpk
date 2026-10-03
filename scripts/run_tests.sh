@@ -7,7 +7,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
-if [ "$(uname)" = Darwin ]; then DEAD_STRIP=-Wl,-dead_strip; DL_LIB=; else DEAD_STRIP=-Wl,--gc-sections; DL_LIB=-ldl; fi
+if [ "$(uname)" = Darwin ]; then DEAD_STRIP=-Wl,-dead_strip; DL_LIB=; RT_LIB=; else DEAD_STRIP=-Wl,--gc-sections; DL_LIB=-ldl; RT_LIB=-lrt; fi
 
 printf '%-32s ' maneuver_surface_test
 cc -D_GNU_SOURCE -std=gnu99 -O1 -Wall -Wextra -Werror -Wno-unused-function \
@@ -55,6 +55,37 @@ cc -D_GNU_SOURCE -std=c99 -O1 -Wall -Wextra -Werror -Wno-unused-variable -Wno-un
     -DENABLE_LOGGING=0 -Ihook tests/rgd_tlv_test.c hook/routeguidance/rgd_tlv.c \
     $DL_LIB -o "$OUT/rgd_tlv"
 "$OUT/rgd_tlv"
+
+printf '%-32s ' altscreen_hook_test
+cc -D_GNU_SOURCE -std=gnu99 -O1 -Wall -Wextra -Werror -DENABLE_LOGGING=0 \
+    -DALT_SHOW_UI_DELAY_MS=10 -DALT_HOLD_CONNECT_MS=400 "-DCVR_SHM_NAME=\"/cr_cluster_video_test$$\"" \
+    -Ihook -Icommon tests/altscreen_hook_test.c hook/altscreen/altscreen_hook.c hook/framework/cflite.c \
+    -rdynamic -lpthread $DL_LIB $RT_LIB -o "$OUT/altscreen_hook"
+"$OUT/altscreen_hook"
+
+printf '%-32s ' airplay_seams_test
+cc -std=gnu99 -O1 -Wall -Wextra -Werror -fPIC -shared tests/fake_airplay_teardown.c \
+    -o "$OUT/libfake_airplay.so"
+cc -D_GNU_SOURCE -std=gnu99 -O1 -Wall -Wextra -Werror -DENABLE_LOGGING=0 -Ihook -Itests \
+    tests/airplay_seams_test.c hook/framework/airplay_seams.c "-L$OUT" -lfake_airplay "-Wl,-rpath,$OUT" \
+    -lpthread $DL_LIB -o "$OUT/airplay_seams"
+"$OUT/airplay_seams"
+
+printf '%-32s ' cluster_video_ring_test
+cc -D_GNU_SOURCE -std=gnu99 -O2 -Wall -Wextra -Werror -DCVR_DATA_BYTES='(1u << 16)' \
+    "-DCVR_SHM_NAME=\"/cr_cluster_video_ring$$\"" -Icommon -Itests tests/cluster_video_ring_test.c \
+    -lpthread $RT_LIB -o "$OUT/cluster_video_ring"
+"$OUT/cluster_video_ring"
+
+printf '%-32s ' cluster_video_test
+cc -D_GNU_SOURCE -std=gnu99 -O1 -Wall -Wextra -Werror "-DCVR_SHM_NAME=\"/cr_cluster_video_reader$$\"" \
+    -Icommon -Itests tests/cluster_video_test.c -lpthread $RT_LIB -o "$OUT/cluster_video"
+"$OUT/cluster_video"
+
+printf '%-32s ' cluster_decoder_test
+cc -D_GNU_SOURCE -std=gnu99 -O1 -Wall -Wextra -Werror -Itests tests/cluster_decoder_test.c \
+    -rdynamic -lpthread $DL_LIB $RT_LIB -o "$OUT/cluster_decoder"
+"$OUT/cluster_decoder"
 
 printf '%-32s ' inject_generation_test
 cc -D_GNU_SOURCE -std=c99 -O1 -Wall -Wextra -Werror -Wno-unused-function \

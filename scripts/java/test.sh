@@ -109,7 +109,7 @@ route_stock=(DistanceBargraphChainTest ManeuverParityTest RendererViewportTest
     com.luka.carplay.rgd.LaneGuidanceLifecycleTest com.luka.carplay.rgd.RgiDeliveryRecoveryTest
     com.luka.carplay.rgd.CurrentPositionDeliveryTest com.luka.carplay.rgd.RouteInfoTimeoutTest
     com.luka.carplay.core.RgdTeardownTest com.luka.carplay.core.NativeGuidanceGateTest
-    NativeGuidanceStateTest MostArrowsTest MostViewHandshakeTest ClusterOwnershipTest
+    NativeGuidanceStateTest MostArrowsTest MostViewHandshakeTest MostMapViewTest ClusterOwnershipTest
     com.luka.carplay.core.ClusterCoreTest)
 route_runtime=(KomoGraphicsStateTest com.luka.carplay.rgd.CurrentPositionStockChainTest)
 transport_plain=(TouchpadControllerTest com.luka.carplay.bus.CarplayBusTransportTest

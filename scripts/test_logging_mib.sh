@@ -1,7 +1,8 @@
 #!/bin/sh
 # logging_MoreIncredibleBash/mod/custom.sh on a fake card: numbered saves 001/002,
 # /tmp logs and captures copied, shared-memory objects skipped, verbose marker made
-# by run 1 and reported by run 2.  Every POSIX/ksh shell here (QNX 6.5 /bin/sh is pdksh).
+# by run 1 and reported by run 2, smartphone_integrator's dumps copied.  Every POSIX/ksh shell
+# here (QNX 6.5 /bin/sh is pdksh).
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
@@ -12,11 +13,16 @@ for sh in $shells; do
     rm -rf "$T/card" "$T/src"; mkdir -p "$T/card" "$T/src"
     cp -R "$ROOT/logging_MoreIncredibleBash/mod" "$T/card/"
     echo h > "$T/src/carplay_hook.log"; echo a > "$T/src/maneuver_render.log"; echo s > "$T/src/shmem_obj"
+    # smartphone_integrator's dump of a process it stopped: a directory and its archive
+    mkdir -p "$T/src/smartphone_integrator_error_44"; echo p > "$T/src/smartphone_integrator_error_44/pidin.txt"
+    echo z > "$T/src/smartphone_integrator_error_44.tar.gz"
     CP_LOG_SRC=$T/src "$sh" "$T/card/mod/custom.sh" > /dev/null || fail "$sh" "run 1"
     CP_LOG_SRC=$T/src "$sh" "$T/card/mod/custom.sh" > /dev/null || fail "$sh" "run 2"
     L=$T/card/carplay_logs
     [ -f "$L/001/tmp/carplay_hook.log" ] && [ -f "$L/002/tmp/maneuver_render.log" ] || fail "$sh" "logs not copied"
     [ ! -e "$L/001/tmp/shmem_obj" ] || fail "$sh" "shared-memory object copied"
+    [ -f "$L/001/si_dumps/smartphone_integrator_error_44/pidin.txt" ] \
+        && [ -f "$L/001/si_dumps/smartphone_integrator_error_44.tar.gz" ] || fail "$sh" "smartphone_integrator dumps not copied"
     [ -e "$T/src/carplay_verbose" ] || fail "$sh" "no verbose marker"
     grep -q 'verbose     off' "$L/001/info.txt" && grep -q 'verbose     on' "$L/002/info.txt" || fail "$sh" "verbose state not recorded"
     # numbering continues after the highest save, even with gaps and past 008/009
@@ -24,4 +30,4 @@ for sh in $shells; do
     CP_LOG_SRC=$T/src "$sh" "$T/card/mod/custom.sh" > /dev/null || fail "$sh" "run 3"
     [ -d "$L/010" ] && [ ! -e "$L/001" ] || fail "$sh" "next save is not highest+1: $(ls "$L" | tr '\n' ' ')"
 done
-echo "logging M.I.B.: highest+1 numbering, /tmp logs, verbose marker:$shells PASS"
+echo "logging M.I.B.: highest+1 numbering, /tmp logs, SI dumps, verbose marker:$shells PASS"
