@@ -42,6 +42,7 @@ CarPlay patch set for Audi MHI2Q infotainment.
 
 - [Gallery](#-gallery)
 - [Features](#-features)
+- [Architecture](#-architecture)
 - [Repository layout](#-repository-layout)
 - [Build](#-build)
 - [Deployment](#-deployment)
@@ -82,6 +83,79 @@ features below follow it automatically.
 - **Parking popups no longer hide CarPlay.** When the Audi front PDC / parking view pops up beside it,
   CarPlay stays on screen instead of being replaced ([details](docs/hmi/pdc-small-stage.md)).
 - **MMI touchpad → DPAD bridging** so finger drags navigate CarPlay menus.
+
+## 🏗️ Architecture
+
+Two paths share the cluster. **Route guidance (RGI)**: the hook in `dio_manager` reads the
+iPhone's iAP2 route guidance and hands it over CarplayBus to the Java patch in the HMI, which
+sends the BAP data the cluster shows (arrows, distance, street, lanes, HUD) and drives
+`maneuver_render`'s 3D maneuver scene in window 98. **Cluster map** (experimental, MOST MAP
+view): the phone streams a second CarPlay display; the hook's `altscreen` module receives and
+decrypts it, a shared-memory frame ring hands every frame to the renderer, and the head unit's
+hardware decoder decodes it into window 99. The Java patch picks the cluster view and asks the
+renderer for the window it needs; the display manager puts that window into the cluster
+context, and the head unit encodes it to the cluster. The MMI screen stays stock CarPlay.
+
+```mermaid
+flowchart TB
+    accTitle: How CarPlay route guidance and the phone's cluster map reach the cluster
+    accDescr: The iPhone's route guidance goes from the hook in dio_manager over CarplayBus to the Java patch, which sends BAP data to the cluster and drives the maneuver renderer's window 98. The phone's cluster-map stream is received and decrypted by the hook's altscreen module, handed through a shared-memory frame ring to the renderer, decoded by the hardware decoder into window 99. The display manager puts window 98 or 99 into the cluster context, and the head unit encodes it to the cluster over MOST.
+
+    subgraph phone["iPhone"]
+        rg["Route guidance<br/>iAP2 RouteGuidanceUpdate"]
+        main["CarPlay screen<br/>AirPlay stream 110"]
+        cmap["Cluster map display<br/>AirPlay stream 111"]
+    end
+
+    subgraph dio["dio_manager: stock libairplay + libcarplay_hook.so"]
+        iap["iAP2 interception<br/>route guidance parser"]
+        stock["Stock screen receiver<br/>and decoder"]
+        alt["altscreen module<br/>/info, SETUP, showUI<br/>receiver :7100, AES-CTR decrypt"]
+    end
+
+    subgraph java["HMI Java patch (lsd)"]
+        bus["CarplayBus :19810"]
+        rgd["RouteGuidance<br/>maneuver, distance, lanes"]
+        pres["Cluster presentation<br/>VC contexts / MostPresentation<br/>ClusterVideo"]
+        rs["RendererServer :19800"]
+    end
+
+    ring[("Frame ring<br/>/cr_cluster_video<br/>shared memory")]
+
+    subgraph rend["maneuver_render"]
+        scene["3D maneuver scene<br/>window 98"]
+        cv["Frame-ring reader"]
+        dec["Hardware H.264 decoder<br/>OMX.qcom.video.decoder.avc<br/>TILE_4x2 untiled to NV12"]
+        w99["Map window 99 (NV12)"]
+    end
+
+    dm["DisplayManager contexts<br/>VC: 80 = 98, 101, 102, 33<br/>MOST arrows: 81 = 98<br/>MOST map: 82 = 99"]
+    enc["videoencoderservice<br/>H.264 over MOST"]
+    cluster["Cluster<br/>Virtual Cockpit or MOST display"]
+    mmi["MMI screen"]
+
+    rg --> iap -->|EVT_RGD_UPDATE| bus
+    bus --> rgd
+    rgd -->|"BAP: arrows, distance, street, lanes, HUD"| cluster
+    rgd --> rs -->|"MANEUVER, PROGRESS, LANES"| scene
+
+    main --> stock --> mmi
+
+    cmap --> alt -->|"Annex B access units"| ring --> cv --> dec --> w99
+    alt -->|EVT_CLUSTER_VIDEO| bus
+    bus --> pres
+    alt -.->|"showUI, forceKeyFrame"| cmap
+    cv -.->|"key frame wanted"| ring
+
+    pres -->|"context switch"| dm
+    scene --> dm
+    w99 --> dm
+    dm --> enc --> cluster
+```
+
+More: [architecture](docs/architecture.md) (processes and threads),
+[maneuver-renderer](docs/cluster/maneuver-renderer.md), [most-cluster](docs/cluster/most-cluster.md),
+[most-map-view](docs/cluster/most-map-view.md).
 
 ## 🗂️ Repository layout
 
