@@ -63,7 +63,10 @@ void platform_check_output(void);
 unsigned platform_get_output(int *win_w, int *win_h, int *x, int *y, int *w, int *h, int *opaque);
 
 /* The MOST MAP view window (displayable 99, NV12, filled by the CPU), which exists only while
- * Java asks for it in CR_MOST_MAP_OUTPUT_PATH (platform_check_output follows that too).
+ * Java asks for it in CR_MOST_MAP_OUTPUT_PATH.  It belongs to the map thread (map_layer.c),
+ * never the render loop, so a slow scene frame cannot hold its pictures back.
+ * platform_map_check(0): follows that request; platform_map_check(1): recreates a lost window.
+ * platform_check_output / platform_check_and_recover_window handle the scene window only.
  * platform_map_window(): 1 with its size and a serial that changes with every new window
  * while one can be drawn, else 0.  platform_map_nv12_buffer(): its next buffer - luma rows
  * `y_stride` apart, the interleaved chroma plane (height / 2 rows) `uv_stride` apart - or 0.
@@ -72,6 +75,7 @@ unsigned platform_get_output(int *win_w, int *win_h, int *x, int *y, int *w, int
 int platform_map_window(int *w, int *h, unsigned *window);
 int platform_map_nv12_buffer(unsigned char **y, int *y_stride, unsigned char **uv, int *uv_stride);
 int platform_map_nv12_post(void);
+void platform_map_check(int recover);
 
 /* Output diagnostics: free system memory in KB (the GPU allocates from it), or -1. */
 long platform_free_memory_kb(void);

@@ -17,6 +17,14 @@
 static uint8_t luma_at(size_t x, size_t y, unsigned frame) { return (uint8_t)(x * 3 + y * 7 + frame); }
 static uint8_t chroma_at(size_t x, size_t y, unsigned frame) { return (uint8_t)(x * 5 + y * 11 + frame * 3); }
 
+/* Video range to full, rounded to nearest: luma 16-235 and chroma 16-240 to 0-255. */
+static uint8_t full(uint8_t v, int top) {
+    double s = (v - 16) * 255.0 / (top - 16);
+    return (uint8_t)(s <= 0 ? 0 : s >= 255 ? 255 : (int)(s + 0.5));
+}
+static uint8_t full_luma(uint8_t v) { return full(v, 235); }
+static uint8_t full_chroma(uint8_t v) { return full(v, 240); }
+
 /* Storage position of every tile of a TILE_4x2 plane, from the layout's literal order: each pair
  * of tile rows stores T0 T1, then B0-B3, T2-T5, B4-B7, T6-T9 ... (T its top row, B its bottom
  * row); an unpaired last row runs straight. */
@@ -223,11 +231,11 @@ static uint8_t g_y[TH][TW + TPAD], g_uv[TH / 2][TW + TPAD];
 static int tiled_target_is(unsigned frame) {
     int x, y, ok = 1;
     for (y = 0; y < TH; ++y) {
-        for (x = 0; x < TW; ++x) ok &= g_y[y][x] == luma_at((size_t)x, (size_t)y, frame);
+        for (x = 0; x < TW; ++x) ok &= g_y[y][x] == full_luma(luma_at((size_t)x, (size_t)y, frame));
         for (x = TW; x < TW + TPAD; ++x) ok &= g_y[y][x] == 0x11;
     }
     for (y = 0; y < TH / 2; ++y) {
-        for (x = 0; x < TW; ++x) ok &= g_uv[y][x] == chroma_at((size_t)x, (size_t)y, frame);
+        for (x = 0; x < TW; ++x) ok &= g_uv[y][x] == full_chroma(chroma_at((size_t)x, (size_t)y, frame));
         for (x = TW; x < TW + TPAD; ++x) ok &= g_uv[y][x] == 0x11;
     }
     return ok;
@@ -235,6 +243,29 @@ static int tiled_target_is(unsigned frame) {
 
 static int copy(unsigned *serial) {
     return cluster_decoder_copy(serial, &g_y[0][0], TW + TPAD, &g_uv[0][0], TW + TPAD, TW, TH);
+}
+
+static int64_t ms_since(uint64_t start) { return (int64_t)(monotonic_ns() - start) / 1000000; }
+
+static int is_queued(const omx_header_t *h) {
+    unsigned i;
+    for (i = 0; i < f.queued; ++i) if (f.queue[i] == h) return 1;
+    return 0;
+}
+
+/* The reader thread's side: a frame 50 ms from now, or the decoder closed. */
+static uint8_t g_late_frame[100];
+static void *feed_late(void *unused) {
+    struct timespec t = { 0, 50 * 1000000L };
+    (void)unused;
+    nanosleep(&t, NULL);
+    cluster_decoder_feed(1, 0, g_late_frame, sizeof(g_late_frame), 1000);
+    return NULL;
+}
+static void *close_now(void *unused) {
+    (void)unused;
+    cluster_decoder_close();
+    return NULL;
 }
 
 int main(void) {
@@ -266,6 +297,9 @@ int main(void) {
     check(fed == 12 && f.frames == 12 && f.flags_ok == 13, "12 frames in, as ENDOFFRAME (config as CODECCONFIG)");
     check(cluster_decoder_fresh(serial) && copy(&serial) == 1 && tiled_target_is(12),
           "the newest picture untiled into the target, both planes, its padding untouched");
+    check(g_full_luma[16] == 0 && g_full_luma[235] == 255 && g_full_luma[126] == 128 && g_full_chroma[16] == 0
+          && g_full_chroma[128] == 128 && g_full_chroma[240] == 255 && g_full_luma[0] == 0 && g_full_chroma[255] == 255,
+          "video range expanded to full: black 0, white 255, grey chroma 128, out of range clamped");
     check(!cluster_decoder_fresh(serial) && copy(&serial) == 0, "the same picture is not copied twice");
     cluster_decoder_poll();
     check(f.queued + 1 == f.port[1].count_actual, "every output but the newest went back to the decoder");
@@ -275,6 +309,58 @@ int main(void) {
     cluster_decoder_feed(1, 0, frame, sizeof(frame), 1000);
     check(copy(&serial) == 0 && tiled_target_is(15), "a picture short of the layout is not shown");
     f.short_pictures = 0;
+
+    {
+        pthread_t thread;
+        uint64_t start = monotonic_ns();
+        unsigned seen = serial;
+        omx_header_t *held;
+        uint32_t w, h;
+        unsigned picture;
+        uint8_t before[64];
+
+        check(cluster_decoder_wait(serial, 20 * 1000000LL) == 0 && ms_since(start) >= 15,
+              "no new picture: the wait sleeps its time (%d ms) and says so", (int)ms_since(start));
+        cluster_decoder_feed(1, 0, frame, sizeof(frame), 1000);
+        start = monotonic_ns();
+        check(cluster_decoder_wait(serial, 2000 * 1000000LL) == 1 && ms_since(start) < 5,
+              "a picture already waiting: no wait");
+        copy(&serial);
+        memset(g_late_frame, 0x41, sizeof(g_late_frame));
+        pthread_create(&thread, NULL, feed_late, NULL);
+        start = monotonic_ns();
+        check(cluster_decoder_wait(serial, 2000 * 1000000LL) == 1 && ms_since(start) >= 40 && ms_since(start) < 500,
+              "a picture arriving during the wait ends it at once (%d ms of 2000)", (int)ms_since(start));
+        pthread_join(thread, NULL);
+        check(copy(&serial) == 1 && serial != seen && g.shown > 0, "that picture is copied and counted (%u shown)",
+              g.shown);
+
+        cluster_decoder_poll();
+        cluster_decoder_feed(1, 0, frame, sizeof(frame), 1000);
+        held = copy_begin(serial, &picture, &w, &h);
+        memcpy(before, held->buffer, sizeof(before));
+        for (i = 0; i < 3; ++i) cluster_decoder_feed(1, 0, frame, sizeof(frame), 1000);
+        cluster_decoder_poll();
+        check(held && g.newest != held && !is_queued(held) && memcmp(before, held->buffer, sizeof(before)) == 0,
+              "a picture being copied stays out of the decoder while newer ones arrive, untouched");
+        copy_end(held, 1);
+        cluster_decoder_poll();
+        check(is_queued(held) && f.queued + 1 == f.port[1].count_actual,
+              "its copy done, it goes back; only the newest stays out");
+
+        held = copy_begin(serial, &picture, &w, &h);
+        pthread_create(&thread, NULL, close_now, NULL);
+        {
+            struct timespec t = { 0, 50 * 1000000L };
+            nanosleep(&t, NULL);
+        }
+        check(held && f.allocated - f.freed == total_buffers(), "close waits for a copy in progress, freeing nothing");
+        copy_end(held, 1);
+        pthread_join(thread, NULL);
+        check(f.live_handles == 0 && f.allocated == f.freed, "and frees everything once it ends");
+        check(cluster_decoder_feed(1, 1, f.config, sizeof(f.config), 0) == 0 && f.live_handles == 1,
+              "the stream's next config opens it again");
+    }
 
     cluster_decoder_close();
     check(f.live_handles == 0 && f.state == OMX_STATE_LOADED && f.allocated == f.freed,

@@ -3,11 +3,14 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 /* OpenMAX IL 1.1 as the MU1329 core speaks it (stock libairplay: nVersion 0x101, a 96-byte
  * port definition on ARM).  Only what this file uses. */
@@ -102,15 +105,44 @@ static struct {
     omx_header_t *inputs[CD_MAX_BUFFERS], *outputs[CD_MAX_BUFFERS];
     unsigned n_in, n_out, fed, dropped, logged_errors;
     unsigned warned_short;
-    /* Shared with the decoder's callbacks and the render thread, under `lock`. */
-    omx_header_t *free_in[CD_MAX_BUFFERS], *returns[CD_MAX_BUFFERS], *newest;
+    /* Shared with the decoder's callbacks and the map thread, under `lock`.  `copying` is the
+     * picture the map thread is untiling without the lock: it is not handed back until done. */
+    omx_header_t *free_in[CD_MAX_BUFFERS], *returns[CD_MAX_BUFFERS], *newest, *copying;
     unsigned n_free_in, n_returns, serial, pictures, errors;
     int state, port_changed;
     uint32_t error;
+    uint64_t newest_at;                         /* when `newest` arrived (monotonic ns) */
+    uint64_t first_at;                          /* the stream's first picture, for its rate */
+    unsigned gap_max;                           /* longest pause between pictures, us */
+    unsigned shown;                             /* pictures copied into the window */
 } g;
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_changed = PTHREAD_COND_INITIALIZER;
+
+/* A byte per new picture wakes cluster_decoder_wait; poll()'s relative timeout keeps it off the
+ * wall clock.  Non-blocking both ends: a full pipe already means "wake". */
+static pthread_once_t g_wake_once = PTHREAD_ONCE_INIT;
+static int g_wake[2] = { -1, -1 };
+
+static void wake_open(void) {
+    int i;
+    if (pipe(g_wake) != 0) {
+        fprintf(stderr, "cluster_decoder: no wake pipe (errno=%d); pictures wait for the next frame\n", errno);
+        g_wake[0] = g_wake[1] = -1;
+        return;
+    }
+    for (i = 0; i < 2; ++i) {
+        fcntl(g_wake[i], F_SETFL, fcntl(g_wake[i], F_GETFL, 0) | O_NONBLOCK);
+        fcntl(g_wake[i], F_SETFD, FD_CLOEXEC);
+    }
+}
+
+static uint64_t monotonic_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec;
+}
 
 static void deadline_in(struct timespec *t, long ms) {
     clock_gettime(CLOCK_REALTIME, t);
@@ -139,19 +171,32 @@ static int on_empty_done(omx_component_t *c, void *app, omx_header_t *h) {
     return 0;
 }
 
-/* The newest picture stays out until a newer one replaces it; the rest go back (poll). */
+/* The newest picture stays out until a newer one replaces it, and one being copied until its
+ * copy ends; the rest go back (poll).  A new picture wakes cluster_decoder_wait. */
 static int on_fill_done(omx_component_t *c, void *app, omx_header_t *h) {
+    int fresh = 0;
     (void)c; (void)app;
     pthread_mutex_lock(&g_lock);
     if (h->filled_len && g.state == OMX_STATE_EXECUTING) {
-        if (g.newest && g.n_returns < CD_MAX_BUFFERS) g.returns[g.n_returns++] = g.newest;
+        if (g.newest && g.newest != g.copying && g.n_returns < CD_MAX_BUFFERS) g.returns[g.n_returns++] = g.newest;
+        uint64_t now = monotonic_ns();
+        if (g.newest_at && now - g.newest_at > (uint64_t)g.gap_max * 1000u)
+            g.gap_max = (unsigned)((now - g.newest_at) / 1000u);
+        if (!g.first_at) g.first_at = now;
         g.newest = h;
+        g.newest_at = now;
         ++g.serial;
         ++g.pictures;
+        fresh = 1;
     } else if (g.n_returns < CD_MAX_BUFFERS) {
         g.returns[g.n_returns++] = h;
     }
     pthread_mutex_unlock(&g_lock);
+    if (fresh && g_wake[1] >= 0) {
+        static const char one = 1;
+        ssize_t n = write(g_wake[1], &one, 1);
+        (void)n;
+    }
     return 0;
 }
 
@@ -249,15 +294,34 @@ static size_t tiled_bytes(uint32_t w, uint32_t h) {
     return chroma_at + cols * chroma_rows * CD_TILE_BYTES;
 }
 
-/* One TILE_4x2 plane, `rows` tile rows of it, into a linear plane of cw x ch. */
-static void untile_plane(const uint8_t *src, size_t cols, size_t rows, uint8_t *dst, int stride, int cw, int ch) {
-    size_t tx, ty, r;
+/* The phone's pictures are video range (luma 16-235, chroma 16-240).  The MOST encoder's
+ * compositor reads an NV12 window as full range, so the map looked dull (map27) next to the
+ * RGBA window, which the CPU converted as video range (map25-26).  The copy expands both
+ * planes to 0-255 on the way; chroma 128 stays 128. */
+static uint8_t g_full_luma[256], g_full_chroma[256];
+static pthread_once_t g_full_once = PTHREAD_ONCE_INIT;
+
+static void full_range_tables(void) {
+    int i;
+    for (i = 0; i < 256; ++i) {
+        g_full_luma[i] = (uint8_t)(i <= 16 ? 0 : i >= 235 ? 255 : ((i - 16) * 255 + 109) / 219);
+        g_full_chroma[i] = (uint8_t)(i <= 16 ? 0 : i >= 240 ? 255 : ((i - 16) * 255 + 112) / 224);
+    }
+}
+
+/* One TILE_4x2 plane, `rows` tile rows of it, into a linear plane of cw x ch through `range`. */
+static void untile_plane(const uint8_t *src, size_t cols, size_t rows, uint8_t *dst, int stride, int cw, int ch,
+                         const uint8_t *range) {
+    size_t tx, ty, r, i;
     for (ty = 0; ty < rows; ++ty)
         for (tx = 0; tx < cols && (int)(tx * CD_TILE_W) < cw; ++tx) {
             const uint8_t *tile = src + tile_index(tx, ty, cols, rows) * CD_TILE_BYTES;
             size_t x0 = tx * CD_TILE_W, y0 = ty * CD_TILE_H, n = (size_t)cw - x0 < CD_TILE_W ? (size_t)cw - x0 : CD_TILE_W;
-            for (r = 0; r < CD_TILE_H && (int)(y0 + r) < ch; ++r)
-                memcpy(dst + (y0 + r) * (size_t)stride + x0, tile + r * CD_TILE_W, n);
+            for (r = 0; r < CD_TILE_H && (int)(y0 + r) < ch; ++r) {
+                const uint8_t *in = tile + r * CD_TILE_W;
+                uint8_t *out = dst + (y0 + r) * (size_t)stride + x0;
+                for (i = 0; i < n; ++i) out[i] = range[in[i]];
+            }
         }
 }
 
@@ -291,8 +355,9 @@ static void close_decoder(const char *why) {
         g.omx->send_command(g.omx, OMX_COMMAND_STATE_SET, OMX_STATE_IDLE, NULL);
         wait_state(OMX_STATE_IDLE);
     }
-    pthread_mutex_lock(&g_lock);                /* the render thread copies no more */
+    pthread_mutex_lock(&g_lock);                /* the map thread copies no more */
     g.newest = NULL;
+    while (g.copying) pthread_cond_wait(&g_changed, &g_lock);
     g.n_returns = g.n_free_in = 0;
     pthread_mutex_unlock(&g_lock);
     if (g.state == OMX_STATE_IDLE)
@@ -301,19 +366,28 @@ static void close_decoder(const char *why) {
     if (loaded) wait_state(OMX_STATE_LOADED);
     g_core.free_handle(g.omx);
     g.omx = NULL;
-    fprintf(stderr, "cluster_decoder: stream %u decoder closed (%s): %u units in, %u pictures, %u dropped, "
-            "%u errors\n", g.stream, why, g.fed, g.pictures, g.dropped, g.errors);
+    {
+        /* The phone's own rate: pictures over the span they arrived in, and its longest pause. */
+        uint64_t span_ms = g.pictures > 1 ? (g.newest_at - g.first_at) / 1000000u : 0u;
+        unsigned fps10 = span_ms ? (unsigned)((uint64_t)(g.pictures - 1) * 10000u / span_ms) : 0u;
+        fprintf(stderr, "cluster_decoder: stream %u decoder closed (%s): %u units in, %u pictures, %u dropped, "
+                "%u errors; arriving at %u.%u fps, longest gap %u ms; %u shown\n", g.stream, why, g.fed,
+                g.pictures, g.dropped, g.errors, fps10 / 10, fps10 % 10, g.gap_max / 1000u, g.shown);
+    }
 }
 
 static int open_decoder(uint32_t stream) {
     uint32_t i;
     int e;
     if (!load_core()) return -1;
+    pthread_once(&g_wake_once, wake_open);      /* before any callback can write to it */
     pthread_mutex_lock(&g_lock);
     g.state = OMX_STATE_LOADED;
     g.port_changed = 0;
     g.error = 0;
     g.errors = g.pictures = 0;
+    g.shown = g.gap_max = 0;
+    g.newest_at = g.first_at = 0;
     pthread_mutex_unlock(&g_lock);
     g.stream = stream;
     g.fed = g.dropped = g.logged_errors = 0;
@@ -428,27 +502,79 @@ void cluster_decoder_close(void) {
     g.given_up = 0;
 }
 
-int cluster_decoder_copy(unsigned *serial, uint8_t *y, int y_stride, uint8_t *uv, int uv_stride, int w, int h) {
-    int copied = 0;
+/* Takes the newest picture newer than `serial` out of the decoder's reach for a copy without
+ * the lock: NULL when there is none.  copy_end gives it back. */
+static omx_header_t *copy_begin(unsigned serial, unsigned *picture, uint32_t *w, uint32_t *h) {
+    omx_header_t *p = NULL;
     pthread_mutex_lock(&g_lock);
-    if (g.newest && g.serial != *serial) {
-        const uint32_t fw = g.out.video.width, fh = g.out.video.height;
-        const int cw = w < (int)fw ? w : (int)fw, ch = h < (int)fh ? h : (int)fh;
-        size_t cols, rows, chroma_rows, chroma_at;
-        tile_layout(fw, fh, &cols, &rows, &chroma_rows, &chroma_at);
-        if (g.newest->filled_len >= tiled_bytes(fw, fh)) {
-            const uint8_t *src = g.newest->buffer + g.newest->offset;
-            untile_plane(src, cols, rows, y, y_stride, cw, ch);
-            untile_plane(src + chroma_at, cols, chroma_rows, uv, uv_stride, cw, ch / 2);
-            copied = 1;
-        } else if (!g.warned_short++) {
-            fprintf(stderr, "cluster_decoder: a %u-byte picture, short of TILE_4x2 %ux%u; not shown\n",
-                    g.newest->filled_len, fw, fh);
-        }
-        *serial = g.serial;
+    if (g.newest && g.serial != serial && !g.copying) {
+        p = g.copying = g.newest;
+        *picture = g.serial;
+        *w = g.out.video.width;
+        *h = g.out.video.height;
     }
     pthread_mutex_unlock(&g_lock);
+    return p;
+}
+
+/* Ends the copy of `p`: a picture replaced meanwhile goes back to the decoder (poll), and a
+ * waiting close_decoder may free the buffers. */
+static void copy_end(omx_header_t *p, int shown) {
+    pthread_mutex_lock(&g_lock);
+    g.copying = NULL;
+    if (p != g.newest && g.n_returns < CD_MAX_BUFFERS) g.returns[g.n_returns++] = p;
+    if (shown) ++g.shown;
+    pthread_cond_broadcast(&g_changed);
+    pthread_mutex_unlock(&g_lock);
+}
+
+int cluster_decoder_copy(unsigned *serial, uint8_t *y, int y_stride, uint8_t *uv, int uv_stride, int w, int h) {
+    uint32_t fw = 0, fh = 0;
+    unsigned picture = 0;
+    omx_header_t *p = copy_begin(*serial, &picture, &fw, &fh);
+    int copied = 0;
+    if (!p) return 0;
+    if (p->filled_len >= tiled_bytes(fw, fh)) {
+        const int cw = w < (int)fw ? w : (int)fw, ch = h < (int)fh ? h : (int)fh;
+        size_t cols, rows, chroma_rows, chroma_at;
+        const uint8_t *src = p->buffer + p->offset;
+        pthread_once(&g_full_once, full_range_tables);
+        tile_layout(fw, fh, &cols, &rows, &chroma_rows, &chroma_at);
+        untile_plane(src, cols, rows, y, y_stride, cw, ch, g_full_luma);
+        untile_plane(src + chroma_at, cols, chroma_rows, uv, uv_stride, cw, ch / 2, g_full_chroma);
+        copied = 1;
+    } else if (!g.warned_short++) {
+        fprintf(stderr, "cluster_decoder: a %u-byte picture, short of TILE_4x2 %ux%u; not shown\n",
+                p->filled_len, fw, fh);
+    }
+    copy_end(p, copied);
+    *serial = picture;
     return copied;
+}
+
+int cluster_decoder_wait(unsigned serial, int64_t ns) {
+    const uint64_t deadline = monotonic_ns() + (uint64_t)(ns > 0 ? ns : 0);
+    pthread_once(&g_wake_once, wake_open);
+    for (;;) {
+        char drain[64];
+        struct pollfd pfd;
+        uint64_t now;
+        int64_t left;
+        if (g_wake[0] >= 0) while (read(g_wake[0], drain, sizeof(drain)) > 0) { }
+        if (cluster_decoder_fresh(serial)) return 1;
+        now = monotonic_ns();
+        left = now < deadline ? (int64_t)(deadline - now) : 0;
+        if (left <= 0) return 0;
+        if (g_wake[0] < 0 || left < 1000000) {          /* no pipe, or under poll()'s millisecond */
+            struct timespec t = { (time_t)(left / 1000000000), (long)(left % 1000000000) };
+            while (nanosleep(&t, &t) != 0 && errno == EINTR) { }
+            return cluster_decoder_fresh(serial);
+        }
+        pfd.fd = g_wake[0];
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        (void)poll(&pfd, 1, (int)(left / 1000000));
+    }
 }
 
 int cluster_decoder_fresh(unsigned serial) {

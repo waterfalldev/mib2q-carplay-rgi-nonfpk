@@ -198,8 +198,7 @@ typedef enum {
     WATCH_SCENE_DRAW, WATCH_LANE_DRAW, WATCH_END_FRAME,
     WATCH_SCREENSHOT, WATCH_SWAP, WATCH_WINDOW_PROBE,
     WATCH_HEARTBEAT, WATCH_SLEEP, WATCH_IDLE,
-    WATCH_SCENE_PREPARE, WATCH_CAPTURE, WATCH_YIELD, WATCH_FOCUS, WATCH_OUTPUT_CHECK,
-    WATCH_MAP
+    WATCH_SCENE_PREPARE, WATCH_CAPTURE, WATCH_YIELD, WATCH_FOCUS, WATCH_OUTPUT_CHECK
 } renderer_watch_stage_t;
 static unsigned long g_loop_progress;
 static int g_watch_stage = WATCH_STARTUP;
@@ -237,7 +236,6 @@ static const char *watch_stage_name(int stage) {
     case WATCH_YIELD: return "yield";
     case WATCH_FOCUS: return "focus";
     case WATCH_OUTPUT_CHECK: return "output-check";
-    case WATCH_MAP: return "map-draw";
     default: return "unknown";
     }
 }
@@ -608,6 +606,7 @@ int main(int argc, char **argv) {
     }
     apply_output();
     cluster_video_start();               /* the phone's cluster stream, from the hook's frame ring */
+    map_layer_start();                   /* window 99 and its pictures, on their own thread */
 
     /* Runtime has one colocated asset.  Keep one relative development/deploy
      * lookup and one explicit HU production fallback — no argv/CWD guessing. */
@@ -1036,11 +1035,6 @@ int main(int argc, char **argv) {
                  || g_arrow.active || g_arrow.tint_active;
         }
 
-        /* The MOST MAP view window: the newest decoded picture, after the scene's frame. */
-        watch_stage(WATCH_MAP);
-        map_layer_tick();
-        watch_stage(WATCH_IDLE);
-
         /* dmdt focus watchdog: spawn one-shot detached thread to run
          * the popen("dmdt gs") + optional sc on a worker.  The render
          * loop never blocks on the ~150 ms popen cost.
@@ -1159,9 +1153,8 @@ int main(int argc, char **argv) {
             long idle_ns = (idle_frames < TARGET_FPS)     ? FRAME_TIME_NS     /* <1 s: 30 Hz */
                          : (idle_frames < TARGET_FPS * 5) ? 100L * 1000000L  /* 1–5 s: 10 Hz */
                          :                                  333L * 1000000L; /* >5 s: 3 Hz  */
-            struct timespec ts = { idle_ns / 1000000000L, idle_ns % 1000000000L };
             watch_stage(WATCH_SLEEP);
-            nanosleep(&ts, NULL);
+            sleep_ns(idle_ns);
             watch_stage(WATCH_IDLE);
         }
 
@@ -1197,6 +1190,7 @@ int main(int argc, char **argv) {
         watch_stage(WATCH_IDLE);
     }
 
+    map_layer_stop();
     cluster_video_stop();
     cr_server_shutdown();
     maneuver_set_scene_provider(NULL);

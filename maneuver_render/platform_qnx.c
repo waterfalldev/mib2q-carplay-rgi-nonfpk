@@ -33,6 +33,8 @@
 /* EGL state shared by every window */
 static EGLDisplay g_egl_display = EGL_NO_DISPLAY;
 static EGLConfig  g_egl_config  = 0;          /* saved for window recreate */
+#define MAP_BUFFERS 4                           /* the NV12 map window's (ensure_cluster_window) */
+
 static int g_width = 0, g_height = 0;          /* the scene's content size */
 static volatile int g_should_close = 0;
 
@@ -47,7 +49,7 @@ typedef struct {
     int id;                      /* displayable = ID_STRING */
     const char *request_path, *ready_path;
     int on_demand;               /* no request, no window (the MAP view) */
-    int swap_interval;
+    int swap_interval;           /* the scene's; the map has no EGL */
     cluster_surface_t *cs;       /* created / probed / recreated by cluster_surface */
     EGLSurface surface;
     EGLContext context;          /* the scene's: made with its first EGL surface */
@@ -65,7 +67,7 @@ typedef struct {
 static cr_output_t g_arrows = { "scene", CR_DISPLAYABLE_ID, CR_MOST_OUTPUT_PATH,
     CR_MOST_OUTPUT_READY_PATH, 0, 2, NULL, EGL_NO_SURFACE, EGL_NO_CONTEXT, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0 };
 static cr_output_t g_map = { "map", CR_MAP_DISPLAYABLE_ID, CR_MOST_MAP_OUTPUT_PATH,
-    CR_MOST_MAP_OUTPUT_READY_PATH, 1, 1, NULL, EGL_NO_SURFACE, EGL_NO_CONTEXT, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0 };
+    CR_MOST_MAP_OUTPUT_READY_PATH, 1, 0, NULL, EGL_NO_SURFACE, EGL_NO_CONTEXT, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0 };
 
 /* Set to 1 once platform_init has successfully created the initial window, so
  * the health check knows to keep recovering (vs "renderer not yet up, ignore"). */
@@ -161,23 +163,12 @@ static void publish_output_ready(cr_output_t *o) {
         fprintf(stderr, "platform_qnx: cannot publish %s output ready file\n", o->name);
 }
 
-/* The scene's context current on its window (or nothing current while that surface is down). */
-static void make_scene_current(void) {
-    if (g_egl_display == EGL_NO_DISPLAY) return;
-    if (g_arrows.surface != EGL_NO_SURFACE && g_arrows.context != EGL_NO_CONTEXT)
-        eglMakeCurrent(g_egl_display, g_arrows.surface, g_arrows.surface, g_arrows.context);
-    else
-        eglMakeCurrent(g_egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-}
-
-/* Destroy a window's EGL surface, unbound first, then make the scene's context current again
- * (nothing, when the scene's surface was the one destroyed). */
+/* Destroy the scene's EGL surface, unbound first: nothing is current afterwards. */
 static void drop_surface(cr_output_t *o) {
     if (g_egl_display == EGL_NO_DISPLAY || o->surface == EGL_NO_SURFACE) return;
     eglMakeCurrent(g_egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     eglDestroySurface(g_egl_display, o->surface);
     o->surface = EGL_NO_SURFACE;
-    make_scene_current();
 }
 
 /*
@@ -200,7 +191,10 @@ static int ensure_cluster_window(cr_output_t *o) {
     cfg.height      = o->out_h;
     cfg.format      = o->on_demand ? 12 : 8;      /* SCREEN_FORMAT_NV12 : SCREEN_FORMAT_RGBA8888 */
     cfg.usage       = o->on_demand ? 0x06 : 0x20; /* SCREEN_USAGE_READ|WRITE (CPU) : SCREEN_USAGE_OPENGL_ES2 */
-    cfg.nbuffers    = 2;                  /* double-buffered */
+    /* The scene double-buffers through EGL.  The map's CPU writes have no fence: with two
+     * buffers the next picture went into the one the MOST encoder had just been showing, and
+     * the cluster tore (map23); three still left Screen short at times (map27, pick_map_buffer). */
+    cfg.nbuffers    = o->on_demand ? MAP_BUFFERS : 2;
     cfg.transparent = output_is_content(o) ? 1 : 0;   /* MOST: opaque frame, streamed as-is */
     o->cs = cluster_surface_create(&cfg);
     if (!o->cs) {
@@ -235,8 +229,8 @@ static void window_ready(cr_output_t *o) {
 /*
  * Create a managed cluster window (once, via cluster_surface) + an EGL surface bound to it.
  * Called from platform_init and (to rebind EGL) from the recreate path after we lose
- * displaymanager's m_surfaceSources binding.  Each window's GL context is made on its first
- * surface; the scene's context is current again afterwards.
+ * displaymanager's m_surfaceSources binding.  The scene's GL context is made with its first
+ * surface and left current on it.
  */
 static int create_window_and_egl_surface(cr_output_t *o) {
     if (g_egl_display == EGL_NO_DISPLAY || g_egl_config == 0) {
@@ -292,7 +286,6 @@ static int create_window_and_egl_surface(cr_output_t *o) {
                 o->swap_interval, eglGetError());
         goto fail;
     }
-    make_scene_current();
 
     /* Context routing is Java's job: DisplayManagerMIB2High.defineContexts() declares
      * dc[80]={98,101,102,33}, dc[81]={98}, dc[82]={99} and DisplayManager.switchContext()
@@ -401,7 +394,21 @@ static void check_output(cr_output_t *o) {
 
 void platform_check_output(void) {
     check_output(&g_arrows);
-    check_output(&g_map);
+}
+
+/* The map window lives on the map thread (map_layer.c): its own Screen context, no EGL, and
+ * only that thread touches g_map, except the exit-time release, which g_map_lock covers. */
+static pthread_mutex_t g_map_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_map_closed;
+
+static void check_and_recover(cr_output_t *o);
+
+void platform_map_check(int recover) {
+    pthread_mutex_lock(&g_map_lock);
+    if (g_map_closed) { }
+    else if (!recover) check_output(&g_map);
+    else if (g_window_expected) check_and_recover(&g_map);
+    pthread_mutex_unlock(&g_map_lock);
 }
 
 #ifndef CR_FREE_MEMORY_PATH
@@ -439,32 +446,74 @@ unsigned platform_get_output(int *win_w, int *win_h, int *x, int *y, int *w, int
 
 /* The MAP view window, for its own draw (map_layer.c). */
 int platform_map_window(int *w, int *h, unsigned *window) {
-    if (!output_drawable(&g_map)) return 0;
-    *w = g_map.out_w;
-    *h = g_map.out_h;
-    *window = g_map.created;
-    return 1;
+    int drawable;
+    pthread_mutex_lock(&g_map_lock);
+    drawable = !g_map_closed && output_drawable(&g_map);
+    if (drawable) {
+        *w = g_map.out_w;
+        *h = g_map.out_h;
+        *window = g_map.created;
+    }
+    pthread_mutex_unlock(&g_map_lock);
+    return drawable;
 }
 
 /* The NV12 map window's next buffer, handed out by platform_map_nv12_buffer until posted. */
 static screen_buffer_t g_map_buffer;
 static int g_map_buffer_failures;
+/* When each buffer was last posted (g_map_seq counts posts).  The encoder's compositor reads
+ * the window on its own clock, so a buffer posted one picture ago may still be in use: with
+ * Screen's first render buffer the map tore at times (map26), and with three buffers Screen
+ * offered only the last two posted for about 2 of every 31 pictures (map27).  The one written
+ * is the least recently posted the list offers. */
+static struct { screen_buffer_t buffer; unsigned seq; } g_map_post_seq[MAP_BUFFERS];
+static unsigned g_map_seq;
+static int g_map_reused;
+
+static unsigned map_post_seq(screen_buffer_t buffer) {
+    int i;
+    for (i = 0; i < MAP_BUFFERS; ++i)
+        if (g_map_post_seq[i].buffer == buffer) return g_map_post_seq[i].seq;
+    return 0;                                   /* never posted */
+}
+
+static void map_posted(screen_buffer_t buffer) {
+    int i, slot = 0;
+    for (i = 0; i < MAP_BUFFERS; ++i) {
+        if (g_map_post_seq[i].buffer == buffer) { slot = i; break; }
+        if (g_map_post_seq[i].seq < g_map_post_seq[slot].seq) slot = i;
+    }
+    g_map_post_seq[slot].buffer = buffer;
+    g_map_post_seq[slot].seq = ++g_map_seq;
+}
+
+static screen_buffer_t pick_map_buffer(screen_buffer_t *buffers) {
+    screen_buffer_t best = buffers[0];
+    unsigned seq;
+    int i;
+    for (i = 1; i < MAP_BUFFERS && buffers[i]; ++i)
+        if (map_post_seq(buffers[i]) < map_post_seq(best)) best = buffers[i];
+    seq = best ? map_post_seq(best) : 0;
+    if (seq && seq + 2 > g_map_seq && g_map_reused++ % 300 == 0)
+        fprintf(stderr, "platform_qnx: map window offers only recently posted buffers (%d so far)\n", g_map_reused);
+    return best;
+}
 
 int platform_map_nv12_buffer(unsigned char **y, int *y_stride, unsigned char **uv, int *uv_stride) {
-    screen_buffer_t buffers[2] = { NULL, NULL };
+    screen_buffer_t buffers[MAP_BUFFERS] = { NULL }, buffer = NULL;
     void *pointer = NULL;
     int stride = 0, size[2] = { 0, 0 }, offsets[3] = { 0, 0, 0 };
     g_map_buffer = NULL;
-    if (!output_drawable(&g_map)) return 0;
+    if (g_map_closed || !output_drawable(&g_map)) return 0;
     /* Only a buffer at least the window's size is ever written. */
     if (screen_get_window_property_pv(cluster_surface_window(g_map.cs), SCREEN_PROPERTY_RENDER_BUFFERS,
-                                      (void **)buffers) != 0 || !buffers[0]
-            || screen_get_buffer_property_pv(buffers[0], SCREEN_PROPERTY_POINTER, &pointer) != 0 || !pointer
-            || screen_get_buffer_property_iv(buffers[0], SCREEN_PROPERTY_BUFFER_SIZE, size) != 0
+                                      (void **)buffers) != 0 || !(buffer = pick_map_buffer(buffers))
+            || screen_get_buffer_property_pv(buffer, SCREEN_PROPERTY_POINTER, &pointer) != 0 || !pointer
+            || screen_get_buffer_property_iv(buffer, SCREEN_PROPERTY_BUFFER_SIZE, size) != 0
             || size[0] < g_map.out_w || size[1] < g_map.out_h
-            || screen_get_buffer_property_iv(buffers[0], SCREEN_PROPERTY_STRIDE, &stride) != 0
+            || screen_get_buffer_property_iv(buffer, SCREEN_PROPERTY_STRIDE, &stride) != 0
             || stride < g_map.out_w
-            || screen_get_buffer_property_iv(buffers[0], SCREEN_PROPERTY_PLANAR_OFFSETS, offsets) != 0) {
+            || screen_get_buffer_property_iv(buffer, SCREEN_PROPERTY_PLANAR_OFFSETS, offsets) != 0) {
         if (g_map_buffer_failures++ % 30 == 0)
             fprintf(stderr, "platform_qnx: map NV12 buffer unavailable (pointer=%p size=%dx%d stride=%d "
                     "for %dx%d, errno=%d)\n", pointer, size[0], size[1], stride, g_map.out_w, g_map.out_h, errno);
@@ -476,7 +525,7 @@ int platform_map_nv12_buffer(unsigned char **y, int *y_stride, unsigned char **u
     *y_stride = stride;
     *uv = (unsigned char *)pointer + (offsets[1] > offsets[0] ? offsets[1] : offsets[0] + stride * g_map.out_h);
     *uv_stride = stride;
-    g_map_buffer = buffers[0];
+    g_map_buffer = buffer;
     return 1;
 }
 
@@ -484,12 +533,13 @@ int platform_map_nv12_post(void) {
     int dirty[4] = { 0, 0, g_map.out_w, g_map.out_h };
     screen_buffer_t buffer = g_map_buffer;
     g_map_buffer = NULL;
-    if (!buffer || !g_map.cs || !cluster_surface_window(g_map.cs)) return 0;
+    if (g_map_closed || !buffer || !g_map.cs || !cluster_surface_window(g_map.cs)) return 0;
     if (screen_post_window(cluster_surface_window(g_map.cs), buffer, 1, dirty, 0) != 0) {
         fprintf(stderr, "platform_qnx: map NV12 post failed errno=%d → recreate\n", errno);
         recreate_output(&g_map, "post-failed");
         return 0;
     }
+    map_posted(buffer);
     if (!g_map.shown) {
         g_map.shown = 1;
         publish_output_ready(&g_map);
@@ -541,12 +591,15 @@ static void check_and_recover(cr_output_t *o) {
 void platform_check_and_recover_window(void) {
     if (!g_window_expected) return;
     check_and_recover(&g_arrows);
-    check_and_recover(&g_map);
 }
 
-/* Counterpart to platform_check_and_recover_window (renderer atexit / shutdown). */
+/* Counterpart to platform_check_and_recover_window (renderer atexit / shutdown).  The map
+ * thread is stopped first on a clean exit; g_map_closed keeps a late one off the window. */
 void platform_release_displayable(void) {
+    pthread_mutex_lock(&g_map_lock);
+    g_map_closed = 1;
     release_output(&g_map);
+    pthread_mutex_unlock(&g_map_lock);
     release_output(&g_arrows);
 }
 
@@ -708,19 +761,17 @@ int platform_should_close(void) {
 void platform_shutdown(void) {
     int hidden = 0;
     struct timespec release_wait;
-    cr_output_t *outputs[2];
-    int i;
     /* Clean shutdown sequence:
-     *   1. Release GL contexts and EGL surfaces while keeping EGLDisplay /
+     *   1. Release the scene's GL context and EGL surface while keeping EGLDisplay /
      *      displayinit globals alive (full teardown of shared display
-     *      resources can collide with native components).
+     *      resources can collide with native components).  The map window has no EGL.
      *   2. Explicitly destroy our screen_windows via screen_destroy_window
      *      so displaymanager's m_surfaceSources slots vacate promptly.
      * Context restore (switching the cluster back to the stock context) is
      * Java's job now — this renderer runs no dmdt. */
-    outputs[0] = &g_arrows;
-    outputs[1] = &g_map;
     if (g_egl_display != EGL_NO_DISPLAY) {
+        cr_output_t *outputs[2] = { &g_arrows, &g_map };
+        int i;
         for (i = 0; i < 2; ++i)
             if (outputs[i]->cs && cluster_surface_window(outputs[i]->cs))
                 screen_set_window_property_iv(cluster_surface_window(outputs[i]->cs),
@@ -729,17 +780,15 @@ void platform_shutdown(void) {
         release_wait.tv_sec = 0;
         release_wait.tv_nsec = 50L * 1000L * 1000L;
         while (nanosleep(&release_wait, &release_wait) != 0 && errno == EINTR) {}
-        for (i = 0; i < 2; ++i) drop_surface(outputs[i]);   /* then nothing is current */
-        for (i = 0; i < 2; ++i) {
-            if (outputs[i]->context != EGL_NO_CONTEXT) {
-                /* Release the GL context so the driver frees its internal
-                 * resources (shader cache, framebuffer attachments, command
-                 * buffers).  Skip eglTerminate — EGLDisplay is shared with
-                 * native cluster components and terminating it would tear
-                 * down their surfaces too. */
-                eglDestroyContext(g_egl_display, outputs[i]->context);
-                outputs[i]->context = EGL_NO_CONTEXT;
-            }
+        drop_surface(&g_arrows);                    /* then nothing is current */
+        if (g_arrows.context != EGL_NO_CONTEXT) {
+            /* Release the GL context so the driver frees its internal
+             * resources (shader cache, framebuffer attachments, command
+             * buffers).  Skip eglTerminate — EGLDisplay is shared with
+             * native cluster components and terminating it would tear
+             * down their surfaces too. */
+            eglDestroyContext(g_egl_display, g_arrows.context);
+            g_arrows.context = EGL_NO_CONTEXT;
         }
     }
     platform_release_displayable();

@@ -42,7 +42,7 @@ docker run --rm --platform=linux/amd64 -v "$SRC_DIR":/src:ro -v "$TESTS_DIR":/te
     echo "--- $test ---"
     extra=""
     [ "$test" = most_mask_cache_test ] && extra="/src/maneuver_render/maneuver.c /src/maneuver_render/route_path.c"
-    gcc $CFLAGS "/tests/$test.c" $extra -lm -o "/tmp/bin/$test"
+    gcc $CFLAGS "/tests/$test.c" $extra -lm -lpthread -o "/tmp/bin/$test"
     if ! timeout 60 "/tmp/bin/$test" 2>"/tmp/bin/$test.stderr"; then
       failed=1
       tail -20 "/tmp/bin/$test.stderr"

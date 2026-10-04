@@ -161,6 +161,10 @@ int platform_map_nv12_post(void) {
     return 0;
 }
 
+void platform_map_check(int recover) {
+    (void)recover;
+}
+
 void platform_release_displayable(void) {
     /* macOS dev path: no displaymanager / screen_destroy_window, no-op. */
 }

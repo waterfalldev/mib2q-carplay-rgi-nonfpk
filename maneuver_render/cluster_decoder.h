@@ -5,11 +5,11 @@
  * decode order, the parameter sets as a CODECCONFIG buffer, every access unit one ENDOFFRAME
  * buffer, the output in Qualcomm's TILE_4x2 (64 x 32 tiles: the only output this decoder
  * writes, map17-map18).  Unlike stock it decodes into buffers the decoder allocates, not the
- * window's, and the render thread untiles the newest picture into the NV12 map window, so the
+ * window's, and the map thread untiles the newest picture into the NV12 map window, so the
  * window keeps its own life (map14) and a decoder that fails costs only the picture.
  *
- * cluster_decoder_feed / _poll / _close run on one thread (cluster_video.c); _copy on the
- * render thread.
+ * cluster_decoder_feed / _poll / _close run on one thread (cluster_video.c); _copy and _wait on
+ * the map thread (map_layer.c).  _copy untiles outside the decoder's lock, so the decoder never waits on it.
  */
 #ifndef CR_CLUSTER_DECODER_H
 #define CR_CLUSTER_DECODER_H
@@ -44,7 +44,11 @@ void cluster_decoder_close(void);
 int cluster_decoder_fresh(unsigned serial);
 
 /* Copies the newest picture into an NV12 target of w x h when it is newer than *serial (which
- * it then updates): 1 when copied. */
+ * it then updates), expanded from video to full range: 1 when copied. */
 int cluster_decoder_copy(unsigned *serial, uint8_t *y, int y_stride, uint8_t *uv, int uv_stride, int w, int h);
+
+/* Waits up to `ns` for a picture newer than `serial`, waking as soon as one arrives: 1 when one
+ * is waiting. */
+int cluster_decoder_wait(unsigned serial, int64_t ns);
 
 #endif
