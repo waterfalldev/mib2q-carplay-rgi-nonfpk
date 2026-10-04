@@ -103,8 +103,9 @@
                                         /* OSStatus/send error                 */
 /* More MHI3-ported session commands (Java→hook), all via AirPlayReceiverSessionSendCommand. */
 /* 0x0113 remains reserved (zoom uses the deployed 0x0110 ABI). */
-#define CMD_ALT_APPEARANCE      0x0114  /* binary [u8 target][u8 mode][u8 set] */
-                                        /* target 0=ui 1=map; day/night sync   */
+#define CMD_ALT_APPEARANCE      0x0114  /* binary [u8 night 0/1] - the MMI's   */
+                                        /* night mode; hook sends the cluster  */
+                                        /* display setNightMode                */
 #define CMD_ALT_UICTX           0x0115  /* payload = UTF-8 url string — deep-  */
                                         /* link cluster UI context             */
 #define CMD_ALT_RGI             0x0116  /* binary [u8 0=off 1=on] — Java's     */

@@ -38,8 +38,11 @@ static void resolve(void) {
     {
         /* A CFBooleanRef variable, not the object: MU1329's is 4 bytes relocated to it (map04). */
         const cf_ref_t *false_ref = (const cf_ref_t *)dlsym(RTLD_DEFAULT, "kCFLBooleanFalse");
+        const cf_ref_t *true_ref = (const cf_ref_t *)dlsym(RTLD_DEFAULT, "kCFLBooleanTrue");
         g_cf.boolean_false = false_ref ? *false_ref : NULL;
+        g_cf.boolean_true = true_ref ? *true_ref : NULL;
         if (!g_cf.boolean_false) missing = "kCFLBooleanFalse";
+        if (!g_cf.boolean_true) missing = "kCFLBooleanTrue";
     }
     if (missing) LOG_WARN(LOG_MODULE, "stock CoreFoundation-lite unavailable (%s)", missing);
     g_cf_ready = missing == NULL;

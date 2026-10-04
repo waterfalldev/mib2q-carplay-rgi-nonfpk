@@ -1,7 +1,11 @@
+import com.luka.carplay.bus.CarplayBus;
+import com.luka.carplay.cluster.ClusterVideo;
 import com.luka.carplay.cluster.MostPresentation;
 import de.audi.tghu.fwhmi.DisplayManagerMIB2High;
+import java.io.DataInputStream;
 import java.io.File;
 import java.lang.reflect.Method;
+import java.net.Socket;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -9,7 +13,7 @@ import java.util.Map;
 /** The MOST MAP view through MostPresentation's shared engine, against the shipping display
  *  manager and stock core: MAP 72 -> 82 = {99} only for a measured, renderer-confirmed
  *  window, released back to stock, independent of the arrows view; requested by CarPlay
- *  guidance only while the phone's cluster stream is live. */
+ *  guidance only while the phone's cluster stream is live; the wheel zooms it only then. */
 public final class MostMapViewTest {
     private static int checks;
 
@@ -187,10 +191,65 @@ public final class MostMapViewTest {
         }
     }
 
+    /** The next CMD_ALT_ZOOM the hook reads (past others, such as the sync request): its one
+     *  signed step byte, or -128 when malformed. */
+    private static int zoomFrame(DataInputStream in) throws Exception {
+        while (true) {
+            if (in.readInt() != CarplayBus.MAGIC) return -128;
+            in.readInt();
+            int type = in.readUnsignedShort(), flags = in.readUnsignedByte();
+            in.readByte();
+            int len = in.readInt();
+            byte[] body = new byte[len];
+            in.readFully(body);
+            if (type != CarplayBus.CMD_ALT_ZOOM) continue;
+            return flags == CarplayBus.FLAG_BINARY && len == 1 ? body[0] : -128;
+        }
+    }
+
+    /* The steering-wheel roller zooms the phone's map only while the MAP view shows it (its
+     * stream live and composed): one bus frame per report, capped; otherwise stock's map. */
+    private static void wheelZoom() throws Exception {
+        ClusterVideo video = ClusterVideo.getInstance();
+        Socket hook = null;
+        try (Rig r = new Rig()) {
+            r.extents.put(Integer.valueOf(33), new int[]{800, 298});
+            r.report("0800 0298 0000001234.0000000001\n");
+            check(!video.zoom(1), "No cluster stream: the wheel is stock's");
+            video.start();
+            long end = System.currentTimeMillis() + 3000L;
+            while (hook == null && System.currentTimeMillis() < end) {
+                try { hook = new Socket("127.0.0.1", CarplayBus.PORT); } catch (java.io.IOException e) { Thread.sleep(20); }
+            }
+            while (!CarplayBus.getInstance().isConnected() && System.currentTimeMillis() < end) Thread.sleep(20);
+            check(hook != null && CarplayBus.getInstance().isConnected(), "The fake hook is connected");
+            hook.setSoTimeout(3000);
+            DataInputStream in = new DataInputStream(hook.getInputStream());
+            byte[] live = "live:b:true\nstream:n:1\n".getBytes("UTF-8");
+            video.onFrame(CarplayBus.EVT_CLUSTER_VIDEO, 0, live, live.length);
+            check(!MostPresentation.isMapActive() && !video.zoom(1), "A live stream outside guidance: still stock's");
+            MostPresentation.setActive(true);
+            end = System.currentTimeMillis() + 3000L;
+            while (!MostPresentation.isMapActive() && System.currentTimeMillis() < end) Thread.sleep(20);
+            check(MostPresentation.isMapActive(), "Guidance with the live stream composes the MAP view");
+            check(!video.zoom(0), "No step: nothing to send");
+            check(video.zoom(-2) && zoomFrame(in) == -2, "Two steps in reach the hook");
+            check(video.zoom(100) && zoomFrame(in) == 8, "A burst is capped at 8 steps out");
+            byte[] ended = "live:b:false\nstream:n:1\n".getBytes("UTF-8");
+            video.onFrame(CarplayBus.EVT_CLUSTER_VIDEO, 0, ended, ended.length);
+            check(!video.zoom(1), "The stream ended: stock's again");
+        } finally {
+            video.stop();
+            CarplayBus.getInstance().stop();
+            if (hook != null) hook.close();
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         measuredConfirmedWindowOnly();
         placementAndWindowToken();
         viewsAreIndependent();
-        System.out.println("MostMapViewTest: measured, confirmed MAP window only, stock restoration, independent views and the guidance-and-stream rule PASS (" + checks + " checks)");
+        wheelZoom();
+        System.out.println("MostMapViewTest: measured, confirmed MAP window only, stock restoration, independent views, the guidance-and-stream rule and wheel zoom PASS (" + checks + " checks)");
     }
 }

@@ -65,7 +65,7 @@ cc -D_GNU_SOURCE -std=gnu99 -O1 -Wall -Wextra -Werror -Wno-unused-function -Wno-
 
 printf '%-32s ' altscreen_hook_test
 cc -D_GNU_SOURCE -std=gnu99 -O1 -Wall -Wextra -Werror -DENABLE_LOGGING=0 \
-    -DALT_SHOW_UI_DELAY_MS=10 -DALT_HOLD_CONNECT_MS=400 "-DCVR_SHM_NAME=\"/cr_cluster_video_test$$\"" \
+    -DALT_SHOW_UI_DELAY_MS=10 -DALT_NIGHT_TOGGLE_MS=10 -DALT_HOLD_CONNECT_MS=400 "-DCVR_SHM_NAME=\"/cr_cluster_video_test$$\"" \
     -Ihook -Icommon tests/altscreen_hook_test.c hook/altscreen/altscreen_hook.c hook/framework/cflite.c \
     -rdynamic -lpthread $DL_LIB $RT_LIB -o "$OUT/altscreen_hook"
 "$OUT/altscreen_hook"

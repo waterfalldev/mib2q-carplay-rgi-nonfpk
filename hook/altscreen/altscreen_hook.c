@@ -25,13 +25,13 @@ static uint64_t now_ns(void) {
     return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
 }
 
-/* ---- /info: the cluster display, one view area covering it */
+/* ---- /info: the cluster display, one view area covering it, safe where the dials are not */
 
-static void set_frame(const cflite_t *cf, cf_ref_t dict) {
-    cf_set_int64(cf, dict, "widthPixels", ALT_WIDTH);
-    cf_set_int64(cf, dict, "heightPixels", ALT_HEIGHT);
-    cf_set_int64(cf, dict, "originXPixels", 0);
-    cf_set_int64(cf, dict, "originYPixels", 0);
+static void set_frame(const cflite_t *cf, cf_ref_t dict, int64_t x, int64_t y, int64_t w, int64_t h) {
+    cf_set_int64(cf, dict, "widthPixels", w);
+    cf_set_int64(cf, dict, "heightPixels", h);
+    cf_set_int64(cf, dict, "originXPixels", x);
+    cf_set_int64(cf, dict, "originYPixels", y);
 }
 
 static cf_ref_t cluster_display(const cflite_t *cf) {
@@ -43,8 +43,8 @@ static cf_ref_t cluster_display(const cflite_t *cf) {
         cf_release(cf, safe);
         return NULL;
     }
-    set_frame(cf, area);
-    set_frame(cf, safe);
+    set_frame(cf, area, 0, 0, ALT_WIDTH, ALT_HEIGHT);
+    set_frame(cf, safe, ALT_SAFE_X, ALT_SAFE_Y, ALT_SAFE_WIDTH, ALT_SAFE_HEIGHT);
     cf_set(cf, safe, "drawUIOutsideSafeArea", cf->boolean_false);
     cf_set(cf, area, "viewAreaTransitionControl", cf->boolean_false);
     cf_set(cf, area, "safeArea", safe);
@@ -245,13 +245,25 @@ static uint32_t take_end(const char **why) {
 }
 
 /* ---- Commands to the phone (stock AirPlayReceiverSessionSendCommand, as the reference
- * receivers send them): {type, params: {uuid[, url]}}.  The phone starts the cluster UI and
- * stream only after showUI (map07); forceKeyFrame brings a new avcC record and an IDR frame
- * (map11).  Each batch runs on its own thread with its own session reference. */
+ * receivers send them): {type, params: {uuid[, url | zoomDirection | nightMode]}}.  The phone
+ * starts the cluster UI and stream only after showUI (map07); forceKeyFrame brings a new avcC
+ * record and an IDR frame (map11); changeMapZoomLevel zooms the cluster map one step,
+ * zoomDirection 0 in and 1 out (the reference sends one per wheel step, map23 confirmed);
+ * setNightMode is stock's own command (AirPlayReceiverSessionSetNightMode, nightMode a
+ * boolean), which stock sends without a uuid and the cluster map does not follow (map23) -
+ * with the cluster's uuid it changes that display's theme (yuedizhibo/MHI2Q-CarPlay-AltScreen
+ * issue 25).  Each batch runs on its own thread with its own session reference. */
 
 typedef void (*command_done_fn)(int status, cf_ref_t response, void *context);
 typedef int (*send_command_fn)(void *session, cf_ref_t command, command_done_fn done, void *context);
-typedef struct { void *session; int show_ui; } alt_commands_t;
+/* `zoom`: signed wheel steps, positive out.  `night`: setNightMode's value, -1 none; a showUI
+ * batch sends the MMI's at the time instead. */
+typedef struct { void *session; int show_ui, keyframe, zoom, night; } alt_commands_t;
+
+/* The MMI's night mode as Java last reported it (CMD_ALT_APPEARANCE), -1 until then. */
+static int g_night = -1;
+
+static int mmi_night(void) { return __sync_fetch_and_add(&g_night, 0); }
 
 static void command_done(int status, cf_ref_t response, void *context) {
     (void)response;
@@ -260,12 +272,16 @@ static void command_done(int status, cf_ref_t response, void *context) {
     (void)context;
 }
 
-static void send_command(const cflite_t *cf, send_command_fn send, void *session, const char *type, const char *url) {
+/* `zoom_direction`, `night` < 0: none. */
+static void send_command(const cflite_t *cf, send_command_fn send, void *session, const char *type,
+                         const char *url, int zoom_direction, int night) {
     cf_ref_t command = cf_dictionary(cf), params = cf_dictionary(cf);
     int status = -1;
     if (command && params) {
         cf_set_cstring(cf, params, "uuid", ALT_DISPLAY_UUID);
         if (url) cf_set_cstring(cf, params, "url", url);
+        if (zoom_direction >= 0) cf_set_int64(cf, params, "zoomDirection", zoom_direction);
+        if (night >= 0) cf_set(cf, params, "nightMode", night ? cf->boolean_true : cf->boolean_false);
         cf_set_cstring(cf, command, "type", type);
         cf_set(cf, command, "params", params);
         status = send(session, command, command_done, (void *)type);
@@ -280,6 +296,7 @@ static void *commands_thread(void *arg) {
     alt_commands_t *c = (alt_commands_t *)arg;
     const cflite_t *cf = cflite();
     send_command_fn send;
+    int i, night = c->night;
     if (c->show_ui) {
         struct timespec delay = { ALT_SHOW_UI_DELAY_MS / 1000, (ALT_SHOW_UI_DELAY_MS % 1000) * 1000000L };
         while (nanosleep(&delay, &delay) != 0 && errno == EINTR) { }
@@ -288,8 +305,22 @@ static void *commands_thread(void *arg) {
     if (!send) {
         LOG_WARN(LOG_MODULE, "cluster display commands not sent: AirPlayReceiverSessionSendCommand unresolved");
     } else {
-        if (c->show_ui) send_command(cf, send, c->session, "showUI", ALT_DISPLAY_URL);
-        send_command(cf, send, c->session, "forceKeyFrame", NULL);
+        if (c->show_ui) {
+            send_command(cf, send, c->session, "showUI", ALT_DISPLAY_URL, -1, -1);
+            night = mmi_night();
+            if (night >= 0) {
+                /* The phone answered day mode with status 0 and kept the cluster map dark
+                 * (map24): a value it already holds is no change.  The opposite first makes
+                 * the MMI's one a real switch. */
+                struct timespec gap = { ALT_NIGHT_TOGGLE_MS / 1000, (ALT_NIGHT_TOGGLE_MS % 1000) * 1000000L };
+                send_command(cf, send, c->session, "setNightMode", NULL, -1, !night);
+                while (nanosleep(&gap, &gap) != 0 && errno == EINTR) { }
+            }
+        }
+        if (night >= 0) send_command(cf, send, c->session, "setNightMode", NULL, -1, night);
+        if (c->keyframe) send_command(cf, send, c->session, "forceKeyFrame", NULL, -1, -1);
+        for (i = 0; i < (c->zoom < 0 ? -c->zoom : c->zoom); ++i)
+            send_command(cf, send, c->session, "changeMapZoomLevel", NULL, c->zoom > 0, -1);
     }
     cf->release(c->session);
     free(c);
@@ -297,12 +328,15 @@ static void *commands_thread(void *arg) {
 }
 
 /* Takes over a session reference the caller holds. */
-static void send_commands_soon(const cflite_t *cf, void *session, int show_ui) {
+static void send_commands_soon(const cflite_t *cf, void *session, int show_ui, int keyframe, int zoom, int night) {
     alt_commands_t *c = (alt_commands_t *)malloc(sizeof(*c));
     pthread_t thread;
     if (c) {
         c->session = session;
         c->show_ui = show_ui;
+        c->keyframe = keyframe;
+        c->zoom = zoom;
+        c->night = night;
         if (pthread_create(&thread, NULL, commands_thread, c) == 0) {
             pthread_detach(thread);
             return;
@@ -313,14 +347,69 @@ static void send_commands_soon(const cflite_t *cf, void *session, int show_ui) {
     cf->release(session);
 }
 
-static void request_keyframe(void) {
-    const cflite_t *cf = cflite();
+/* The held session, retained, or NULL. */
+static void *held_session(const cflite_t *cf) {
     void *session = NULL;
-    if (!cf) return;
     pthread_mutex_lock(&g_session_lock);
     if (g_session) session = (void *)cf->retain(g_session);
     pthread_mutex_unlock(&g_session_lock);
-    if (session) send_commands_soon(cf, session, 0);
+    return session;
+}
+
+static void request_keyframe(void) {
+    const cflite_t *cf = cflite();
+    void *session = cf ? held_session(cf) : NULL;
+    if (session) send_commands_soon(cf, session, 0, 1, 0, -1);
+}
+
+/* CMD_ALT_ZOOM (bus thread): [int8 MapScale steps, positive out], from Java while the MAP view
+ * shows the phone's map. */
+static void on_zoom(uint16_t type, uint8_t flags, const uint8_t *payload, uint32_t len, void *ctx) {
+    const cflite_t *cf = cflite();
+    void *session;
+    int steps = len >= 1 ? (int8_t)payload[0] : 0;
+    (void)type;
+    (void)flags;
+    (void)ctx;
+    if (!steps || !cf) return;
+    if (steps > ALT_ZOOM_MAX_STEPS) steps = ALT_ZOOM_MAX_STEPS;
+    if (steps < -ALT_ZOOM_MAX_STEPS) steps = -ALT_ZOOM_MAX_STEPS;
+    if (!(session = held_session(cf))) {
+        LOG_WARN(LOG_MODULE, "wheel zoom %d not sent: no cluster stream session", steps);
+        return;
+    }
+    LOG_WARN(LOG_MODULE, "wheel zoom %d: changeMapZoomLevel %s", steps, steps > 0 ? "out" : "in");
+    send_commands_soon(cf, session, 0, 0, steps, -1);
+}
+
+/* CMD_ALT_APPEARANCE (bus thread): [u8 night], the MMI's night mode - at CarPlay start and on
+ * every change.  Kept for the next showUI; sent at once while a session is held. */
+static void on_appearance(uint16_t type, uint8_t flags, const uint8_t *payload, uint32_t len, void *ctx) {
+    const cflite_t *cf = cflite();
+    void *session;
+    int night;
+    (void)type;
+    (void)flags;
+    (void)ctx;
+    if (len < 1) return;
+    night = payload[0] != 0;
+    __sync_lock_test_and_set(&g_night, night);
+    if (!cf || !(session = held_session(cf))) {
+        LOG_WARN(LOG_MODULE, "MMI night mode %d: kept for the cluster display's showUI", night);
+        return;
+    }
+    LOG_WARN(LOG_MODULE, "MMI night mode %d: setNightMode for the cluster display", night);
+    send_commands_soon(cf, session, 0, 0, 0, night);
+}
+
+static void altscreen_init(void) {
+    bus_on(CMD_ALT_ZOOM, on_zoom, NULL);
+    bus_on(CMD_ALT_APPEARANCE, on_appearance, NULL);
+}
+
+static void altscreen_shutdown(void) {
+    bus_off(CMD_ALT_APPEARANCE);
+    bus_off(CMD_ALT_ZOOM);
 }
 
 /* ---- One connection of the stream, in stock's screen framing (map11): a 128-byte header
@@ -715,13 +804,15 @@ static void altscreen_on_setup_response(hook_setup_ctx_t *setup) {
     append_to_reply(cf, setup->response, "streams", stream);
     LOG_WARN(LOG_MODULE, "SETUP %u reply: the cluster stream's data port is %d", setup->sequence, port);
     hold_session(cf, setup->session);
-    send_commands_soon(cf, (void *)cf->retain(setup->session), 1);
+    send_commands_soon(cf, (void *)cf->retain(setup->session), 1, 1, 0, -1);
 }
 
 const hook_module_def_t altscreen_module_def = {
     .name = "altscreen",
     .priority = HOOK_PRIORITY_NORMAL,
     .on_state = altscreen_on_state,
+    .on_init = altscreen_init,
+    .on_shutdown = altscreen_shutdown,
     .airplay = {
         .on_setup_request = altscreen_on_setup_request,
         .on_setup_response = altscreen_on_setup_response,

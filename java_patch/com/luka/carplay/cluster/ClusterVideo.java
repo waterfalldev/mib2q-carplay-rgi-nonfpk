@@ -51,6 +51,48 @@ public final class ClusterVideo implements CarplayBus.Listener {
         CarplayBus.getInstance().off(CarplayBus.EVT_CLUSTER_VIDEO);
     }
 
+    /* The MMI's night mode (1 night, 0 day), -1 until CarPlay starts; guarded by this. */
+    private int night = -1;
+
+    /** The MMI's night mode at CarPlay start and on every change (CarplayDSILifecycleController).
+     *  Stock tells the phone for the whole session, and the cluster map does not follow
+     *  (map23): the hook sets the cluster display's own (setNightMode with its uuid), now and
+     *  each time its stream goes live. */
+    public void setNightMode(boolean on) {
+        synchronized (this) {
+            night = on ? 1 : 0;
+        }
+        sendNightMode("MMI");
+    }
+
+    private void sendNightMode(String why) {
+        int n;
+        synchronized (this) {
+            n = night;
+        }
+        if (n < 0) return;
+        boolean sent = CarplayBus.getInstance().sendBinary(CarplayBus.CMD_ALT_APPEARANCE, new byte[] { (byte) n });
+        Log.w(TAG, (n == 1 ? "night" : "day") + " mode for the cluster display (" + why + ")"
+            + (sent ? "" : ": not sent, no hook connection"));
+    }
+
+    /* changeMapZoomLevel per wheel report, at most (the hook caps at the same). */
+    private static final int ZOOM_MAX_STEPS = 8;
+
+    /** The steering-wheel roller (ScreenCombiBAPListener.setMapScale, MapScale steps, positive
+     *  zooms out): while the MAP view shows the phone's map, the steps zoom that map - the hook
+     *  sends the phone one changeMapZoomLevel per step.  False leaves them to stock's map. */
+    public boolean zoom(int steps) {
+        synchronized (this) {
+            if (!running || !live) return false;
+        }
+        if (steps == 0 || !MostPresentation.isMapActive()) return false;
+        int capped = steps > ZOOM_MAX_STEPS ? ZOOM_MAX_STEPS : steps < -ZOOM_MAX_STEPS ? -ZOOM_MAX_STEPS : steps;
+        boolean sent = CarplayBus.getInstance().sendBinary(CarplayBus.CMD_ALT_ZOOM, new byte[] { (byte) capped });
+        Log.w(TAG, "wheel zoom " + steps + (sent ? " sent to the phone's map" : " not sent: no hook connection"));
+        return sent;
+    }
+
     public void onFrame(int type, int flags, byte[] payload, int len) {
         if (type != CarplayBus.EVT_CLUSTER_VIDEO) return;
         CarplayBus.Data d = CarplayBus.parseText(payload, len);
@@ -63,5 +105,6 @@ public final class ClusterVideo implements CarplayBus.Listener {
             MostPresentation.setMapLive(live);
         }
         Log.i(TAG, "cluster stream " + s + (on ? " live" : " ended"));
+        if (on) sendNightMode("stream live");
     }
 }
