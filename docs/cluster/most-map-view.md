@@ -52,7 +52,8 @@ LIVI receiver are the protocol references; none of their code is used.
   (at 30 the phone sent about 20 a second, map22; at 60 a steady 30, map23), 5 px/mm,
   `features` 2 and `primaryInputDevice` 3 (knob-driven, as the reference),
   `initialURL` `maps:/car/instrumentcluster/map`, one full-size view area whose safe area is
-  x 150-650, y 0-278: between the dials, symmetric so a centred map stays centred. Top-level
+  x 150-650, y 0-278: between the dials, symmetric so a centred map stays centred (confirmed
+  in the car, map28). Top-level
   `features` gains bit 26. An extended `/info` that cannot be serialized is dropped (map04).
 - **SETUP**: every successful reply gains `enabledFeatures` `["viewAreas", "altScreen"]`, and a
   request for the cluster stream gains `{type: 111, dataPort}` in the reply; without either the
@@ -125,7 +126,8 @@ The stream is decoded by the Qualcomm hardware decoder inside `maneuver_render` 
   map27); the decoder keeps that picture until the copy ends. Every 30 s it logs posts, rate,
   copy and post times and the longest gap.
   - **Colour**: the phone's pictures are video range and the encoder's compositor reads an NV12
-    window as full range, so the untiling expands both planes to 0-255 (map27 looked dull).
+    window as full range, so the untiling expands both planes to 0-255 (map27 looked dull,
+    map28 right).
   - **Format**: NV12. RGBA, converted by the CPU (~6 ms a picture), was no smoother and tore
     more (map25-map27).
   - **Buffers**: four, and the CPU write has no fence: each picture goes into the buffer
@@ -139,8 +141,12 @@ The stream is decoded by the Qualcomm hardware decoder inside `maneuver_render` 
   60 showed about a picture a second (map24). At 15 the map is close to stock's smoothness
   (map26).
 
-Still open: stall handling, the last of the tearing and the colours (map28), the
-cluster layout (`maneuverLayout`), confirming the safe area in the car, and a setting.
+Still open: the last of the tearing (rarer with four buffers, map28). No stall timer is
+planned: the view goes when guidance ends or the stream's connection closes, and a phone that
+keeps the connection open but sends nothing (a still map) cannot be told from a stalled one,
+so the window keeps its last picture. The URL stays `maps:/car/instrumentcluster/map`, without a `maneuverLayout` parameter. No setting
+is planned: the Audi map is only usable while CarPlay navigation is not running, and the MAP
+view only replaces it while it is.
 
 ## Run notes
 
