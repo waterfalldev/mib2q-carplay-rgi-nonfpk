@@ -77,6 +77,9 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
     private volatile boolean carPlayRgiValidOverride = false;
     private volatile boolean dsiRgActiveKnown = false;
     private volatile boolean dsiRgActive = false;
+    /* A DSI rgActive=false that arrived while CarPlay held the RGI claim (updateRgActive),
+     * replayed when the claim is released. */
+    private volatile boolean dsiNoRouteHeld = false;
     /* cluster view handshake diagnostics and the smartphone-navigation hold. */
     public static final String VIEW_TAG = "ClusterView";
     private static final int MODEL_VIEW_MODE = 67;          /* ClusterViewMode's viewMode model */
@@ -583,6 +586,16 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
         /* Only AbstractDSINavigationHandler calls this, right after it writes the container. */
         this.dsiRgActive = flag;
         this.dsiRgActiveKnown = true;
+        this.dsiNoRouteHeld = !flag && this.carPlayRgiValidOverride;
+        if (this.dsiNoRouteHeld) {
+            /* CarPlay guides: the navigator's "no route" - its first report when it finishes
+             * starting after CarPlay guidance began (map23) - must not end CarPlay's guidance
+             * on the cluster: stock would drop rgiValid, fall to COMPASS and clear the route
+             * text.  setCarPlayRgiValidOverride(false) replays it through here. */
+            this.env.getContainer().setRgActive(true);
+            com.luka.carplay.framework.Log.w(VIEW_TAG, "navigator reports no route guidance; rgActive held for CarPlay");
+            return;
+        }
         this.refreshRGIValid();
         this.clusterViewMode.refreshRGState();
         if (!flag) {
@@ -1188,6 +1201,14 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
      *  RGI data (rgiDataValid / data model 68), so the release restores exactly stock truth. */
     public void setCarPlayRgiValidOverride(boolean active) {
         this.carPlayRgiValidOverride = active;
+        if (!active && this.dsiNoRouteHeld) {
+            /* The navigator's "no route" held while CarPlay guided: stock's own handling now
+             * (refreshRGIValid included), as if it had just arrived. */
+            this.dsiNoRouteHeld = false;
+            this.env.getContainer().setRgActive(false);
+            this.updateRgActive(false);
+            return;
+        }
         this.refreshRGIValid();
     }
 

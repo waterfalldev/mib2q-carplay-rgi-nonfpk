@@ -176,7 +176,16 @@ public final class NativeGuidanceStateTest {
         check(r.container.isRgActive(), "DSI's newer rgActive=true survives the release (no stale restore)");
         check(r.rgiValid(), "route set mid-session remains RGI-valid");
 
-        /* 4. release without a prior claim is a no-op on stock state */
+        /* 4. the navigator finishes starting while CarPlay guides (map23): its first report,
+         *    no route, must not end CarPlay's RGI; the release then hands that report back */
+        r = new Rig(kombiMapMode);
+        r.carPlay(true);
+        r.dsiReportsRgActive(false);
+        check(r.container.isRgActive() && r.rgiValid(), "a late navigator 'no route' leaves CarPlay's RGI valid");
+        r.carPlay(false);
+        check(!r.container.isRgActive() && !r.rgiValid(), "the release hands back the navigator's no route");
+
+        /* 5. release without a prior claim is a no-op on stock state */
         r = new Rig(kombiMapMode);
         r.dsiReportsRgActive(true);
         r.stockRgiData(true);
