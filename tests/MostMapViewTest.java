@@ -165,6 +165,12 @@ public final class MostMapViewTest {
             while ((!MostPresentation.isActive() || !MostPresentation.isMapActive()) && System.currentTimeMillis() < end)
                 Thread.sleep(20);
             check(MostPresentation.isActive() && MostPresentation.isMapActive(), "Both views composed");
+            /* Stock's full rate: 15 while the phone's map is composed (the cluster throttled 30:
+             * map25), 30 for the arrows alone. */
+            final DisplayManagerMIB2High dmRef = r.dm;
+            r.hmi.run(new Runnable() { public void run() { dmRef.setUpdateRate(1, 10); } });
+            List<String> rate = r.dsi.drain();
+            check(rate.contains("setUpdateRate 4 15"), "Stock's 10 streams at 15 with the map composed: " + rate);
             r.dsi.drain();
             r.choose(73);
             r.choose(72);
@@ -177,10 +183,13 @@ public final class MostMapViewTest {
             r.choose(82);
             check(((Integer) MostArrowsTest.field(DisplayManagerMIB2High.class, "lastClusterRequest").get(r.dm)).intValue() == 72,
                 "A re-issued 82 is remembered as stock MAP 72");
+            r.dsi.drain();
             MostPresentation.setMapLive(false);
             r.hmi.idle();
             check(MostPresentation.isActive() && !MostPresentation.isMapActive(),
                 "The stream ending releases the MAP view and keeps the arrows");
+            rate = r.dsi.drain();
+            check(rate.contains("setUpdateRate 4 30"), "The arrows alone stream at 30 again: " + rate);
             MostPresentation.setMapLive(true);
             end = System.currentTimeMillis() + 3000L;
             while (!MostPresentation.isMapActive() && System.currentTimeMillis() < end) Thread.sleep(20);
