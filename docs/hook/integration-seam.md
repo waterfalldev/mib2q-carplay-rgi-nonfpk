@@ -68,10 +68,16 @@ for this binary. Correct rule: **classify each callsite as PLT/GOT (interposable
 - `CinemoCreateIAP` - genuine dio->Cinemo (libNmeSDK) boundary.
 
 The hook interposes exactly this class of symbol and nothing else: `CinemoCreateIAP`,
-`NmeIAP2Message::Decode`/`Encode` and `NmeTransport::Send`/`Recv`, resolved via `RTLD_NEXT`. These five
-are the **only** dynamic exports (see the export surface below). The AirPlay seams above are RE facts
-about stock; this branch interposes none of them (the `hook_airplay_seams_t` callback struct in
-`hook_framework.h` is present but has no implementation here). [x]
+`NmeIAP2Message::Decode`/`Encode` and `NmeTransport::Send`/`Recv`, plus `AirPlayCopyServerInfo`,
+`AirPlayReceiverSessionSetup`, `AirPlayReceiverSessionSetSecurityInfo` and
+`AirPlayReceiverSessionTearDown` (framework/airplay_seams.c, the `hook_airplay_seams_t` callbacks),
+each resolved via `RTLD_NEXT`. These nine are the **only**
+dynamic exports (see the export surface below). The AirPlay seams forward unchanged and run module
+callbacks around stock; their only user is `altscreen` ([most-map-view](../cluster/most-map-view.md)).
+`SetSecurityInfo` is called through the PLT by AirTunesServer with the phone's key. `TearDown(session,
+request, reason, Boolean *outDone)` ends the whole session when the request names no streams and
+sets `*outDone`; the seam reports that verdict, and all of libairplay's calls reach it through the
+PLT (map14's `libairplay.so`). `SetNightMode` is not interposed. [x]
 
 **Stock SETUP behaviour (re-notes):** `AirPlayReceiverSessionSetup` handles stream types 100/101/110;
 type **111 hits the unsupported branch**. The hook is therefore not shadowing hidden stock altScreen
@@ -145,7 +151,7 @@ support - it supplies a genuinely absent case. *(RE-derived; not re-checkable fr
   copied the function pointer). Helper processes stay fully inert (gated on
   `hook_process_is_dio_manager`).
 - **FIXED - ELF export surface** [x]. The hook compiles with `-fvisibility=hidden` and links with
-  `hook/carplay_hook.exports.map` (`global:` the 5 interposers above, `local: *`). `build_hook.sh` diffs
+  `hook/carplay_hook.exports.map` (`global:` the 9 interposers above, `local: *`). `build_hook.sh` diffs
   `nm -D --defined-only` against that allowlist and **rejects the build** on any difference, alongside
   the emutls, `.init_array == 4 bytes` and no-`rgd_module_init/fini` checks. No helper can preempt a stock
   symbol by accident.
@@ -170,6 +176,6 @@ Java outer-class ABI is preserved, and `LD_PRELOAD` is confined to `dio_manager`
 logger are now constructor-free**, and the eager cover-art loader thread is gone. The two section 6
 re-notes that no longer match code
 (`videoAvailable` intent term, and the map-scale sentinel) have both been **simplified out** on this
-branch. The export surface is now an enforced 5-symbol allowlist. Remaining non-altScreen work is bounded
+branch. The export surface is an enforced 9-symbol allowlist. Remaining non-altScreen work is bounded
 hardening: fail-closing the process gate, tightening `g_fw.ctx` locking, and the supervisor 2 s
 ownership margin.

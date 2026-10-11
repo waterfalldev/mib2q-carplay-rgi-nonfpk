@@ -96,6 +96,14 @@ for f in /mnt/system/etc/eso/production/dio_manager.json \
     [ -f "$f" ] && cp "$f" "$OUT/config/" 2>/dev/null
 done
 
+# ---- smartphone_integrator's dumps of a CarPlay process it had to stop (TIMEOUT_SHUTDOWN,
+# TIMEOUT_WATCHDOG): pidin, pps, sloginfo and dump_proc of the stuck process, in /tmp ----
+mkdir "$OUT/si_dumps"
+for f in "$SRC"/smartphone_integrator_error_*; do
+    [ -e "$f" ] || continue
+    cp -R "$f" "$OUT/si_dumps/" 2>/dev/null || echo "copy failed: $f" >> "$OUT/info.txt"
+done
+
 # ---- crash dumps of our processes (dumper writes them to /mnt/ota/system/core) ----
 mkdir "$OUT/core"
 for f in /mnt/ota/system/core/dio_manager* /mnt/ota/system/core/maneuver_render* \

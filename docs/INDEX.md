@@ -10,7 +10,7 @@ Map of Content for the reverse-engineering and implementation notes. Each note c
 every factual claim is validated against a source (code / firmware / iOS binary) and states only the
 final verified fact. `reconciles:` frontmatter records which legacy docs were folded in.
 
-> **All topics seeded [x]** - 33 notes. `(!)` items inside notes are real product TODOs, not doc gaps.
+> **All topics seeded [x]** - 34 notes. `(!)` items inside notes are real product TODOs, not doc gaps.
 
 ## 🗂️ [architecture](architecture.md) - process topology, threading, boot / init - build, test & deploy  [x]
 
@@ -36,6 +36,7 @@ final verified fact. `reconciles:` frontmatter records which legacy docs were fo
 - [maneuver-renderer](cluster/maneuver-renderer.md) - :19800 protocol, C++ scene engine, visible area, watchdog
 - [kdk-geometry](cluster/kdk-geometry.md) - KDK backings 101/102, VC Fct44/Fct54-driven visibility & stage, HU geometry table
 - [most-cluster](cluster/most-cluster.md) - analogue MOST clusters: coding selection, arrows-view handshake, output size/readiness files, native-size rendering, KOMO text
+- [most-map-view](cluster/most-map-view.md) - the phone's cluster map in the MOST MAP view: the shared arrows/MAP engine, window 99 (NV12), the altScreen stream, the frame ring and the hardware decoder (vehicle-verified, map19)
 
 ## 🎛️ Input  [x]
 - [touchpad-dpad](input/touchpad-dpad.md) - MMI touchpad -> DPAD bridge (TouchpadController)

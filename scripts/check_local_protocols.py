@@ -28,7 +28,8 @@ def numeric(expr):
 def constants(path, java=False):
     text = (ROOT / path).read_text()
     text = re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S)
-    pattern = r"\b(?:int|byte)\s+(\w+)\s*=\s*([^;]+);" if java else r"^#define\s+(\w+)\s+([^\n]+)"
+    # A valueless header guard must not consume the next #define as its value.
+    pattern = r"\b(?:int|byte|long)\s+(\w+)\s*=\s*([^;]+);" if java else r"^#define[ \t]+(\w+)[ \t]+([^\n]+)"
     return dict(re.findall(pattern, text, re.M))
 
 
@@ -59,6 +60,24 @@ for name, value in constants("hook/framework/bus_protocol.h").items():
 compare("maneuver_render/protocol.h", "java_patch/com/luka/carplay/rgd/RendererServer.java", {
     "CR_TCP_PORT": "PORT", "CR_PKT_SIZE": "PKT_SIZE",
 }, ("CMD_", "EVT_", "MAN_FLAG_"))
+MOST = "java_patch/com/luka/carplay/cluster/MostPresentation.java"
+compare("maneuver_render/protocol.h", MOST, {
+    "CR_MAP_DISPLAYABLE_ID": "MAP_DISPLAYABLE", "CR_OUTPUT_MIN": "OUTPUT_MIN",
+    "CR_OUTPUT_MAX": "OUTPUT_MAX",
+})
+
+def same_path(c_path, c_name, java_path):
+    """Java names these files as string literals (tests point them at scratch files)."""
+    global checks
+    value = constants(c_path)[c_name].strip()
+    if not value.startswith('"') or value not in (ROOT / java_path).read_text():
+        raise SystemExit(f"Path mismatch: {c_path}:{c_name} not named by {java_path}")
+    checks += 1
+
+# The renderer's request/ready files.
+for name in ("CR_MOST_OUTPUT_PATH", "CR_MOST_OUTPUT_READY_PATH",
+             "CR_MOST_MAP_OUTPUT_PATH", "CR_MOST_MAP_OUTPUT_READY_PATH"):
+    same_path("maneuver_render/protocol.h", name, MOST)
 # ponytail: altscreen_render/AltscreenControlServer compare dropped (RGI-only fork has no altscreen).
 print(f"Local transport constants: {checks} matching Java/C ports, opcodes, flags, sizes and limits")
 jar = ROOT / "build/carplay_hook.jar"

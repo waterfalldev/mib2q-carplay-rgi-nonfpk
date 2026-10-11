@@ -79,6 +79,8 @@
 #define EVT_COVERART            0x0010  /* text: crc:n:<u32> path:s:<path>   */
 #define EVT_RGD_UPDATE          0x0020  /* text: route_state + all fields    */
 #define EVT_DEVICE_STATE        0x0030  /* reserved                          */
+#define EVT_CLUSTER_VIDEO       0x0040  /* text: live:b stream:n - the phone's */
+                                        /* cluster stream reaches the renderer */
 
 /* ============================================================
  * Command types (Java -> Hook)

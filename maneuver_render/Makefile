@@ -3,7 +3,7 @@ UNAME := $(shell uname)
 
 BUILD_DIR = ../build
 
-RENDERER_COMMON = main.c render.c maneuver.c route_path.c server.c
+RENDERER_COMMON = main.c render.c maneuver.c route_path.c server.c map_layer.c cluster_video.c cluster_decoder.c
 TARGET = $(BUILD_DIR)/maneuver_render
 HARNESS = $(BUILD_DIR)/test_harness
 

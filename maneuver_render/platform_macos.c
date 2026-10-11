@@ -146,6 +146,21 @@ unsigned platform_get_output(int *win_w, int *win_h, int *x, int *y, int *w, int
     return 0;
 }
 
+int platform_map_window(int *w, int *h, unsigned *window) {
+    /* macOS dev path: no MOST MAP view window. */
+    (void)w; (void)h; (void)window;
+    return 0;
+}
+
+int platform_map_nv12_buffer(unsigned char **y, int *y_stride, unsigned char **uv, int *uv_stride) {
+    (void)y; (void)y_stride; (void)uv; (void)uv_stride;
+    return 0;
+}
+
+int platform_map_nv12_post(void) {
+    return 0;
+}
+
 void platform_release_displayable(void) {
     /* macOS dev path: no displaymanager / screen_destroy_window, no-op. */
 }

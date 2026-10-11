@@ -60,7 +60,7 @@ docker run --rm --platform=linux/amd64 -v "$PROJECT_DIR":/host "$IMG" bash -c '
 
   echo "--- maneuver_render ---"
   cd /src/maneuver_render
-  MR_SRCS="main.c render.c maneuver.c route_path.c server.c platform_qnx.c ../common/cluster_surface.c"
+  MR_SRCS="main.c render.c maneuver.c route_path.c server.c map_layer.c cluster_video.c cluster_decoder.c platform_qnx.c ../common/cluster_surface.c"
   gen_stub libscreen.so.1  "\bscreen_[a-z_]+"      $MR_SRCS
   gen_stub libEGL.so.1     "\begl[A-Z][A-Za-z0-9]+" $MR_SRCS
   gen_stub libGLESv2.so.1  "\bgl[A-Z][A-Za-z0-9]+"  $MR_SRCS

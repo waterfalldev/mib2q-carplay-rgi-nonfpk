@@ -118,7 +118,8 @@ public final class ScreenModule implements Module {
             most = !clusterContextsOwned && connected;
         }
         republish();
-        /* on a MOST cluster CarPlay route guidance takes the stock arrows view. */
+        /* on a MOST cluster CarPlay route guidance takes the stock arrows view, and the MAP view
+         * while the phone's cluster stream is live. */
         if (most && com.luka.carplay.cluster.ClusterPlatform.isMost()) {
             com.luka.carplay.cluster.MostPresentation.setActive(isConnected() && navActive);
         }
@@ -239,6 +240,8 @@ public final class ScreenModule implements Module {
             com.luka.carplay.cluster.MostPresentation.setActive(false);
             if (com.luka.carplay.cluster.ClusterPlatform.isMost(fw.framework())) {
                 com.luka.carplay.cluster.MostPresentation.prefetchExtents();
+                /* the phone's cluster stream takes the MAP view during CarPlay guidance. */
+                com.luka.carplay.cluster.ClusterVideo.getInstance().start();
             }
             Log.w(TAG, "cluster contexts left to stock ("
                 + com.luka.carplay.cluster.ClusterPlatform.describe(fw.framework()) + ")"
@@ -300,6 +303,7 @@ public final class ScreenModule implements Module {
         }
         republish();
         com.luka.carplay.cluster.MostPresentation.setActive(false);
+        com.luka.carplay.cluster.ClusterVideo.getInstance().stop();
         com.luka.carplay.cluster.ClusterStateTrace.dump("disconnect");
     }
 

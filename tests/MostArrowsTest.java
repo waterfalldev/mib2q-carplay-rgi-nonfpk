@@ -87,6 +87,14 @@ public final class MostArrowsTest {
         field(type, name).set(null, value);
     }
 
+    /* MostPresentation keeps each view's state in a View (ARROWS, MAP). */
+    static Object view(String name) throws Exception { return field(MostPresentation.class, name).get(null); }
+    static void setView(String view, String name, Object value) throws Exception { set(view(view), name, value); }
+    static Object viewField(String view, String name) throws Exception {
+        Object v = view(view);
+        return field(v.getClass(), name).get(v);
+    }
+
     static LogChannel silentLog() throws Exception {
         Constructor<?> ctor = Class.forName("com.luka.carplay.rgd.BAPBridge$SilentLogChannel").getDeclaredConstructor();
         ctor.setAccessible(true);
@@ -402,11 +410,14 @@ public final class MostArrowsTest {
         dir.deleteOnExit();
         outputRequestFile = new File(dir, "carplay_most_output");
         outputRequestFile.deleteOnExit();
-        setStatic(MostPresentation.class, "outputRequestPath", outputRequestFile.getPath());
+        setView("ARROWS", "outputRequestPath", outputRequestFile.getPath());
         /* An instant renderer: it presents whatever was requested (the gate has its own test). */
-        setStatic(MostPresentation.class, "outputReadyPath", outputRequestFile.getPath());
-        setStatic(MostPresentation.class, "lastOutputRequest", null);
-        setStatic(MostPresentation.class, "outputWritten", Boolean.FALSE);
+        setView("ARROWS", "outputReadyPath", outputRequestFile.getPath());
+        setView("ARROWS", "lastOutputRequest", null);
+        /* The MAP view's request lives beside it, unused by the arrows scenarios. */
+        setView("MAP", "outputRequestPath", new File(dir, "carplay_most_map_output").getPath());
+        setView("MAP", "outputReadyPath", new File(dir, "carplay_most_map_output_ready").getPath());
+        setView("MAP", "lastOutputRequest", null);
     }
 
     static void write(File f, String text) throws Exception {
@@ -428,7 +439,7 @@ public final class MostArrowsTest {
         release(hmi);
         freshOutputRequest();
         File ready = new File(outputRequestFile.getParentFile(), "carplay_most_output_ready");
-        setStatic(MostPresentation.class, "outputReadyPath", ready.getPath());
+        setView("ARROWS", "outputReadyPath", ready.getPath());
         write(ready, "0328 0181\n");                    /* the renderer's boot-time window */
         stockSwitch(hmi, dm, 73, 1, null);
         dsi.drain();
@@ -439,7 +450,7 @@ public final class MostArrowsTest {
         check(!MostPresentation.isActive() && !has(c, "switch 81 term 4") && !hasPrefix(c, "crop"),
             "not composed or cropped before the renderer presents 400x220: " + c);
         check("0400 0220\n".equals(outputRequest()), "renderer asked for 400x220: " + outputRequest());
-        check(field(MostPresentation.class, "waitingOutputRequest").get(null) != null,
+        check(viewField("ARROWS", "waitingOutputRequest") != null,
             "ready waiter started");
         final CountDownLatch hmiBlocked = new CountDownLatch(1);
         final CountDownLatch resumeHmi = new CountDownLatch(1);
@@ -452,9 +463,9 @@ public final class MostArrowsTest {
         check(hmiBlocked.await(1L, TimeUnit.SECONDS), "HMI barrier started");
         write(ready, "0400 0220\n");                  /* worker sees it before HMI does */
         long readyDeadline = System.currentTimeMillis() + 1000L;
-        while (field(MostPresentation.class, "waitingOutputRequest").get(null) != null
+        while (viewField("ARROWS", "waitingOutputRequest") != null
                && System.currentTimeMillis() < readyDeadline) Thread.sleep(10L);
-        check(field(MostPresentation.class, "waitingOutputRequest").get(null) == null,
+        check(viewField("ARROWS", "waitingOutputRequest") == null,
             "ready worker retired before its HMI callback");
         write(ready, "0400 022");                       /* marker disappears before HMI reads */
         resumeHmi.countDown();
@@ -470,7 +481,7 @@ public final class MostArrowsTest {
 
         kdk[0] = 656;                                   /* stock now reports another size */
         kdk[1] = 360;
-        hmi.run(new Runnable() { public void run() { MostPresentation.onCarPlayContextApplied(); } });
+        hmi.run(new Runnable() { public void run() { MostPresentation.onContextApplied(81); } });
         hmi.idle();
         hmi.idle();
         c = dsi.drain();
@@ -486,7 +497,7 @@ public final class MostArrowsTest {
         kdk[0] = 700;
         kdk[1] = 380;
         write(ready, "0700 0380\n");                  /* fast renderer confirmation */
-        hmi.run(new Runnable() { public void run() { MostPresentation.onCarPlayContextApplied(); } });
+        hmi.run(new Runnable() { public void run() { MostPresentation.onContextApplied(81); } });
         hmi.idle();
         c = dsi.drain();
         check(has(c, "switch 73 term 4") && has(c, "switch 81 term 4")
@@ -502,7 +513,7 @@ public final class MostArrowsTest {
         check(!MostPresentation.isActive(), "unconfirmed: waiting");
         check(waitFor(dsi, "switch 81 term 4", MostPresentation.READY_WAIT_MS + 1500L),
             "composed anyway after the wait: " + dsi.calls);
-        hmi.run(new Runnable() { public void run() { MostPresentation.onCarPlayContextApplied(); } });
+        hmi.run(new Runnable() { public void run() { MostPresentation.onContextApplied(81); } });
         Thread.sleep(300L);
         hmi.idle();
         c = dsi.drain();
@@ -542,11 +553,11 @@ public final class MostArrowsTest {
         release(hmi);
         freshOutputRequest();
         File ready = new File(outputRequestFile.getParentFile(), "carplay_most_output_ready");
-        setStatic(MostPresentation.class, "outputReadyPath", ready.getPath());
+        setView("ARROWS", "outputReadyPath", ready.getPath());
         stockSwitch(hmi, dm, 73, 1, null);              /* stock's arrows view is up */
 
         File missing = new File(outputRequestFile.getParentFile(), "absent" + File.separator + "carplay_most_output");
-        setStatic(MostPresentation.class, "outputRequestPath", missing.getPath());
+        setView("ARROWS", "outputRequestPath", missing.getPath());
         write(ready, "0400 0220\n");                    /* a report left over from earlier */
         dsi.drain();
         MostPresentation.setActive(true);
@@ -562,7 +573,7 @@ public final class MostArrowsTest {
         dsi.drain();
         missing.delete();
         missing.getParentFile().delete();
-        setStatic(MostPresentation.class, "outputRequestPath", outputRequestFile.getPath());
+        setView("ARROWS", "outputRequestPath", outputRequestFile.getPath());
 
         kdk[0] = 4000;                                  /* beyond protocol.h CR_OUTPUT_MAX */
         kdk[1] = 252;
@@ -609,7 +620,7 @@ public final class MostArrowsTest {
         release(hmi);
         freshOutputRequest();
         File ready = new File(outputRequestFile.getParentFile(), "carplay_most_output_ready");
-        setStatic(MostPresentation.class, "outputReadyPath", ready.getPath());
+        setView("ARROWS", "outputReadyPath", ready.getPath());
         stockSwitch(hmi, dm, 73, 1, null);
         write(ready, "0800 0252 0000000100.0000000001\n");
         dsi.drain();
@@ -702,9 +713,10 @@ public final class MostArrowsTest {
     static String outputRequest() throws Exception { return read(outputRequestFile); }
 
     static void requestOutput(int w, int h) throws Exception {
-        Method m = MostPresentation.class.getDeclaredMethod("requestRendererOutput", Integer.TYPE, Integer.TYPE);
+        Object arrows = view("ARROWS");
+        Method m = MostPresentation.class.getDeclaredMethod("requestRendererOutput", arrows.getClass(), Integer.TYPE, Integer.TYPE);
         m.setAccessible(true);
-        m.invoke(null, Integer.valueOf(w), Integer.valueOf(h));
+        m.invoke(null, arrows, Integer.valueOf(w), Integer.valueOf(h));
     }
 
     static boolean waitFor(Dsi dsi, String entry, long ms) throws Exception {
@@ -855,7 +867,7 @@ public final class MostArrowsTest {
         List<String> log = logSince("stream-rate");
         Log.setLevel(-1);
         check(countContaining(log, "setUpdateRate terminal ") == 2
-            && count(log, "[CP/W][DisplayManager] setUpdateRate terminal 1 rate 10 -> 30 for the CarPlay arrows view") == 2,
+            && count(log, "[CP/W][DisplayManager] setUpdateRate terminal 1 rate 10 -> 30 for CarPlay on the cluster") == 2,
             "at WARN only stock's two substituted requests are logged, not its plain rate changes: " + log);
         /* The rate records are static (they must exist before the constructor runs): clear them
          * so later scenarios start from "no request since HMI start". */
@@ -1157,7 +1169,7 @@ public final class MostArrowsTest {
         check("0800 0252\n".equals(outputRequest()), "an existing request is replaced: " + outputRequest());
 
         File missing = new File(outputRequestFile.getParentFile(), "absent" + File.separator + "carplay_most_output");
-        setStatic(MostPresentation.class, "outputRequestPath", missing.getPath());
+        setView("ARROWS", "outputRequestPath", missing.getPath());
         requestOutput(400, 220);                       /* directory absent: logged, not thrown */
         check(!missing.exists(), "failed write leaves nothing");
         check(missing.getParentFile().mkdirs(), "directory created");
