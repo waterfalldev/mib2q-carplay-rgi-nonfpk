@@ -135,8 +135,23 @@ void platform_check_and_recover_window(void) {
     /* macOS dev path: no displaymanager binding to lose, no-op. */
 }
 
+void platform_check_output(void) {
+    /* macOS dev path: the window is the content, no MOST stream. */
+}
+
+unsigned platform_get_output(int *win_w, int *win_h, int *x, int *y, int *w, int *h, int *opaque) {
+    int fw = 0, fh = 0;
+    platform_get_framebuffer_size(&fw, &fh);
+    *win_w = fw; *win_h = fh; *x = 0; *y = 0; *w = fw; *h = fh; *opaque = 0;
+    return 0;
+}
+
 void platform_release_displayable(void) {
     /* macOS dev path: no displaymanager / screen_destroy_window, no-op. */
+}
+
+long platform_free_memory_kb(void) {
+    return -1;   /* macOS dev path: not reported */
 }
 
 int platform_key_tap(int key) {

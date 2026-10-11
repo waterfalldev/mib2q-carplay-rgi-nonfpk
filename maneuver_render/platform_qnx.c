@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
@@ -55,6 +56,92 @@ static int read_env_int(const char *name, int def) {
     return (v && v[0]) ? atoi(v) : def;
 }
 
+/* presentation window size.  Equal to the content size (g_width x g_height)
+ * unless a MOST cluster asked for its KOMO stream size in CR_MOST_OUTPUT_PATH. */
+static int g_out_w = 0, g_out_h = 0;
+static unsigned g_output_gen = 1;
+static int g_most_request;       /* the last read found a valid request: a MOST cluster */
+static int g_ready_maybe = 1;    /* a report may exist (unknown at start: a previous process) */
+static unsigned g_ready_serial;  /* one per published window, so Java sees every recreation */
+
+/* The request Java writes in place (this unit's /tmp is procnto shared memory: no rename),
+ * so a read can race the write.  Only a complete "<width> <height>\n" in range counts:
+ *   OUTPUT_ABSENT  no file (Virtual Cockpit, or before any MOST session): content size;
+ *   OUTPUT_UNREADY empty, partial or invalid: keep the current window;
+ *   OUTPUT_SIZE    *w x *h. */
+enum { OUTPUT_ABSENT, OUTPUT_UNREADY, OUTPUT_SIZE };
+
+static int parse_output_number(const char *s, int *pos, int *value) {
+    int start = *pos, v = 0;
+    while (s[*pos] >= '0' && s[*pos] <= '9' && v <= CR_OUTPUT_MAX)
+        v = v * 10 + (s[(*pos)++] - '0');
+    *value = v;
+    return *pos > start;
+}
+
+static int read_most_output(int *w, int *h) {
+    char buf[32];
+    size_t n;
+    int pos = 0, rw = 0, rh = 0;
+    FILE *f = fopen(CR_MOST_OUTPUT_PATH, "r");
+    if (!f) return errno == ENOENT ? OUTPUT_ABSENT : OUTPUT_UNREADY;
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    if (!parse_output_number(buf, &pos, &rw) || buf[pos++] != ' ') return OUTPUT_UNREADY;
+    if (!parse_output_number(buf, &pos, &rh) || buf[pos] != '\n' || buf[pos + 1] != '\0')
+        return OUTPUT_UNREADY;
+    if (rw < CR_OUTPUT_MIN || rh < CR_OUTPUT_MIN || rw > CR_OUTPUT_MAX || rh > CR_OUTPUT_MAX)
+        return OUTPUT_UNREADY;
+    *w = rw;
+    *h = rh;
+    return OUTPUT_SIZE;
+}
+
+static int output_is_content(void) {
+    return g_out_w == g_width && g_out_h == g_height;
+}
+
+/* Withdraw the report before any window change or release: a stale one (the window about to
+ * be replaced, or an earlier renderer process) must never let Java compose ctx 81 over a
+ * window that is not there.  If unlink is refused, overwrite it with a line Java can never
+ * match. */
+static void withdraw_output_ready(void) {
+    FILE *f;
+    int e;
+    if (!g_ready_maybe) return;              /* nothing published: a VC never has a report */
+    if (unlink(CR_MOST_OUTPUT_READY_PATH) == 0 || errno == ENOENT) {
+        g_ready_maybe = 0;
+        return;
+    }
+    e = errno;
+    f = fopen(CR_MOST_OUTPUT_READY_PATH, "w");
+    if (f) {
+        int bad = fputs("XXXX XXXX\n", f) < 0;
+        if (fclose(f) == 0 && !bad) return;
+    }
+    fprintf(stderr, "platform_qnx: cannot invalidate output ready file errno=%d\n", e);
+}
+
+/* Tell Java which window is now presented (protocol.h CR_MOST_OUTPUT_READY_PATH), only once
+ * a MOST cluster has asked for a size.  The token (pid.serial, fixed width) is new for every
+ * window, so Java re-points the encoder after any recreation, not just a size change. */
+static void publish_output_ready(void) {
+    FILE *f;
+    int bad;
+    if (!g_most_request) return;
+    f = fopen(CR_MOST_OUTPUT_READY_PATH, "w");
+    g_ready_maybe = 1;
+    if (!f) {
+        fprintf(stderr, "platform_qnx: cannot open output ready file errno=%d\n", errno);
+        return;
+    }
+    bad = fprintf(f, "%04d %04d %010d.%010u\n", g_out_w, g_out_h, (int)getpid(), ++g_ready_serial)
+          != CR_OUTPUT_READY_LENGTH;
+    if (fclose(f) != 0 || bad)
+        fprintf(stderr, "platform_qnx: cannot publish output ready file\n");
+}
+
 /*
  * Create the managed cluster window (id 98) via the shared cluster_surface primitive.
  * cluster_surface_create() internally does screen_create_context() — which is exactly
@@ -71,12 +158,12 @@ static int ensure_cluster_window(void) {
     cluster_surface_cfg cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.id          = g_displayable_id;   /* 98 */
-    cfg.width       = g_width;
-    cfg.height      = g_height;
+    cfg.width       = g_out_w;            /* content size, or the MOST KOMO stream size */
+    cfg.height      = g_out_h;
     cfg.format      = 8;                  /* SCREEN_FORMAT_RGBA8888 */
     cfg.usage       = 0x20;               /* SCREEN_USAGE_OPENGL_ES2 */
     cfg.nbuffers    = 2;                  /* double-buffered (swap interval 2) */
-    cfg.transparent = 1;
+    cfg.transparent = output_is_content() ? 1 : 0;   /* MOST: opaque frame, streamed as-is */
     g_cs = cluster_surface_create(&cfg);
     if (!g_cs) {
         fprintf(stderr, "platform_qnx: cluster_surface_create failed\n");
@@ -156,6 +243,7 @@ static int create_window_and_egl_surface(void) {
  */
 static void platform_recreate_window(const char *reason) {
     fprintf(stderr, "platform_qnx: recreating window (reason=%s)\n", reason ? reason : "?");
+    withdraw_output_ready();
 
     /* Detach + destroy the EGL surface bound to the dying window. */
     if (g_egl_display != EGL_NO_DISPLAY && g_egl_surface != EGL_NO_SURFACE) {
@@ -176,6 +264,77 @@ static void platform_recreate_window(const char *reason) {
     if (create_window_and_egl_surface() != 0) return;
 
     fprintf(stderr, "platform_qnx: window recreated OK\n");
+    publish_output_ready();                 /* also completes a suppressed resize */
+}
+
+/* resize the window to the MOST KOMO stream size Java requested (~every 1 s).
+ * A suppressed resize leaves the EGL surface torn down with the new size configured;
+ * platform_check_and_recover_window's "egl surface missing" path completes it. */
+void platform_check_output(void) {
+    int want_w = g_width, want_h = g_height, request, was_most = g_most_request;
+    if (!g_window_expected || !g_cs) return;
+    request = read_most_output(&want_w, &want_h);
+    if (request == OUTPUT_UNREADY) return;
+    g_most_request = request == OUTPUT_SIZE;
+    if (want_w == g_out_w && want_h == g_out_h) {
+        /* A first request for the size already presented: report the live window. */
+        if (g_most_request && !was_most && g_egl_surface != EGL_NO_SURFACE) publish_output_ready();
+        return;
+    }
+
+    fprintf(stderr, "platform_qnx: output window %dx%d -> %dx%d (%s)\n", g_out_w, g_out_h,
+            want_w, want_h, (want_w == g_width && want_h == g_height) ? "content size" : "MOST KOMO stream");
+    withdraw_output_ready();
+    if (g_egl_display != EGL_NO_DISPLAY && g_egl_surface != EGL_NO_SURFACE) {
+        eglMakeCurrent(g_egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        eglDestroySurface(g_egl_display, g_egl_surface);
+        g_egl_surface = EGL_NO_SURFACE;
+    }
+    /* Configure first: whichever recreate succeeds (here or the loss-recovery retry)
+     * opens the window at the requested size. */
+    g_out_w = want_w;
+    g_out_h = want_h;
+    g_output_gen++;
+    if (cluster_surface_resize(g_cs, g_out_w, g_out_h, output_is_content() ? 1 : 0) != 0) {
+        fprintf(stderr, "platform_qnx: output resize suppressed/failed — will retry\n");
+        return;
+    }
+    if (create_window_and_egl_surface() != 0) return;
+    fprintf(stderr, "platform_qnx: output window %dx%d OK\n", g_out_w, g_out_h);
+    publish_output_ready();
+}
+
+#ifndef CR_FREE_MEMORY_PATH
+#define CR_FREE_MEMORY_PATH "/proc"     /* procnto reports free system memory as its size */
+#endif
+long platform_free_memory_kb(void) {
+    struct stat st;
+    if (stat(CR_FREE_MEMORY_PATH, &st) != 0) return -1;
+    return (long)(st.st_size / 1024);
+}
+
+unsigned platform_get_output(int *win_w, int *win_h, int *x, int *y, int *w, int *h, int *opaque) {
+    int dw = g_out_w, dh = g_out_h;
+    *win_w = g_out_w;
+    *win_h = g_out_h;
+    *opaque = output_is_content() ? 0 : 1;
+    if (!output_is_content() && g_width > 0 && g_height > 0) {
+        /* Aspect-fit the whole 328x181 frame, centred (rounded to the nearest pixel): the
+         * empty ECC row stays in, as it does in the VC's window, so 800x252 gives 457x252
+         * at x=171 (not the 328x180-based 459x252 at x=170). */
+        if ((long)g_out_w * g_height <= (long)g_out_h * g_width) {
+            dw = g_out_w;
+            dh = (int)(((long)g_out_w * g_height + g_width / 2) / g_width);
+        } else {
+            dh = g_out_h;
+            dw = (int)(((long)g_out_h * g_width + g_height / 2) / g_height);
+        }
+    }
+    *w = dw;
+    *h = dh;
+    *x = (g_out_w - dw) / 2;
+    *y = (g_out_h - dh) / 2;
+    return g_output_gen;
 }
 
 /*
@@ -202,6 +361,7 @@ void platform_check_and_recover_window(void) {
  * stays empty; Java switches the cluster back to the stock context.
  * Counterpart to platform_check_and_recover_window (renderer atexit / shutdown). */
 void platform_release_displayable(void) {
+    withdraw_output_ready();
     if (g_cs) {
         cluster_surface_destroy(g_cs);
         g_cs = NULL;
@@ -238,6 +398,10 @@ static void signal_handler(int sig) {
 int platform_init(int width, int height) {
     g_width = width;
     g_height = height;
+    g_out_w = width;
+    g_out_h = height;
+    /* A MOST session earlier in this boot. */
+    g_most_request = read_most_output(&g_out_w, &g_out_h) == OUTPUT_SIZE;
 
     /* Our own displayable id (98), NOT the stock route-guidance slot (20).
      * No env override — pointing the renderer at a different id would silently
@@ -259,6 +423,9 @@ int platform_init(int width, int height) {
 
     fprintf(stderr, "platform_qnx: displayable=%d context=%d display=%d\n",
             g_displayable_id, g_context_id, g_display_id);
+    if (!output_is_content())
+        fprintf(stderr, "platform_qnx: output window %dx%d (MOST KOMO stream) for %dx%d content\n",
+                g_out_w, g_out_h, g_width, g_height);
     fprintf(stderr, "platform_qnx: LD_LIBRARY_PATH=%s\n",
             getenv("LD_LIBRARY_PATH") ? getenv("LD_LIBRARY_PATH") : "(unset)");
     fprintf(stderr, "platform_qnx: IPL_CONFIG_DIR=%s\n",
@@ -274,6 +441,7 @@ int platform_init(int width, int height) {
      * The Qualcomm Adreno/GSL libEGL derefs a screen context that must already exist in
      * the process; without it eglGetDisplay SIGSEGVs.  This was masked when the HMI JVM
      * spawned us (inherited screen connection) but not standalone / as a framework service. */
+    withdraw_output_ready();                 /* a report left by an earlier renderer */
     fprintf(stderr, "platform_qnx: pre-EGL cluster window (screen_create_context)...\n");
     if (ensure_cluster_window() != 0) return -1;
 
@@ -328,6 +496,7 @@ int platform_init(int width, int height) {
         return -1;
     }
     g_window_expected = 1;
+    publish_output_ready();
 
     /* Keep the live BSP capability strings in the renderer log.  They are the
      * authoritative answer for cross-process Screen/EGL buffer import support;

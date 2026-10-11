@@ -51,6 +51,9 @@ public final class ScreenModule implements Module {
     /* true while the cluster is on OUR context (set AFTER the physical switch completes). */
     private static volatile boolean clusterActive = false;
     private static volatile boolean platformSupported = true;
+    /* terminal-1 contexts are ours only on the Virtual Cockpit composition
+     * (ClusterPlatform.ownsContexts).  Decided once per session in start(). */
+    private static volatile boolean clusterContextsOwned = false;
     private boolean enabled;
 
     /**
@@ -60,6 +63,13 @@ public final class ScreenModule implements Module {
      * could steal terminal 1 to the stock map (worker then thinks it still owns ctx → stuck).
      * Intent-based pin closes that window from t0. */
     public static boolean isConnected() { return platformSupported && connected; }
+
+    /** true only while a session is connected AND this cluster uses the validated
+     *  Virtual Cockpit composition.  The terminal-1 context pin (DisplayManagerMIB2High,
+     *  CombiMapController) and the layer controller key on this, not on isConnected(): on a
+     *  MOST or RGI-only cluster stock ClusterViewMode/KOMOService owns terminal 1 and there is
+     *  no ctx 80 presentation path, so blocking stock there only desynchronises OEM state. */
+    public static boolean ownsClusterContext() { return clusterContextsOwned && isConnected(); }
 
     /** DisplayManagerMIB2High uses this to distinguish our serialized 72/80/74
      * writes from stock screen-controller requests while CarPlay owns terminal 1. */
@@ -98,12 +108,20 @@ public final class ScreenModule implements Module {
      *  Navigation owns the context; VC alone controls KDK opacity.  On route end, retain the
      *  composition until VC withdraws visibility (Fct44), without a guessed timer. */
     public static void setNavActive(boolean active) {
+        boolean most;
         synchronized (LOCK) {
-            navHidePending = !active && navActive
+            /* the hold-until-VC-hides-KDK (Fct44) release exists only for the Virtual
+             * Cockpit composition; a MOST cluster never sends that hide, so it would never release. */
+            navHidePending = clusterContextsOwned && !active && navActive
                 && com.luka.carplay.cluster.ClusterLayerController.isKdkVisible();
             navActive = active || navHidePending;
+            most = !clusterContextsOwned && connected;
         }
         republish();
+        /* on a MOST cluster CarPlay route guidance takes the stock arrows view. */
+        if (most && com.luka.carplay.cluster.ClusterPlatform.isMost()) {
+            com.luka.carplay.cluster.MostPresentation.setActive(isConnected() && navActive);
+        }
     }
 
     /** Called after the layer controller has applied the received Fct44 visibility.
@@ -204,6 +222,33 @@ public final class ScreenModule implements Module {
         platformSupported = true;
         enabled = true;
 
+        com.luka.carplay.cluster.ClusterPlatform.resolve(fw.framework());
+        if (!com.luka.carplay.cluster.ClusterPlatform.ownsContexts(fw.framework())) {
+            /* MOST / RGI-only cluster.  Keep the session semantics other modules read
+             * (isConnected), but never drive terminal-1 contexts or rates from here: no
+             * connect-time switch to 74, no ctx 80, no blocked stock switches, nothing to restore
+             * later.  During CarPlay guidance MostPresentation substitutes stock's own arrows
+             * requests (context 73 -> 81, full rate 10 -> 30) and hands them back afterwards. */
+            clusterContextsOwned = false;
+            synchronized (LOCK) {
+                connected = true;
+                navActive = false;
+                navHidePending = false;
+                desiredCtx = CTX_STOCK_CLUSTER;
+            }
+            com.luka.carplay.cluster.MostPresentation.setActive(false);
+            if (com.luka.carplay.cluster.ClusterPlatform.isMost(fw.framework())) {
+                com.luka.carplay.cluster.MostPresentation.prefetchExtents();
+            }
+            Log.w(TAG, "cluster contexts left to stock ("
+                + com.luka.carplay.cluster.ClusterPlatform.describe(fw.framework()) + ")"
+                + (com.luka.carplay.cluster.ClusterPlatform.isMost(fw.framework())
+                    ? "; CarPlay guidance uses the MOST arrows view" : ""));
+            com.luka.carplay.cluster.ClusterStateTrace.dump("connect");
+            return true;
+        }
+        clusterContextsOwned = true;
+
         IDisplayManager d = null;
         try {
             if (fw.framework().getHMIService() != null) {
@@ -254,6 +299,8 @@ public final class ScreenModule implements Module {
             navHidePending = false;
         }
         republish();
+        com.luka.carplay.cluster.MostPresentation.setActive(false);
+        com.luka.carplay.cluster.ClusterStateTrace.dump("disconnect");
     }
 
     /* ============================================================

@@ -166,12 +166,15 @@ threading, boot and the complete test list live in the knowledge base - see
 **Compatibility.** The patch is not limited to US, EU or CN units, nor to one MU train: it is
 meant for any MHI2Q MU firmware (developed on MU1316). What matters is:
 
-- a fully digital instrument cluster (Audi virtual cockpit); cars with an analog cluster are not
-  supported;
+- cluster coding: Virtual Cockpit (sysConst 541=2) retains its existing presentation;
+  map-over-MOST analogue clusters (541=1) can show CarPlay maneuvers in the stock arrows view
+  with guidance text; RGI-only clusters (541=0) retain stock context ownership;
 - preferably, the latest firmware available for the unit, flashed before installing the patch.
 
-With both in place it should almost certainly work, as long as nothing went wrong during the
-install itself.
+MOST behavior has been exercised on one MU1329 unit. This separated contribution
+still needs vehicle validation, including FPK regression checks. See
+[MOST presentation and limits](docs/cluster/most-cluster.md). Shared renderer pacing,
+mask-cache and profiling changes are not included here.
 
 A release is eight files plus two config edits; nothing stock is replaced and no firewall profile is
 touched:

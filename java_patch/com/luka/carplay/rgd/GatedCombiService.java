@@ -48,11 +48,34 @@ public class GatedCombiService implements CombiBAPServiceNavi {
 
     /* GATED ROUTE-GUIDANCE METHODS */
     public void updateRGStatus(int a) {
-        if (!blockRouteGuidance) real.updateRGStatus(a);
+        boolean pass = !blockRouteGuidance;
+        lastRgStatus = trace("RGStatus", lastRgStatus, a, pass);
+        if (pass) real.updateRGStatus(a);
     }
 
+    /** on a MOST cluster FctID 39 is stock's answer to the cluster's own view choice
+     *  (COMPASS 2, arrows 1, map 3; ClusterViewMode via CombiBAPListener.setViewMode).  Left
+     *  unanswered, the cluster falls back to compass; CarPlay's Virtual Cockpit value (RGI, 0) is
+     *  a view a MOST coding never offers.  So on MOST stock answers it throughout, and CarPlay
+     *  sends the same value (BAPBridge.activeRGType). */
     public void updateActiveRGType(int a) {
-        if (!blockRouteGuidance) real.updateActiveRGType(a);
+        boolean pass = !blockRouteGuidance || com.luka.carplay.cluster.ClusterPlatform.isMost();
+        lastActiveRgType = trace("ActiveRGType", lastActiveRgType, a, pass);
+        if (pass) real.updateActiveRGType(a);
+    }
+
+    /* the cluster view handshake as stock sends it, one WARN line per change. */
+    private int lastRgStatus = UNSET;
+    private int lastActiveRgType = UNSET;
+    private int lastInfoStates = UNSET;
+    private static final int UNSET = Integer.MIN_VALUE;
+
+    private static int trace(String what, int last, int value, boolean passed) {
+        int key = passed ? value : -1000 - value;
+        if (key != last) {
+            com.luka.carplay.framework.Log.w("ClusterView", "stock " + what + "=" + value + (passed ? "" : " (gated)"));
+        }
+        return key;
     }
 
     public void updateDistanceToNextManeuver(int a, int b, boolean c, int d) {
@@ -100,7 +123,9 @@ public class GatedCombiService implements CombiBAPServiceNavi {
     public void repeatLastNavAnnouncementResult(int a) {
         real.repeatLastNavAnnouncementResult(a); }
     public void updateVoiceGuidanceState(int a) { real.updateVoiceGuidanceState(a); }
-    public void updateInfoStates(int a) { real.updateInfoStates(a); }
+    public void updateInfoStates(int a) {
+        lastInfoStates = trace("InfoStates", lastInfoStates, a, true);
+        real.updateInfoStates(a); }
     public void updateTrafficBlockIndication(int a) { real.updateTrafficBlockIndication(a); }
     public void updateMapColor(int a) { real.updateMapColor(a); }
     public void updateMapType(int a, int b) { real.updateMapType(a, b); }

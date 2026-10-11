@@ -13,6 +13,19 @@ public final class ClusterKdkSyncTest implements InvocationHandler {
     static void field(String name, Object value) throws Exception {
         Field f=ScreenModule.class.getDeclaredField(name); f.setAccessible(true);f.set(null,value);
     }
+    /** this suite is the Virtual Cockpit composition; declare it the way
+     * ScreenModule.start()/DisplayManagerMIB2High do on the car (sysConst 541 == 2). */
+    static void virtualCockpit() throws Exception {
+        field("clusterContextsOwned",Boolean.TRUE);
+        com.luka.carplay.cluster.ClusterPlatform.bind((de.audi.atip.base.IFrameworkAccess)Proxy.newProxyInstance(
+            ClusterKdkSyncTest.class.getClassLoader(),new Class[]{de.audi.atip.base.IFrameworkAccess.class},
+            new InvocationHandler(){ public Object invoke(Object p,Method m,Object[] a) {
+                if(m.getName().equals("getSysConst")) return Integer.valueOf(((Integer)a[0]).intValue()==541?2:0);
+                if(m.getReturnType()==Integer.TYPE) return Integer.valueOf(0);
+                if(m.getReturnType()==Boolean.TYPE) return Boolean.FALSE;
+                return null;
+            }}));
+    }
     public Object invoke(Object proxy, Method method, Object[] args) {
         if (method.getName().equals("setOpacity")) opacity.put(args[0],args[2]);
         if (method.getName().equals("setCropping")) cropWidth=((Integer)args[4]).intValue();
@@ -33,6 +46,7 @@ public final class ClusterKdkSyncTest implements InvocationHandler {
             ClusterKdkSyncTest.class.getClassLoader(),new Class[]{IDisplayManagerKombiControl.class},capture);
         field("platformSupported",Boolean.TRUE);field("connected",Boolean.TRUE);
         field("navActive",Boolean.TRUE);
+        virtualCockpit();
         ClusterLayerController.bind(dm,1);
         ClusterLayerController.onVcPresentation(true);
         ClusterLayerController.onVcVisibility(true);capture.visible(100,0,100);

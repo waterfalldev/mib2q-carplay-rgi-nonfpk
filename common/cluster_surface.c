@@ -176,6 +176,14 @@ int cluster_surface_recreate(cluster_surface_t *s) {
     return cs_open_window(s);
 }
 
+int cluster_surface_resize(cluster_surface_t *s, int width, int height, int transparent) {
+    if (!s || width <= 0 || height <= 0) return -1;
+    s->cfg.width = width;
+    s->cfg.height = height;
+    s->cfg.transparent = transparent;
+    return cluster_surface_recreate(s);
+}
+
 void cluster_surface_destroy(cluster_surface_t *s) {
     if (!s) return;
     if (s->win) { screen_destroy_window(s->win); s->win = NULL; }

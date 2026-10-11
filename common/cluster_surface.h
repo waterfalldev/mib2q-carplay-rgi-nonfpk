@@ -52,6 +52,11 @@ int  cluster_surface_lost(cluster_surface_t *s);
  * surface to the new cluster_surface_window() afterwards.  100 ms backoff. 0=ok. */
 int  cluster_surface_recreate(cluster_surface_t *s);
 
+/* change the window size (and overlay transparency) through the same recreate,
+ * keeping the screen context the EGL display was created with.  Same 100 ms backoff;
+ * on -1 the new size stays configured and the next recreate uses it. */
+int  cluster_surface_resize(cluster_surface_t *s, int width, int height, int transparent);
+
 /* Destroy window + context and free the handle. */
 void cluster_surface_destroy(cluster_surface_t *s);
 
