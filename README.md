@@ -1,11 +1,21 @@
 # MHI2Q CarPlay cluster integration
 
-CarPlay patch set for Audi MHI2Q infotainment.
+CarPlay patch set for Audi MHI2Q infotainment that puts the iPhone's own CarPlay cluster map
+on the instrument cluster, with CarPlay route guidance alongside.
 (Based on MHI2Q firmware, but may need rebuild for different versions.)
+
+> **Fork of [luka-dev/mib2q-carplay-rgi](https://github.com/luka-dev/mib2q-carplay-rgi).**
+> The route guidance, Virtual Cockpit maneuver renderer, cover art, parking and touchpad
+> features, the hook framework and the QNX toolchain are Luka's work. This fork adds the
+> phone's cluster map on map-over-MOST clusters, MOST cluster support and the Windows build
+> and packaging workflow. Thanks to [Luka](https://github.com/luka-dev) for the project this
+> is built on.
 
 **Disclaimer:** Use at your own risk. These patches modify firmware binaries and system configurations on your infotainment unit. Always back up all original files before making any changes. The authors are not responsible for any damage, bricked devices, or warranty issues resulting from use of these patches.
 
 ## 🖼️ Gallery
+
+<sub>Route guidance screenshots from the upstream project.</sub>
 
 <p align="center">
   <img src="assets/gallery/maneuver_demo.gif" width="90%" /><br />
@@ -56,23 +66,29 @@ CarPlay patch set for Audi MHI2Q infotainment.
 There is nothing to switch on: plug in the iPhone and CarPlay starts as usual; the cluster
 features below follow it automatically.
 
-- **Turn-by-turn on the cluster.** During CarPlay navigation the Virtual Cockpit shows a 3D maneuver
-  arrow drawn over the cluster's own native map (the stock map stays; there is no CarPlay map on the
-  cluster). The arrow fills as the turn approaches and blinks just before it, lane arrows appear under
+### Cluster map
+
+- **The phone's CarPlay map on the cluster.** On an analogue cluster with a colour centre
+  display coded for map-over-MOST (coding 541=1), the stock MAP view shows the iPhone's own
+  CarPlay cluster map while any CarPlay navigation runs, including apps that send no route
+  guidance, such as Waze. The head unit offers the phone a second, cluster-map CarPlay
+  display; its stream is received, decrypted and decoded by the head unit's hardware decoder.
+  The map sits between the dials, the steering-wheel roller zooms it, and it follows the MMI's
+  day/night mode. Verified on MU1329; the Audi map returns when navigation ends
+  ([status and limits](docs/cluster/most-map-view.md)).
+- **Turn-by-turn on MOST clusters.** CarPlay's maneuver appears in the stock arrows view,
+  rendered at the view's native size. Stock view selection stays in charge, and Audi guidance
+  returns on disconnect ([details](docs/cluster/most-cluster.md)).
+
+### Route guidance and more (from upstream)
+
+- **Turn-by-turn on the Virtual Cockpit.** During CarPlay navigation the Virtual Cockpit shows a 3D maneuver
+  arrow drawn over the cluster's own native map (the stock map stays; the phone's map is shown on
+  MOST clusters only). The arrow fills as the turn approaches and blinks just before it, lane arrows appear under
   it, and the cluster also shows distance to the turn, arrival time and remaining distance. Needs an
   app that sends CarPlay route guidance: Apple Maps and Google Maps do, AMap does with its CarPlay
   guidance setting on, Waze does not
   ([details](docs/rgd/rgd-activation.md#-which-navigation-apps-send-route-guidance)).
-- **Turn-by-turn on MOST clusters.** On an analogue cluster with a colour centre display coded
-  for map-over-MOST, CarPlay's maneuver appears in the stock arrows view, rendered at the view's
-  native size. The map view keeps the Audi map with CarPlay's distance, street and arrival text.
-  Stock view selection stays in charge, and Audi guidance returns on disconnect
-  ([details](docs/cluster/most-cluster.md)).
-- **Experimental MOST MAP view.** This branch drives the MOST cluster's MAP view through
-  the same engine as the arrows view, and always offers the phone a second, cluster-map
-  CarPlay display. Its stream is received, decrypted and decoded by the head unit's hardware
-  decoder, and the phone's cluster map takes the MAP view during CarPlay route guidance.
-  It retains the existing arrows ([status and limits](docs/cluster/most-map-view.md)).
 - **Route text in the Virtual Cockpit.** A text line names the exit sign or the next road (the
   current road when there is nothing else); long names scroll. Press **OK** (the left steering-wheel
   roller) to switch it to arrival time and time left, and press again to go back; it returns by itself
@@ -86,13 +102,13 @@ features below follow it automatically.
 
 ## 🏗️ Architecture
 
-Two paths share the cluster. **Route guidance (RGI)**: the hook in `dio_manager` reads the
-iPhone's iAP2 route guidance and hands it over CarplayBus to the Java patch in the HMI, which
-sends the BAP data the cluster shows (arrows, distance, street, lanes, HUD) and drives
-`maneuver_render`'s 3D maneuver scene in window 98. **Cluster map** (experimental, MOST MAP
-view): the phone streams a second CarPlay display; the hook's `altscreen` module receives and
-decrypts it, a shared-memory frame ring hands every frame to the renderer, and the head unit's
-hardware decoder decodes it into window 99. The Java patch picks the cluster view and asks the
+Two paths share the cluster. **Cluster map** (MOST MAP view): the phone streams a second
+CarPlay display; the hook's `altscreen` module in `dio_manager` receives and decrypts it, a
+shared-memory frame ring hands every frame to the renderer, and the head unit's hardware
+decoder decodes it into window 99. **Route guidance (RGI)**: the hook reads the iPhone's iAP2
+route guidance and hands it over CarplayBus to the Java patch in the HMI, which sends the BAP
+data the cluster shows (arrows, distance, street, lanes, HUD) and drives `maneuver_render`'s
+3D maneuver scene in window 98. The Java patch picks the cluster view and asks the
 renderer for the window it needs; the display manager puts that window into the cluster
 context, and the head unit encodes it to the cluster. The MMI screen stays stock CarPlay.
 
@@ -346,7 +362,12 @@ starting point when iOS sends a maneuver type we don't handle yet.
 
 ## 🔗 References
 
-Thanks for the prior work and knowledge that helped figure this out.
+This project is a fork of [luka-dev/mib2q-carplay-rgi](https://github.com/luka-dev/mib2q-carplay-rgi)
+by [Luka](https://github.com/luka-dev), who built the route guidance, the maneuver renderer,
+the hook framework and the [QNX 6.5 toolchain](https://github.com/luka-dev/qnx65-armv7-toolchain)
+it all builds with. Thank you.
+
+Thanks also for the prior work and knowledge that helped figure this out.
 
 - https://github.com/ludwig-v/wireless-carplay-dongle-reverse-engineering
 - https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore
