@@ -107,7 +107,8 @@ route_verified=(RouteInfoPresentationTest RendererMapperDirectionTest RouteGuida
 route_stock=(DistanceBargraphChainTest ManeuverParityTest RendererViewportTest
     ClusterKdkSyncTest ClusterKdkBapChainTest ClusterKdkRendererLifecycleTest
     com.luka.carplay.rgd.LaneGuidanceLifecycleTest com.luka.carplay.rgd.RgiDeliveryRecoveryTest
-    com.luka.carplay.rgd.CurrentPositionDeliveryTest com.luka.carplay.rgd.RouteInfoTimeoutTest)
+    com.luka.carplay.rgd.CurrentPositionDeliveryTest com.luka.carplay.rgd.RouteInfoTimeoutTest
+    com.luka.carplay.core.RgdTeardownTest)
 route_runtime=(KomoGraphicsStateTest com.luka.carplay.rgd.CurrentPositionStockChainTest)
 transport_plain=(TouchpadControllerTest com.luka.carplay.bus.CarplayBusTransportTest
     com.luka.carplay.rgd.RendererServerTransportTest)
