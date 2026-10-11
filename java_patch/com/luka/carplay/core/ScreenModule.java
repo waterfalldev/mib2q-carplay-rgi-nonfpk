@@ -240,7 +240,7 @@ public final class ScreenModule implements Module {
             com.luka.carplay.cluster.MostPresentation.setActive(false);
             if (com.luka.carplay.cluster.ClusterPlatform.isMost(fw.framework())) {
                 com.luka.carplay.cluster.MostPresentation.prefetchExtents();
-                /* the phone's cluster stream takes the MAP view during CarPlay guidance. */
+                /* the phone's cluster stream takes the MAP view during CarPlay navigation. */
                 com.luka.carplay.cluster.ClusterVideo.getInstance().start();
             }
             Log.w(TAG, "cluster contexts left to stock ("
@@ -303,6 +303,7 @@ public final class ScreenModule implements Module {
         }
         republish();
         com.luka.carplay.cluster.MostPresentation.setActive(false);
+        com.luka.carplay.cluster.MostPresentation.setNavigationOwner(0);
         com.luka.carplay.cluster.ClusterVideo.getInstance().stop();
         com.luka.carplay.cluster.ClusterStateTrace.dump("disconnect");
     }

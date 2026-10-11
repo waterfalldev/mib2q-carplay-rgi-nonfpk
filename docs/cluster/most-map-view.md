@@ -9,8 +9,8 @@ status: prototype
 On a map-over-MOST cluster (coding `541=1`) stock offers two cluster views, MAP and
 KDK/arrows. CarPlay already replaces the arrows picture ([most-cluster](most-cluster.md)).
 This branch drives the MAP view through the same engine, so that the phone's own cluster map,
-decoded by the head unit's hardware decoder, replaces the Audi map during CarPlay route
-guidance. It changes no vehicle coding and does not capture the MMI screen.
+decoded by the head unit's hardware decoder, replaces the Audi map during CarPlay
+navigation. It changes no vehicle coding and does not capture the MMI screen.
 
 ## One engine, two views
 
@@ -25,7 +25,7 @@ watching and the stream-rate rule are shared.
 | Unknown size | KVS_Most 800 × 252 | wait: never composed, re-queried |
 | Window between uses | kept (sized at connect) | removed when released |
 | Unconfirmed after 7 s | composed once, for diagnosis | never composed |
-| Requested by | CarPlay route guidance | the same guidance, while the phone's cluster stream is live |
+| Requested by | CarPlay route guidance | that guidance or the phone owning CarPlay navigation, while the phone's cluster stream is live |
 | Renderer window | GL scene | NV12 video window the CPU writes |
 | Stream rate (stock's 10) | 30 | 15 |
 
@@ -96,7 +96,8 @@ The stream is decoded by the Qualcomm hardware decoder inside `maneuver_render` 
 - **Hand-off**: the hook writes every access unit as Annex B into a shared-memory frame ring
   (`common/cluster_video_ring.h`, 1 MiB) and never waits. Bus `EVT_CLUSTER_VIDEO` (sticky) says
   when the stream is live; `ClusterVideo` passes that to `MostPresentation`, whose one rule
-  requests the arrows during CarPlay guidance and the MAP view while the stream is also live.
+  requests the arrows during CarPlay guidance and the MAP view during CarPlay navigation
+  while the stream is also live (below).
 - **Reader** (`cluster_video.c`): while window `99` wants pictures, a thread follows the ring
   from the stream's newest config and key frame - again after any unit the decoder missed -
   validating each record after copying it, and feeds the decoder. A renderer joining late
@@ -141,24 +142,37 @@ The stream is decoded by the Qualcomm hardware decoder inside `maneuver_render` 
   60 showed about a picture a second (map24). At 15 the map is close to stock's smoothness
   (map26).
 
-Still open: the last of the tearing (rarer with four buffers, map28). No stall timer is
-planned: the view goes when guidance ends or the stream's connection closes, and a phone that
-keeps the connection open but sends nothing (a still map) cannot be told from a stalled one,
-so the window keeps its last picture. The URL stays `maps:/car/instrumentcluster/map`, without a `maneuverLayout` parameter. No setting
-is planned: the Audi map is only usable while CarPlay navigation is not running, and the MAP
-view only replaces it while it is.
+## When it shows
+
+The MAP view is requested while the phone's cluster stream is live and either CarPlay route
+guidance is active or the phone owns CarPlay's navigation app state. The second covers a phone
+app that runs a route without sending route guidance, such as Waze. Stock's `IAppState` names
+it: app state `2` (navigation), owner `2` (device) or `1` (head unit); `CarPlayAppState` maps
+both unchanged. The patch already drops that state before stock's lifecycle sees it, so the
+Audi navigation keeps running (`CarplayDSILifecycleController.convertAppState`); its owner
+goes to `MostPresentation.setNavigationOwner` first, logged on every change, and is
+forgotten at disconnect. The arrows view stays route guidance only: Waze sends no maneuvers.
+
+Still open: the last of the tearing (rarer with four buffers, map28), and what Waze draws on
+the cluster display (map29). No stall timer is planned: the view goes when navigation ends or
+the stream's connection closes, and a phone that keeps the connection open but sends nothing
+(a still map) cannot be told from a stalled one, so the window keeps its last picture. The URL
+stays `maps:/car/instrumentcluster/map`, without a `maneuverLayout` parameter. No setting is
+planned: the Audi map is only usable while CarPlay navigation is not running, and the MAP view
+only replaces it while it is.
 
 ## Run notes
 
 Observations the sections above do not already state; the raw logs are kept per run.
 
 - **map14-map15**: the phone streams the cluster display for the whole session, so the MAP view
-  follows CarPlay guidance. A pulled cable never closes the stream's connection
+  follows CarPlay navigation. A pulled cable never closes the stream's connection
   ([session-lifecycle](../deploy/session-lifecycle.md) R5).
 - **map19**: about 630 pictures a session, none dropped.
 - **map21**: Apple Maps centres its position marker; Google Maps draws no guidance card and,
   without a safe area, put its marker behind the left dial. Waze sends no route guidance
-  ([rgd-activation](../rgd/rgd-activation.md)), so neither view is taken.
+  ([rgd-activation](../rgd/rgd-activation.md)), so neither view was taken until the MAP view
+  followed the navigation app state.
 - **map22**: with the safe area Google Maps centres its marker too, but still labels the street
   under it (its own drawing). Apple Maps kept one display north-up and zoomed out while the
   other followed.
@@ -181,5 +195,5 @@ copied, a close waiting for that copy) and the ring reader's feeding of it; the 
 against a fake of stock's in a shared library; and the frame ring (order, late joining,
 overrun, wrap, oversize, new streams and writers, a writer racing a slow reader with no torn
 record). The decryption and the decoder recipe are RE of the car's libraries, confirmed by
-the car (map13, map19); the guidance-and-stream rule is tested against the stock jar
+the car (map13, map19); the navigation-and-stream rule is tested against the stock jar
 (`MostMapViewTest`).

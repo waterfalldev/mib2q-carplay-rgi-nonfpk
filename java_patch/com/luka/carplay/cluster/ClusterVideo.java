@@ -3,9 +3,9 @@
  * EVT_CLUSTER_VIDEO (sticky) says a stream connection is "live" once its frames decrypt to
  * H.264 and the renderer can read them from the frame ring, and when that stream ends.  It
  * passes that on to MostPresentation.setMapLive, which takes the MAP view while CarPlay
- * guidance also holds.  MostPresentation composes the view only once the renderer reports a
+ * navigation also runs.  MostPresentation composes the view only once the renderer reports a
  * window of the measured size with a decoded picture posted in it, and hands it back to stock
- * when guidance or the stream ends, or CarPlay disconnects.
+ * when navigation or the stream ends, or CarPlay disconnects.
  */
 package com.luka.carplay.cluster;
 

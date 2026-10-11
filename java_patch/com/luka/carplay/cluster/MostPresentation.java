@@ -11,8 +11,9 @@
  * Each view is one View below: while it is requested, the DisplayManager composes CarPlay's
  * renderer window wherever stock asks for that view's context - arrows 73 -> 81 = {98}
  * (maneuver_render's scene) and MAP 72 -> 82 = {99} (the phone's cluster map, decoded by the
- * renderer).  CarPlay route guidance requests the arrows (setActive), and the MAP view too
- * while the phone's cluster stream is live (setMapLive, from ClusterVideo).  The MOST
+ * renderer).  CarPlay route guidance requests the arrows (setActive); it, or the phone owning
+ * CarPlay navigation (setNavigationOwner), requests the MAP view while the phone's cluster
+ * stream is live (setMapLive, from ClusterVideo).  The MOST
  * encoder streams that leading displayable as-is at the stock source's size (KDK 20: 800x252,
  * MAP 33: 800x298 on this car), so the renderer is asked to make its window exactly that size
  * (25 Sept 2026: a 328x181 window streamed blank).  Everything else stays stock:
@@ -199,10 +200,16 @@ public final class MostPresentation {
         return ARROWS.applied ? CARPLAY_RATE : rate;
     }
 
-    /* What the requests follow: CarPlay route guidance and a live cluster stream.  Changed only
-     * under REQUESTS, so two callers can never apply them out of order. */
+    /* CarPlay's navigation app state owned by the phone (stock IAppState: navigation 2, owner
+     * device 2; CarPlayAppState maps both unchanged). */
+    private static final int NAV_OWNER_PHONE = 2;
+
+    /* What the requests follow: CarPlay route guidance, the phone owning navigation and a live
+     * cluster stream.  Changed only under REQUESTS, so two callers can never apply them out of
+     * order. */
     private static final Object REQUESTS = new Object();
     private static boolean guiding, mapLive;
+    private static int navOwner;
 
     /** CarPlay route guidance started/stopped on a MOST cluster (ScreenModule): the arrows view,
      *  and the MAP view while the phone's cluster stream is live. */
@@ -212,17 +219,33 @@ public final class MostPresentation {
             if (setRequested(ARROWS, on)) {
                 Log.i(ARROWS.tag, on ? "CarPlay route guidance: arrows view requested" : "CarPlay route guidance ended: arrows view released");
             }
-            setMapRequested(guiding && mapLive);
+            setMapRequested(mapWanted());
         }
     }
 
-    /** The phone's cluster stream became live or ended (ClusterVideo); outside guidance the
+    /** The phone's cluster stream became live or ended (ClusterVideo); outside navigation the
      *  Audi map stays - the phone streams its cluster display for the whole session (map14). */
     public static void setMapLive(boolean live) {
         synchronized (REQUESTS) {
             mapLive = live;
-            setMapRequested(guiding && mapLive);
+            setMapRequested(mapWanted());
         }
+    }
+
+    /** The owner of CarPlay's navigation app state (CarplayDSILifecycleController.updateMode),
+     *  0 at disconnect (ScreenModule).  The phone owns it while any of its apps runs a route,
+     *  including one that sends no route guidance, such as Waze: the MAP view follows that too. */
+    public static void setNavigationOwner(int owner) {
+        synchronized (REQUESTS) {
+            if (owner == navOwner) return;
+            navOwner = owner;
+            Log.w(MAP.tag, "CarPlay navigation owner " + owner + (owner == NAV_OWNER_PHONE ? " (the phone)" : ""));
+            setMapRequested(mapWanted());
+        }
+    }
+
+    private static boolean mapWanted() {
+        return (guiding || navOwner == NAV_OWNER_PHONE) && mapLive;
     }
 
     private static void setMapRequested(boolean on) {

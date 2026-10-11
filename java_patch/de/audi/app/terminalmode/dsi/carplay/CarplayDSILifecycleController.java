@@ -489,6 +489,7 @@ public class CarplayDSILifecycleController extends AbstractDSIController impleme
                  * Keep AppState itself stock so PHONE/SPEECH and outgoing DSI serialization retain
                  * their original semantics. TMState ignores appStateId 0. */
                 if (aappstate[i] != null && aappstate[i].getAppStateID() == 2) {
+                    com.luka.carplay.cluster.MostPresentation.setNavigationOwner(aappstate[i].getOwner());
                     aiappstate[i] = new CarPlayAppState(0, 0, 0);
                     continue;
                 }

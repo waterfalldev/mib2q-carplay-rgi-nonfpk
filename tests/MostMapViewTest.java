@@ -13,7 +13,8 @@ import java.util.Map;
 /** The MOST MAP view through MostPresentation's shared engine, against the shipping display
  *  manager and stock core: MAP 72 -> 82 = {99} only for a measured, renderer-confirmed
  *  window, released back to stock, independent of the arrows view; requested by CarPlay
- *  guidance only while the phone's cluster stream is live; the wheel zooms it only then. */
+ *  guidance or the phone owning navigation, only while the phone's cluster stream is live;
+ *  the wheel zooms it only then. */
 public final class MostMapViewTest {
     private static int checks;
 
@@ -70,6 +71,7 @@ public final class MostMapViewTest {
         public void close() throws Exception {
             MostPresentation.setMapLive(false);
             MostPresentation.setActive(false);
+            MostPresentation.setNavigationOwner(0);
             hmi.idle();
             Thread.sleep(50);
             hmi.idle();
@@ -200,6 +202,36 @@ public final class MostMapViewTest {
         }
     }
 
+    /* A phone app navigating without route guidance (Waze): the phone owning CarPlay's
+     * navigation app state takes the MAP view while the stream is live, never the arrows. */
+    private static void phoneNavigationWithoutGuidance() throws Exception {
+        try (Rig r = new Rig()) {
+            r.extents.put(Integer.valueOf(33), new int[]{800, 298});
+            r.report("0800 0298 0000001234.0000000001\n");
+            MostPresentation.setMapLive(true);
+            r.hmi.idle();
+            check(!MostPresentation.isMapActive(), "A live stream without navigation: the Audi map stays");
+            MostPresentation.setNavigationOwner(1);
+            r.hmi.idle();
+            check(!MostPresentation.isMapActive(), "The head unit owning navigation: the Audi map stays");
+            MostPresentation.setNavigationOwner(2);
+            long end = System.currentTimeMillis() + 3000L;
+            while (!MostPresentation.isMapActive() && System.currentTimeMillis() < end) Thread.sleep(20);
+            check(MostPresentation.isMapActive() && !MostPresentation.isActive(),
+                "The phone owning navigation takes the MAP view and leaves the arrows");
+            MostPresentation.setMapLive(false);
+            r.hmi.idle();
+            check(!MostPresentation.isMapActive(), "The stream ending releases it");
+            MostPresentation.setMapLive(true);
+            end = System.currentTimeMillis() + 3000L;
+            while (!MostPresentation.isMapActive() && System.currentTimeMillis() < end) Thread.sleep(20);
+            check(MostPresentation.isMapActive(), "A live stream again while the phone navigates: the MAP view again");
+            MostPresentation.setNavigationOwner(3);
+            r.hmi.idle();
+            check(!MostPresentation.isMapActive(), "The phone giving navigation up releases it");
+        }
+    }
+
     /** The next CMD_ALT_ZOOM the hook reads (past others, such as the sync request): its one
      *  signed step byte, or -128 when malformed. */
     private static int zoomFrame(DataInputStream in) throws Exception {
@@ -258,7 +290,8 @@ public final class MostMapViewTest {
         measuredConfirmedWindowOnly();
         placementAndWindowToken();
         viewsAreIndependent();
+        phoneNavigationWithoutGuidance();
         wheelZoom();
-        System.out.println("MostMapViewTest: measured, confirmed MAP window only, stock restoration, independent views, the guidance-and-stream rule and wheel zoom PASS (" + checks + " checks)");
+        System.out.println("MostMapViewTest: measured, confirmed MAP window only, stock restoration, independent views, the navigation-and-stream rule and wheel zoom PASS (" + checks + " checks)");
     }
 }
