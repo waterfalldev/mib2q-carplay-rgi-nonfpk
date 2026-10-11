@@ -8,7 +8,6 @@ sources:
 reconciles:
   - docs/reference/DSI_CARKOMBI_KOMBISYNC2_REFERENCE.md
   - docs/reference/vc_fpk_state_machine.md
-  - docs/reference/CLUSTER_SIDE_MENUS.md
 ---
 
 # DSICarKombi + DSIKombiSync2
@@ -38,4 +37,4 @@ path (`LVDS_Available`, HMI-active bits). Complements [komo-widget-video](komo-w
 
 The cluster context manager reads confirmed VC context to gate input (the steering-wheel OK press is
 only acted on the confirmed map tab - see [steering-wheel](../../input/steering-wheel.md)) and to know when CarPlay actually owns
-terminal 1. Related state machines: `vc_fpk_state_machine`, side menus (`CLUSTER_SIDE_MENUS`).
+terminal 1. Related state machine: `vc_fpk_state_machine`.

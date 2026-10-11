@@ -52,7 +52,7 @@ final verified fact. `reconciles:` frontmatter records which legacy docs were fo
 - [session-lifecycle](deploy/session-lifecycle.md) - session audit: watchdog-hang, USB pre-RTSP class, resilience risks R1-R4
 
 ## 🔧 Maintenance  [x]
-- [java-cleanup-audit](maintenance/java-cleanup-audit.md) - Java patch cleanup status; remaining dead accessors
+- [java-cleanup-audit](maintenance/java-cleanup-audit.md) - Java patch cleanup status: no open items, keep list
 
 ## 🔍 Reverse engineering - iOS  [x]
 - [accessoryd-rgd](re/ios/accessoryd-rgd.md) - ACCNav RGUpdate enum (accessoryd 23G71)

@@ -154,7 +154,7 @@ held (`dsiNoRouteHeld`) and replayed when the override is released
 The app does not build the iAP2 `RouteGuidanceUpdate`: iOS `CarPlay.framework` serializes it from the
 app's `CPNavigationSession`, and the on/off gate is `SourceSupportsRouteGuidance` (TLV `0x14`), set
 only when the app's map delegate implements `mapTemplateShouldProvideNavigationMetadata:`. From the
-decrypted IPAs (analysis carried over from mib2q-carplay-rgi-next `THIRD_PARTY_NAV_APPS.md`):
+decrypted IPAs (analysis carried over from `THIRD_PARTY_NAV_APPS.md`, which lives in the mib2q-carplay-rgi-next repo):
 
 | App | Metadata gate | maneuverType | What reaches the cluster |
 |---|---|---|---|

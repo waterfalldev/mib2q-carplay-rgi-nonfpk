@@ -9,79 +9,35 @@ sources:
   - code: java_patch/com/luka/carplay/core/SteeringWheelInputModule.java
   - code: java_patch/com/luka/carplay/rgd/RendererServer.java
   - code: java_patch/com/luka/carplay/core/FrameworkRef.java
-reconciles:
-  - docs/reference/JAVA_PRODUCTION_CLEANUP_AUDIT.md
 ---
 
 # Java production cleanup audit - reconciled to current branch
 
-Migrated from `docs/reference/JAVA_PRODUCTION_CLEANUP_AUDIT.md` (original scope: `java_patch/`
-against stock MU1316) and **re-verified against the current branch**. Each item below carries its
-**real current status**, not the audit's original status - several cleanups have since landed.
+Scope: `java_patch/` against stock MU1316, **verified against the current branch**. Only what is still
+open or must be kept is listed; resolved findings are not repeated.
 
 ## 📋 Context
 
 > [architecture](../architecture.md) - Java patch layer -> cluster HUD + route-info - KOMO gfx gate -> [komo-widget-video](../re/firmware/komo-widget-video.md)
 > - route-info toggle publishes [bap-fctids](../rgd/bap-fctids.md) FctID 22
 
-**Bottom line:** all four cleanup groups are resolved on this branch.
+**Bottom line:** no cleanup item is open on this branch. The earlier findings (trace helpers, unused
+accessors, the fake `ClusterService` pipeline API, the KOMO reflection ladder) are resolved and
+verified absent from `java_patch/`; what remains below is what must **stay**.
 
-## ✅ [x] route-info phase - live, keep (was: closed)
+## ✅ Live path - do not remove: route-info phase
 
-(Line numbers in this section predate the RGI port; the call chain itself is unchanged.)
+The steering-wheel roller press drives the route-info phase:
 
-The historical "phase can never leave 0, remove it" finding is **resolved and the path is live** -
-do not remove it. It is now driven by the steering-wheel roller press:
+`SteeringWheelInputModule` -> `ScreenModule.onSteeringWheelOkPressed()` ->
+`RouteGuidance`'s `InfoModeListener.onInfoModeToggle()` -> `requestInfoModeToggle()`
+(`desiredInfoPhase ^= 1`) -> `BAPBridge.infoPhase` and the trip-summary FctID 22 path.
 
-`SteeringWheelInputModule` (`SteeringWheelInputModule.java:223`) ->
-`ScreenModule.onSteeringWheelOkPressed()` (`ScreenModule.java:225-229`) ->
-`RouteGuidance`'s `InfoModeListener.onInfoModeToggle()` (`RouteGuidance.java:68-74`) ->
-`requestInfoModeToggle()` (`RouteGuidance.java:577-587`, `desiredInfoPhase ^= 1`) ->
-`BAPBridge.infoPhase` and the trip-summary FctID 22 path.
+`ScreenModule.InfoModeListener` is a registered interface, bound by `RouteGuidance` in start and
+cleared on stop. `BAPBridge.infoPhase` / `buildTripSummary` / `lastDistanceToDestinationM` are
+therefore reachable. See [steering-wheel](../input/steering-wheel.md).
 
-`ScreenModule.InfoModeListener` is a real registered interface (`ScreenModule.java:210-229`), bound
-by `RouteGuidance` in start (`RouteGuidance.java:299,321`) and cleared on stop
-(`RouteGuidance.java:384`). `BAPBridge.infoPhase` / `buildTripSummary` / `lastDistanceToDestinationM`
-are therefore reachable and must stay. See [steering-wheel](../input/steering-wheel.md).
-
-## ✅ [x] fake ClusterService pipeline API - removed (was: to remove)
-
-Confirmed gone: `activateCustomRendererPipeline()` and `deactivateCustomRendererPipeline()` no longer
-exist in `java_patch/`, nor does `refreshInitializingScreenAfterCarPlay()`, which came back with the
-ported `ClusterService` without a caller. The `BAPBridge` branch that read the constant "readiness" string is gone too. Real readiness
-(`RendererServer.isReady()/isFrameReady()` + frame-event gate) remains authoritative. The four live
-`ClusterService` accessors (`getDSIResponseContainer()`, `triggerRefreshRGIValid()`, and the CombiBAP
-getter/setter) are retained as intended.
-
-## ✅ [x] KOMO reflection ladder (`forceGfxAvailable`) - resolved
-
-The reflection ladder is gone (`CoverArtProviderMux` is now the only `java.lang.reflect` user).
-`BAPBridge.forceGfxAvailable` returns immediately unless `Util.isClusterMapMOST(fw)`; on a MOST cluster
-it calls the public `KOMOService.updateDataRate(rate, 1)` then `updateGfxState(gfx, 1)` - data rate
-**before** gfx availability - falling back to `ClusterViewMode.setDataRate` / `setGFXAvailable` +
-`ClusterService.setKOMODataRate` when no `KOMOService` was acquired. On this FPK cluster it therefore
-does nothing: every data-rate write used to run `ClusterViewMode.setDataRate -> refreshMapVisibility`,
-which parked the stock kombi map in its hidden context after a route (frozen map, roller zoom
-swallowed) until the VC re-sent MapViewAndOrientation. See [komo-widget-video](../re/firmware/komo-widget-video.md).
-
-## ✅ [x] disabled diagnostics & dead members - removed
-
-**Done (verified gone):**
-
-- `traceBap()` / `traceDescriptor()` / `BAP_TRACE_ENABLED` and every trace call site - removed.
-- All `Log.d()` call sites - **0 remaining** in `java_patch/`. Logger and C hook default to WARN
-  (see `docs/reference/PRODUCTION_LOGGING.md`). `Log.i` deliberately kept.
-- `CarPlayApp.fw()`, `CarplayBus.isConnected()` / `Data.bool()` / `Data.strList()`,
-  `BAPBridge.isActionBlinkThreadRunning()`, `EXITVIEW_ROW/EXITVIEW_ASIA`,
-  `AltScreenModule.isClusterActive()`, `ROUTE_STATE_ACCEPT_ALL_MANEUVER_IDX`, `BAPBridge.hexBytes()`,
-  `FrameworkRef.context()` / `deviceManager()` / `hmiServiceApp()` - all removed.
-
-(`RendererServer.isConnected()` is live again: `BAPBridge` uses it in renderer recovery.)
-
-(Note: `ScreenModule.isConnected()` is a **different, live** method - it pins the cluster while
-CarPlay owns it, called from `CombiMapController` and `ClusterService`. Keep it.)
-
-## 📌 Keep (unchanged - do not delete for size)
+## 📌 Keep (do not delete for size)
 
 - The six stock replacement classes: their public/protected ABI is complete and stock code calls
   into them outside local reachability.
@@ -92,6 +48,9 @@ CarPlay owns it, called from `CombiMapController` and `ClusterService`. Keep it.
 - Trip-summary ETA helpers (`lastEtaSeconds`, `lastTimeRemainingSeconds`,
   `lastTimeRemainingSampleSeconds`, `currentRemainingSeconds()`, `currentArrivalSeconds()`) - they
   publish the real FctID 22 absolute ETA.
+- `RendererServer.isConnected()` (used in `BAPBridge` renderer recovery), `CarplayBus.Data.bool()`
+  (used by `ClusterVideo`) and `ScreenModule.isConnected()` (pins the cluster while CarPlay owns it;
+  called from `CombiMapController` and `ClusterService`).
 
 ## ✍️ After further Java cleanup
 

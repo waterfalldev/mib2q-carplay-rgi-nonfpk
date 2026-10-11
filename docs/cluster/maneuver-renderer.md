@@ -125,7 +125,7 @@ Renderer milestones (`starting`, `EGL`, `connected`) and every Java log line car
   supervisor cannot tell from a healthy one; the supervisor restarts the process.
 - **Window health check** every 5 s recreates the managed window if the handle is invalidated or the
   DisplayManager disowned id 98.
-- No `dmdt`: `platform_ensure_focus()` is a no-op on QNX; context routing is Java's
+- No `dmdt` on QNX; context routing is Java's
   ([display-contexts](display-contexts.md)).
 
 ## 🧪 Build & test

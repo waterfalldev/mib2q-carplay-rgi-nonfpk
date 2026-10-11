@@ -11,9 +11,6 @@ sources:
   - code: deploy/smartphone_integrator/README.md
   - code: scripts/test_supervisor_lifecycle.sh
   - code: tests/renderer_pid_identity_test.sh
-reconciles:
-  - docs/reference/SI_STACK_RESTART_RE.md
-  - docs/reference/PRODUCTION_LOGGING.md
 ---
 
 # Supervisor & renderer lifecycle
@@ -109,8 +106,27 @@ renderers by the shared PID file (that could hit a replacement generation's rend
 invokes Audi's stock `/etc/scripts/carplay_cleanup.sh` for mdnsd/PPS cleanup. The renderer exits only
 on its own failure, a reboot or an explicit maintenance action.
 
-QNX-6.5 `/bin/sh` compatibility: numeric signals, `pidin` finite snapshots (no blocking
-`/proc/*/cmdline` walk), no GNU-only tools.
+## 🔍 QNX 6.5 compatibility (MU1316)
+
+The scripts use only facilities present in the extracted P5087 firmware:
+
+- `/bin/sh` is QNX PD KSH 5.2.14 (`VERSION=650-4423`); it supports the functions, traps, command
+  substitution, background jobs, `read` and `exec` used here.
+- `kill` is a shell builtin and the scripts use **numeric** signals (`kill -15`, `kill -9`), a form
+  every kill implementation accepts. Stock scripts kill by name with `slay -f -s SIGTERM -m name`
+  and, in one spot, `kill -sigkill <pid>`; here one recorded PID is killed after an identity check
+  (slay-by-name would also hit the replacement generation), so only the signal token had to be a
+  universally accepted numeric one.
+- `pidin ar` and `pidin -p <pid> ar` give finite process snapshots: no blocking `/proc/*/cmdline`
+  walk and no GNU process utilities. They only adopt a pre-existing renderer and confirm identity
+  before a signal; routine checks use the recorded PID.
+- `rm -f` and integer `sleep` are stock facilities (the original `startup.sh` and `/etc/scripts` use
+  `sleep` throughout).
+- `carplay_processes.sh` appends a safe subset of the stock MMX command search locations and keeps the
+  inherited `PATH` head, so it does not depend on `smartphone_integrator` preserving `PATH` and dio
+  keeps its original resolution order.
+- No GNU-only commands or options: no `pgrep`, `pkill`, `wait -n`, GNU `stat`, `readlink -f`,
+  `timeout`, fractional `sleep`, and no dependency on `tr`.
 
 ## 🧪 Tests
 

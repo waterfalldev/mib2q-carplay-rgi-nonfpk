@@ -113,9 +113,10 @@ the accept, and confirm the accept thread always exits.
 
 ### R2 - a live callback can outlive its stock session [x] (class absent)
 
-The audit's case was altScreen `alt_refresh_night_mode()` dereferencing the stock session/server from
-the receive thread on the first IDR, which could race a teardown that frees the session. **No such
-path ships here.** Every stock-facing cluster callback - `ScreenModule.setNavActive()`,
+The audit's case was a C-hook callback dereferencing the stock session from the receive thread on the
+first IDR, which could race a teardown that frees the session. **No such path ships here.** The
+altScreen hook sends its commands (`showUI`, `setNightMode`, `forceKeyFrame`, `changeMapZoomLevel`)
+from its own worker thread, each batch with its own session reference, and on the Java side every stock-facing cluster callback - `ScreenModule.setNavActive()`,
 `CombiMapController.processModelUpdateEvent()`, the steering-wheel roller press - only flips a
 `volatile` flag and wakes a worker; none makes a synchronous call back into a stock session object
 from an I/O thread. The unsafe lifetime contract has no instance on this branch.
