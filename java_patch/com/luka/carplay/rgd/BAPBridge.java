@@ -569,23 +569,22 @@ public class BAPBridge {
                     container.setRgActive(true);
                 } else if (rgActiveForced) {
                     rgActiveForced = false;
-                    container.setRgActive(rgActiveSaved);
-                    Log.i(TAG, "rgActive overlay released (restored " + rgActiveSaved + ")");
+                    /* hand back what the DSI navigation handler reported last - it may
+                     * have changed while the overlay was held (an MMI route set mid-session). */
+                    boolean restore = csRef.getLastDsiRgActive(rgActiveSaved);
+                    container.setRgActive(restore);
+                    Log.i(TAG, "rgActive overlay released (restored " + restore + ")");
                 }
             }
         } catch (Exception e) {
         }
 
-        if (active) {
-            try { csRef.updateRGIString(new short[]{1}); }
-            catch (Exception e) { Log.w(TAG, "force rgiValid=true failed: " + e.getMessage()); }
-        } else {
-            try { csRef.updateRGIString(null); }
-            catch (Exception e) { Log.w(TAG, "force rgiValid=false failed: " + e.getMessage()); }
-        }
-
-        try { csRef.triggerRefreshRGIValid(); }
-        catch (Exception e) { Log.w(TAG, "refreshRGIValid failed: " + e.getMessage()); }
+        /* claim/release RGI validity beside stock's RGI data rather than through
+         * updateRGIString({1}) / updateRGIString(null): the null release used to mark a live
+         * native route's RGI invalid, and a MOST/RGI-only ClusterViewMode then drops to COMPASS
+         * until the navigator happens to send new RGI data. */
+        try { csRef.setCarPlayRgiValidOverride(active); }
+        catch (Exception e) { Log.w(TAG, "RGI-valid override " + active + " failed: " + e.getMessage()); }
     }
 
 
