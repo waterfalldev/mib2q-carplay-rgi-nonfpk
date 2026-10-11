@@ -27,15 +27,16 @@ reconciles:
 
 This note carries the **shipping-relevant** half of the RE session-lifecycle audit. The audit's
 altScreen/cluster-video findings (stream-111 RTSP, the `-6030`/`-6031` port collision, the
-loader->video Adreno handoff, the OMX back-pressure budget) are **excluded**: this branch decodes
-**no cluster video** yet. Its only altScreen code is the `altscreen` module
+loader->video Adreno handoff, the OMX back-pressure budget) are **excluded**: none of that
+design ships. This branch's altScreen code is the `altscreen` module
 ([most-map-view](../cluster/most-map-view.md)), which receives and decrypts the stream on its own
-port and hands it to `maneuver_render` through a shared-memory ring it never waits on. Its stock
+port and hands it to `maneuver_render` through a shared-memory ring it never waits on; the
+renderer, not `dio_manager`, decodes it, and only for a MOST cluster's MAP view. Its stock
 commands go out from their own thread with their own session reference, never under a lock of the
 hook's nor from the receive thread; the held reference is released when stock tears the session
 down (R5), its stream ends, a new Identify arrives or no stream connects within 5 s.
-The cluster shows the head unit's own native map with a transparent
-[maneuver overlay](../cluster/display-contexts.md) composited over it, not a decoded iOS video plane.
+Otherwise the cluster shows the head unit's own native map with a transparent
+[maneuver overlay](../cluster/display-contexts.md) composited over it.
 
 ## 🔍 Watchdog hang is a separate class from any RTSP trigger
 

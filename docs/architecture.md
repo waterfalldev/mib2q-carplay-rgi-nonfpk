@@ -82,13 +82,17 @@ flowchart LR
 
 ## 🔄 Threading (highlights)
 
-- **hook**: iAP2 thread (recv/read hooks) - cover-art worker - bus connector/writer - 1 Hz timer.
+- **hook**: iAP2 thread (recv/read hooks) - cover-art worker - bus connector/writer - 1 Hz timer -
+  `altscreen` cluster-stream receiver and its short-lived command threads
+  ([most-map-view](cluster/most-map-view.md)).
 - **Java**: HMI EDT - `carplay-bus` (bus server IO, + `carplay-bus-writer`/`carplay-bus-reader`) -
   `carplay-cluster-switch` (single DM writer, [display-contexts](cluster/display-contexts.md)) - `carplay-rgi-presentation`
   (RouteGuidance worker: retry, viewport, route-text scroll ticks) - `BAPActionBlink` ([bargraph-sync](rgd/bargraph-sync.md)) -
   `RendererServer` accept/read + writer.
 - **renderer**: EGL draw loop - TCP client to Java - progress watchdog thread
-  ([maneuver-renderer](cluster/maneuver-renderer.md)); no dmdt on this branch.
+  ([maneuver-renderer](cluster/maneuver-renderer.md)) - frame-ring reader feeding the hardware
+  decoder - map thread owning window 99 ([most-map-view](cluster/most-map-view.md)); no dmdt on
+  this branch.
 
 ## Build, tests and deployment
 
