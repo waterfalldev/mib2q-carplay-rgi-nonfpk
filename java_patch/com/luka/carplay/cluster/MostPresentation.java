@@ -180,19 +180,23 @@ public final class MostPresentation {
     }
 
     /* Stock streams terminal 1 at 10 fps when the cluster reports KOMO data rate 2 and at
-     * 1 fps at data rate 1 (measured in v20).  While CarPlay guidance or a CarPlay MAP picture
-     * is active on a MOST cluster, stock's full rate becomes CARPLAY_RATE (the rate ScreenModule
-     * uses on the Virtual Cockpit) in every view it streams, the arrows and the MAP view alike
-     * (map02: MAP at 30 during guidance).  1 and 0 pass through: the rate only rises where stock
-     * already streams at full rate.  DisplayManagerMIB2High re-sends stock's last request on
-     * every composition edge, so a stock session without CarPlay keeps stock's rate. */
+     * 1 fps at data rate 1 (measured in v20).  While CarPlay's arrows are composed on a MOST
+     * cluster, stock's full rate becomes CARPLAY_RATE (the Virtual Cockpit's rate) in every view
+     * it streams; while the phone's map is composed, CARPLAY_MAP_RATE: at 30 the cluster kept
+     * dropping its KOMO data rate to 1 on the map view (map24, map25: 38 s at 1 fps), and 60
+     * showed about a picture a second (map24).  15 takes every second picture of the phone's 30.
+     * 1 and 0 pass through: the rate only rises where stock already streams at full rate.
+     * DisplayManagerMIB2High re-sends stock's last request on every composition edge, so a stock
+     * session without CarPlay keeps stock's rate. */
     static final int STOCK_FULL_RATE = 10;
     static final int CARPLAY_RATE = 30;
+    static final int CARPLAY_MAP_RATE = 15;
 
     /** The update rate the DisplayManager sends for a stock terminal request. */
     public static int substituteRate(int terminal, int rate) {
-        return terminal == TERMINAL_CLUSTER && rate == STOCK_FULL_RATE
-            && (ARROWS.applied || MAP.applied) ? CARPLAY_RATE : rate;
+        if (terminal != TERMINAL_CLUSTER || rate != STOCK_FULL_RATE) return rate;
+        if (MAP.applied) return CARPLAY_MAP_RATE;
+        return ARROWS.applied ? CARPLAY_RATE : rate;
     }
 
     /* What the requests follow: CarPlay route guidance and a live cluster stream.  Changed only

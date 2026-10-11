@@ -128,8 +128,10 @@ int screen_manage_window(screen_window_t win, const char *group) {
 }
 int screen_create_window_buffers(screen_window_t win, int count) { fw(win)->buffers = count; return 0; }
 
-/* A CPU-writable window's two buffers, handed out in turn: rows padded, the chroma plane
- * starting a little below the luma, as a driver may align it. */
+/* A CPU-writable window's MAP_BUFFERS buffers: rows padded, the chroma plane starting a little
+ * below the luma, as a driver may align it.  Like Screen, the render buffers are those not on
+ * show, the one released last first - the one the compositor may still be reading - and at
+ * most g_offer_max of them. */
 #define FAKE_STRIDE_PAD   32
 #define FAKE_UV_ROWS_PAD  2
 struct fake_buffer {
@@ -137,23 +139,32 @@ struct fake_buffer {
     unsigned char *memory;
     int stride, uv_offset;
 };
-static struct fake_buffer g_buffers[2];
-static int g_next_buffer, g_posts, g_fail_post, g_post_dirty[4];
+static struct fake_buffer g_buffers[MAP_BUFFERS];
+static int g_front = -1, g_released[MAP_BUFFERS], g_release_clock, g_offer_max = MAP_BUFFERS, g_posts, g_fail_post, g_post_dirty[4];
 static struct fake_buffer *g_posted;
 
 int screen_get_window_property_pv(screen_window_t win, int pname, void **param) {
-    struct fake_buffer *b = &g_buffers[g_next_buffer];
+    int i, j, n = 0;
     if (fw(win)->destroyed || pname != SCREEN_PROPERTY_RENDER_BUFFERS) { errno = EINVAL; return -1; }
-    g_next_buffer ^= 1;
-    if (b->win != fw(win)) {
-        free(b->memory);
-        b->win = fw(win);
-        b->stride = fw(win)->size[0] + FAKE_STRIDE_PAD;
-        b->uv_offset = b->stride * (fw(win)->size[1] + FAKE_UV_ROWS_PAD);
-        b->memory = (unsigned char *)calloc((size_t)b->uv_offset + (size_t)b->stride * fw(win)->size[1] / 2, 1);
+    for (i = 0; i < MAP_BUFFERS; ++i) {
+        struct fake_buffer *b = &g_buffers[i];
+        if (b->win != fw(win)) {
+            free(b->memory);
+            b->win = fw(win);
+            b->stride = fw(win)->size[0] + FAKE_STRIDE_PAD;
+            b->uv_offset = b->stride * (fw(win)->size[1] + FAKE_UV_ROWS_PAD);
+            b->memory = (unsigned char *)calloc((size_t)b->uv_offset + (size_t)b->stride * fw(win)->size[1] / 2, 1);
+            if (g_front == i) g_front = -1;
+        }
     }
-    param[0] = b;
-    param[1] = &g_buffers[g_next_buffer];
+    for (i = 0; i < MAP_BUFFERS; ++i) {       /* not on show, released last first */
+        if (i == g_front) continue;
+        for (j = n; j > 0 && g_released[((struct fake_buffer *)param[j - 1]) - g_buffers] < g_released[i]; --j)
+            param[j] = param[j - 1];
+        param[j] = &g_buffers[i];
+        ++n;
+    }
+    for (i = g_offer_max; i < n; ++i) param[i] = NULL;  /* Screen still holding the oldest */
     return 0;
 }
 int screen_get_buffer_property_pv(screen_buffer_t buf, int pname, void **param) {
@@ -182,6 +193,8 @@ int screen_post_window(screen_window_t win, screen_buffer_t buf, int count, cons
     }
     g_posts++;
     g_posted = (struct fake_buffer *)buf;
+    if (g_front >= 0) g_released[g_front] = ++g_release_clock;
+    g_front = (int)(g_posted - g_buffers);
     memcpy(g_post_dirty, dirty, sizeof(g_post_dirty));
     return 0;
 }
@@ -328,6 +341,11 @@ static void expect_window(const char *what, int w, int h, int transparency) {
 }
 
 static void reset_platform(void);
+
+/* The render loop checks the scene window, the map thread the map window: these tests
+ * drive both, as the two loops would. */
+static void check_outputs(void) { platform_check_output(); platform_map_check(0); }
+static void recover_windows(void) { platform_check_and_recover_window(); platform_map_check(1); }
 static void wait_backoff(void);
 
 /* Every window the renderer creates gets a new token - resize, swap-failure recreate, loss
@@ -342,7 +360,7 @@ static void every_window_new_token(void) {
     read_ready(a, sizeof(a));
     write_request("0800 0252\n");
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     expect_window("token: resize", 800, 252, -1);
     read_ready(b, sizeof(b));
     wait_backoff();
@@ -357,7 +375,7 @@ static void every_window_new_token(void) {
     expect_no_ready("first: no report before any request");
     write_request("0328 0181\n");
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     read_ready(d, sizeof(d));
     check(strncmp(d, "0328 0181 ", 10) == 0 && strlen(d) == CR_OUTPUT_READY_LENGTH,
           "first: a request for the presented size is reported at once ('%s')", d);
@@ -387,6 +405,7 @@ static void reset_platform(void) {
     g_map_create_with_ready = 0;
     g_fail_ready_unlink = 0;
     g_map.shown = 0;
+    g_map_closed = 0;
     g_posts = 0;
     g_fail_post = 0;
     unlink(CR_MOST_OUTPUT_PATH);
@@ -401,12 +420,12 @@ static struct fake_window *map_window(void) {
     return g_map.cs ? fw(cluster_surface_window(g_map.cs)) : NULL;
 }
 
-/* A live map window of w x h: opaque, managed, double-buffered NV12 the CPU writes, displayable
+/* A live map window of w x h: opaque, managed, triple-buffered NV12 the CPU writes, displayable
  * 99, no EGL; any earlier report removed before it was made. */
 static void expect_map_window(const char *what, int w, int h) {
     struct fake_window *win = map_window();
     check(win && !win->destroyed && win->displayable == CR_MAP_DISPLAYABLE_ID && win->format == 12
-          && win->usage == 0x06 && win->transparency == -1 && win->managed && win->buffers == 2
+          && win->usage == 0x06 && win->transparency == -1 && win->managed && win->buffers == MAP_BUFFERS
           && win->size[0] == w && win->size[1] == h && win->buffer_size[0] == w,
           "%s: map window 99, %dx%d NV12 the CPU writes (format %d usage 0x%x)", what, w, h,
           win ? win->format : -1, win ? win->usage : -1);
@@ -464,17 +483,17 @@ static void map_nv12_window(void) {
     reset_platform();
     check(platform_init(CR_DEFAULT_WIDTH, CR_DEFAULT_HEIGHT) == 0, "nv12: platform_init");
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     expect_no_map_window("nv12: no request");
     write_map_request("0800 0298\n");
-    platform_check_output();
+    check_outputs();
     expect_map_window("nv12: requested", 800, 298);
     expect_window("nv12: scene undisturbed", 328, 181, SCREEN_TRANSPARENCY_SOURCE_OVER);
     check(g_live_surface == 1 && platform_map_window(&w, &h, &serial) && w == 800 && h == 298,
           "nv12: platform_map_window reports it, %dx%d", w, h);
     read_map_ready(a, sizeof(a));
     check(a[0] == '\0', "nv12: not reported before its first frame ('%s')", a);
-    platform_check_output();
+    check_outputs();
     read_map_ready(a, sizeof(a));
     check(a[0] == '\0', "nv12: an unchanged request does not report an unwritten window");
     check(platform_map_nv12_buffer(&y, &y_stride, &uv, &uv_stride) && y_stride == 800 + FAKE_STRIDE_PAD
@@ -486,13 +505,34 @@ static void map_nv12_window(void) {
     expect_map_report("nv12: reported once its first frame is posted", 800, 298);
     read_map_ready(a, sizeof(a));
     check(post_map_frame(1) && g_posts == 2, "nv12: the next frame posted");
+    {
+        struct fake_buffer *recent[MAP_BUFFERS - 1] = { NULL };
+        int i, k, apart = 1, short_apart = 1;
+        recent[0] = g_posted;
+        for (i = 0; i < 8; ++i) {
+            check(post_map_frame(1), "nv12: frame %d posted", i);
+            for (k = 0; k < MAP_BUFFERS - 1; ++k) apart &= g_posted != recent[k];
+            memmove(recent + 1, recent, sizeof(recent) - sizeof(recent[0]));
+            recent[0] = g_posted;
+        }
+        check(apart, "nv12: each picture goes into the least recently posted buffer (map26-27 tearing)");
+        g_offer_max = 2;
+        for (i = 0; i < 6; ++i) {
+            check(post_map_frame(1), "nv12: Screen short, frame %d posted", i);
+            short_apart &= g_posted != recent[0] && g_posted != recent[1];
+            memmove(recent + 1, recent, sizeof(recent) - sizeof(recent[0]));
+            recent[0] = g_posted;
+        }
+        g_offer_max = MAP_BUFFERS;
+        check(short_apart, "nv12: Screen holding a buffer back, still never one of the last two posted");
+    }
     read_map_ready(b, sizeof(b));
     check(strcmp(a, b) == 0, "nv12: later frames keep the report");
     first = serial;
 
     write_map_request("0640 0240\n");
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     read_map_ready(b, sizeof(b));
     check(b[0] == '\0', "nv12: a resized window is withdrawn until its first frame");
     check(platform_map_window(&w, &h, &serial) && serial != first && w == 640 && h == 240,
@@ -516,44 +556,44 @@ static void map_nv12_window(void) {
     expect_map_report("nv12: reported again", 640, 240);
 
     windows = g_window_count;
-    platform_check_and_recover_window();
+    recover_windows();
     check(g_window_count == windows, "nv12: a healthy NV12 window is not recreated for want of an EGL surface");
 
     /* A resize the recreate backoff suppresses leaves the old, smaller window: nothing is
      * written into it until the health check completes the resize. */
     write_map_request("0800 0298\n");
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     check(map_window()->size[0] == 800 && map_window()->size[1] == 298, "nv12: resized to 800x298");
     write_map_request("0640 0240\n");
-    platform_check_output();                      /* within the 100 ms backoff: suppressed */
+    check_outputs();                      /* within the 100 ms backoff: suppressed */
     check(map_window()->size[0] == 800 && g_map.out_w == 640 && !platform_map_window(&w, &h, &serial)
           && !platform_map_nv12_buffer(&y, &y_stride, &uv, &uv_stride),
           "nv12: a suppressed resize leaves no window to draw");
     write_map_request("1024 0400\n");
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     check(map_window()->size[0] == 1024 && map_window()->size[1] == 400 && post_map_frame(5),
           "nv12: the next resize draws again");
     write_map_request("1280 0480\n");
-    platform_check_output();                      /* suppressed again */
+    check_outputs();                      /* suppressed again */
     check(!post_map_frame(6), "nv12: a stale window is never written");
     wait_backoff();
-    platform_check_and_recover_window();
+    recover_windows();
     check(map_window()->size[0] == 1280 && map_window()->size[1] == 480 && post_map_frame(7),
           "nv12: the health check completes the resize, and the window is drawn again");
     expect_map_report("nv12: and reported at its new size", 1280, 480);
 
     write_map_request("1280 04");                 /* a torn rewrite keeps the window */
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     check(map_window()->size[0] == 1280 && !map_window()->destroyed, "nv12: a torn request keeps the window");
     unlink(CR_MOST_MAP_OUTPUT_PATH);
-    platform_check_output();
+    check_outputs();
     expect_no_map_window("nv12: withdrawn");
     expect_window("nv12: scene after release", 328, 181, SCREEN_TRANSPARENCY_SOURCE_OVER);
     write_map_request("0800 0298\n");
-    platform_check_output();
+    check_outputs();
     platform_release_displayable();
     expect_no_map_window("nv12: released at shutdown");
 }
@@ -567,8 +607,8 @@ static void no_request_is_unchanged(void) {
     unsigned gen = platform_get_output(&(int){0}, &(int){0}, &(int){0}, &(int){0}, &(int){0}, &(int){0}, &(int){0});
     int windows = g_window_count, surfaces = g_surfaces_created;
     wait_backoff();
-    platform_check_output();
-    platform_check_output();
+    check_outputs();
+    check_outputs();
     check(g_window_count == windows && g_surfaces_created == surfaces, "vc: no window/surface churn");
     check(platform_get_output(&(int){0}, &(int){0}, &(int){0}, &(int){0}, &(int){0}, &(int){0}, &(int){0}) == gen,
           "vc: output generation unchanged");
@@ -586,7 +626,7 @@ static void request_resizes_running_window(void) {
     int destroyed = g_surfaces_destroyed;
     write_request("800 252\n");
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     check(old->destroyed, "most: old 328x181 window destroyed");
     check(g_surfaces_destroyed == destroyed + 1, "most: old EGL surface destroyed once");
     check(g_contexts_created == ctx_before && g_contexts_destroyed == ctx_destroyed_before,
@@ -597,8 +637,8 @@ static void request_resizes_running_window(void) {
     check(gen1 != gen0, "most: output generation bumped");
     int windows = g_window_count;
     wait_backoff();
-    platform_check_output();
-    platform_check_and_recover_window();
+    check_outputs();
+    recover_windows();
     check(g_window_count == windows, "most: unchanged request does not recreate");
     check(platform_get_output(&(int){0}, &(int){0}, &(int){0}, &(int){0}, &(int){0}, &(int){0}, &(int){0}) == gen1,
           "most: generation stable");
@@ -615,7 +655,7 @@ static void request_at_init(void) {
     expect_window("init", 800, 252, -1);
     expect_output("init", 800, 252, 171, 0, 457, 252, 1);
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     check(g_window_count == windows + 1, "init: no resize afterwards");
 }
 
@@ -654,7 +694,7 @@ static void invalid_requests(void) {
     check(platform_init(CR_DEFAULT_WIDTH, CR_DEFAULT_HEIGHT) == 0, "revert: platform_init");
     unlink(CR_MOST_OUTPUT_PATH);
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     expect_window("revert", 328, 181, SCREEN_TRANSPARENCY_SOURCE_OVER);
     expect_output("revert", 328, 181, 0, 0, 328, 181, 0);
 }
@@ -671,16 +711,16 @@ static void fixed_width_rewrite(void) {
     fputs("0656 0360\n", f);
     fclose(f);
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     expect_window("fixed: untruncated rewrite", 656, 360, -1);
     write_request("2048 1024\n");
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     f = fopen(CR_MOST_OUTPUT_PATH, "r+");                 /* variable width, untruncated */
     fputs("800 252\n", f);
     fclose(f);
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     expect_window("fixed: stale tail refused, window kept", 2048, 1024, -1);
 }
 
@@ -699,7 +739,7 @@ static void torn_reads_keep_window(void) {
         snprintf(what, sizeof(what), "torn '%s'", torn[i]);
         write_request(torn[i]);
         wait_backoff();
-        platform_check_output();
+        check_outputs();
         check(g_window_count == windows && g_surfaces_created == surfaces, "%s: window kept", what);
         expect_window(what, 800, 252, -1);
         check(platform_get_output(&(int){0}, &(int){0}, &(int){0}, &(int){0}, &(int){0}, &(int){0}, &(int){0}) == gen,
@@ -707,7 +747,7 @@ static void torn_reads_keep_window(void) {
     }
     write_request("656 360\n");                   /* the write completes */
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     expect_window("torn: completed", 656, 360, -1);
     expect_output("torn: completed", 656, 360, 2, 0, 652, 360, 1);
 }
@@ -745,22 +785,22 @@ static void suppressed_resize_completes(void) {
     check(platform_init(CR_DEFAULT_WIDTH, CR_DEFAULT_HEIGHT) == 0, "backoff: platform_init");
     write_request("800 252\n");
     wait_backoff();
-    platform_check_output();
+    check_outputs();
     expect_window("backoff: first", 800, 252, -1);
     write_request("656 362\n");
-    platform_check_output();                      /* within 100 ms of the first */
+    check_outputs();                      /* within 100 ms of the first */
     check(g_arrows.surface == EGL_NO_SURFACE && g_live_surface == 0,
           "backoff: surface torn down while suppressed");
     expect_no_ready("backoff: suppressed resize");
     expect_output("backoff: configured", 656, 362, 0, 0, 656, 362, 1);
-    platform_check_output();
+    check_outputs();
     check(g_arrows.surface == EGL_NO_SURFACE, "backoff: unchanged request does not retry by itself");
     wait_backoff();
-    platform_check_and_recover_window();          /* "window missing" */
+    recover_windows();          /* "window missing" */
     expect_window("backoff: recovered", 656, 362, -1);
     /* platform_swap's swap-failure recreate reuses the configured size too. */
     write_request("800 252\n");
-    platform_check_output();                      /* suppressed again */
+    check_outputs();                      /* suppressed again */
     check(g_arrows.surface == EGL_NO_SURFACE, "backoff: suppressed again");
     expect_no_ready("backoff: suppressed again");
     wait_backoff();
@@ -775,12 +815,12 @@ static void failed_create_retries(void) {
     write_request("800 252\n");
     wait_backoff();
     g_fail_create_window = 1;
-    platform_check_output();
+    check_outputs();
     check(g_arrows.surface == EGL_NO_SURFACE, "fail: no surface while creation fails");
     expect_no_ready("fail: window creation");
     g_fail_create_window = 0;
     wait_backoff();
-    platform_check_and_recover_window();
+    recover_windows();
     expect_window("fail: recovered", 800, 252, -1);
 }
 
@@ -790,12 +830,12 @@ static void failed_egl_resize_retries(void) {
     write_request("0800 0252\n");
     wait_backoff();
     g_fail_egl_create_surface = 1;
-    platform_check_output();
+    check_outputs();
     check(g_arrows.surface == EGL_NO_SURFACE, "EGL fail: no EGL surface after resize");
     expect_no_ready("EGL fail: resize");
     g_fail_egl_create_surface = 0;
     wait_backoff();
-    platform_check_and_recover_window();
+    recover_windows();
     expect_window("EGL fail: recovered", 800, 252, -1);
     platform_release_displayable();
     expect_no_ready("EGL fail: released");
@@ -810,7 +850,7 @@ static void unlink_failure_invalidates_old_ready(void) {
     wait_backoff();
     g_fail_ready_unlink = 1;
     g_fail_create_window = 1;
-    platform_check_output();
+    check_outputs();
     check(g_arrows.surface == EGL_NO_SURFACE, "unlink fail: resize failed after invalidation");
     FILE *f = fopen(CR_MOST_OUTPUT_READY_PATH, "r");
     int first = f ? fgetc(f) : EOF;
@@ -819,7 +859,7 @@ static void unlink_failure_invalidates_old_ready(void) {
     g_fail_ready_unlink = 0;
     g_fail_create_window = 0;
     wait_backoff();
-    platform_check_and_recover_window();
+    recover_windows();
     expect_window("unlink fail: recovered", 800, 252, -1);
 }
 

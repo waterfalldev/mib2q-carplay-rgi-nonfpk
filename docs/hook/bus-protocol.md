@@ -49,8 +49,10 @@ No application heartbeat on this leg - Java relies on TCP FIN/RST + `setKeepAliv
 - **EVT_*** hook->Java: `EVT_RGD_UPDATE` (0x0020), `EVT_COVERART` (0x0010), `EVT_CLUSTER_VIDEO`
   (0x0040, sticky text `live:b`, `stream:n`: the phone's cluster stream reaches the renderer -
   [most-map-view](../cluster/most-map-view.md)), `EVT_HELLO`, sync markers.
-- **CMD_*** Java->hook: `CMD_SYNC_REQ` (0x0100) requests a sticky snapshot. The `CMD_ALT_*` (0x0110-0x0116) defines in `bus_protocol.h` are altScreen leftovers with no
-  handler in this hook.
+- **CMD_*** Java->hook: `CMD_SYNC_REQ` (0x0100) requests a sticky snapshot. The `altscreen` module
+  handles `CMD_ALT_ZOOM` (0x0110, `[i8 MapScale steps]`) and `CMD_ALT_APPEARANCE` (0x0114,
+  `[u8 night]`) ([most-map-view](../cluster/most-map-view.md)); the other `CMD_ALT_*` defines
+  (0x0111, 0x0112, 0x0115, 0x0116) are altScreen leftovers with no handler.
 
 ## ⚙️ Threads (hook side)
 

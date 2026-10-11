@@ -224,6 +224,7 @@ public class CarplayDSILifecycleController extends AbstractDSIController impleme
                 .tmManager
                 .getNightDayModeHandler()
                 .getRequestedNightMode();
+            com.luka.carplay.cluster.ClusterVideo.getInstance().setNightMode(serviceconfiguration.startInNightMode);
             serviceconfiguration.physicalDisplayHeight = this.this$0.configuration.getCarPlayPhysicalDisplayHeight();
             serviceconfiguration.physicalDisplayWidth = this.this$0.configuration.getCarPlayPhysicalDisplayWidth();
             serviceconfiguration.inputFeatures = b0;
@@ -317,6 +318,7 @@ public class CarplayDSILifecycleController extends AbstractDSIController impleme
         public void requestNightMode(boolean flag) {
             this.this$0.logger.log(1000000, "[%1.requestNightMode] %2", LOGCLASS, Boolean.toString(flag));
             this.this$0.dsiCarplaySafe.requestNightMode(flag);
+            com.luka.carplay.cluster.ClusterVideo.getInstance().setNightMode(flag);
         }
 
         private AppState[] convertAppState2DSI(IDSIAppState[] aidsiappstate) {

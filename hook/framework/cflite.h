@@ -39,6 +39,7 @@ typedef struct {
     const void *dictionary_value_callbacks;     /* &kCFLDictionaryValueCallBacksCFLTypes */
     const void *array_callbacks;                /* &kCFLArrayCallBacksCFLTypes */
     cf_ref_t boolean_false;                     /* kCFLBooleanFalse's value (a CFBooleanRef variable) */
+    cf_ref_t boolean_true;                      /* kCFLBooleanTrue's, likewise */
 } cflite_t;
 
 /* The resolved API, or NULL (logged once) when any part is missing. */

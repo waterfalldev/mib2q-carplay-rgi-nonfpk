@@ -8,7 +8,8 @@
  * ended; the renderer's key-frame requests become forceKeyFrame, at most once per
  * ALT_KEYFRAME_MIN_MS; the session is held only while its stream can use it (released when
  * stock tears the whole session down, its stream ends, a new phone session starts, a newer
- * SETUP replaces it or no connection comes); no CF object leaks. */
+ * SETUP replaces it or no connection comes); Java's wheel steps become changeMapZoomLevel and
+ * the MMI's night mode setNightMode for the cluster display; no CF object leaks. */
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
@@ -44,6 +45,8 @@ const int kCFLDictionaryValueCallBacksCFLTypes = 2;
 const int kCFLArrayCallBacksCFLTypes = 3;
 static obj g_false = { K_BOOL, 1 << 30, "false", 0, 0, {0}, {0}, 0 };
 const void *kCFLBooleanFalse = &g_false;   /* a CFBooleanRef variable, as in MU1329's libairplay */
+static obj g_true = { K_BOOL, 1 << 30, "true", 0, 0, {0}, {0}, 0 };
+const void *kCFLBooleanTrue = &g_true;
 
 static obj *new_obj(int kind) {
     obj *o = (obj *)calloc(1, sizeof(obj));
@@ -57,7 +60,7 @@ static obj *retain(obj *o) { if (o) ++o->refs; return o; }
 void CFRelease(const void *p) {
     obj *o = (obj *)p;
     int i;
-    if (!o || o == &g_false || --o->refs > 0) return;
+    if (!o || o == &g_false || o == &g_true || --o->refs > 0) return;
     for (i = 0; i < o->count; ++i) {
         if (o->kind == K_DICT) CFRelease(o->keys[i]);
         CFRelease(o->values[i]);
@@ -160,7 +163,10 @@ const void *CFPropertyListCreateData(const void *alloc, const void *p, long form
 }
 const void *CFRetain(const void *p) { return retain((obj *)p); }
 /* Stock's command sender: records the commands the module sends, in order. */
-static char g_sent_type[16][32], g_sent_uuid[16][64], g_sent_url[16][64];
+#define SENT_MAX 64
+static char g_sent_type[SENT_MAX][32], g_sent_uuid[SENT_MAX][64], g_sent_url[SENT_MAX][64];
+static int64_t g_sent_zoom[SENT_MAX];      /* zoomDirection, or -1 */
+static int g_sent_night[SENT_MAX];         /* nightMode: 1 true, 0 false, -1 absent */
 static int g_sent;
 static const char *text_at(const void *dict, const char *key) {
     const void *k = CFStringCreateWithCString(NULL, key, 0);
@@ -181,7 +187,15 @@ int AirPlayReceiverSessionSendCommand(void *session, const void *command,
         CFRelease(reply);
     }
     CFRelease(k);
-    if (g_sent < 16) {
+    if (g_sent < SENT_MAX) {
+        const void *zk = CFStringCreateWithCString(NULL, "zoomDirection", 0);
+        obj *zoom = params ? (obj *)CFDictionaryGetValue(params, zk) : NULL;
+        CFRelease(zk);
+        g_sent_zoom[g_sent] = zoom && zoom->kind == K_NUMBER ? zoom->number : -1;
+        zk = CFStringCreateWithCString(NULL, "nightMode", 0);
+        zoom = params ? (obj *)CFDictionaryGetValue(params, zk) : NULL;
+        CFRelease(zk);
+        g_sent_night[g_sent] = zoom == &g_true ? 1 : zoom == &g_false ? 0 : -1;
         snprintf(g_sent_uuid[g_sent], sizeof(g_sent_uuid[0]), "%s", text_at(params, "uuid"));
         snprintf(g_sent_url[g_sent], sizeof(g_sent_url[0]), "%s", text_at(params, "url"));
         snprintf(g_sent_type[g_sent], sizeof(g_sent_type[0]), "%s", text_at(command, "type"));
@@ -262,6 +276,29 @@ hook_result_t bus_send_text(uint16_t type, uint8_t flags, bus_text_builder_t *b)
     pthread_mutex_unlock(&g_bus_lock);
     return HOOK_OK;
 }
+/* Java's commands: the handlers the module registers for CMD_ALT_ZOOM and CMD_ALT_APPEARANCE. */
+static bus_handler_t g_zoom_handler, g_appearance_handler;
+static int g_bus_other_handlers;
+hook_result_t bus_on(uint16_t type, bus_handler_t handler, void *ctx) {
+    (void)ctx;
+    if (type == CMD_ALT_ZOOM) g_zoom_handler = handler;
+    else if (type == CMD_ALT_APPEARANCE) g_appearance_handler = handler;
+    else ++g_bus_other_handlers;
+    return HOOK_OK;
+}
+void bus_off(uint16_t type) {
+    if (type == CMD_ALT_ZOOM) g_zoom_handler = NULL;
+    if (type == CMD_ALT_APPEARANCE) g_appearance_handler = NULL;
+}
+static void wheel(int8_t steps) {
+    uint8_t payload = (uint8_t)steps;
+    if (g_zoom_handler) g_zoom_handler(CMD_ALT_ZOOM, BUS_FLAG_BINARY, &payload, 1, NULL);
+}
+static void mmi_night(int night) {
+    uint8_t payload = (uint8_t)night;
+    if (g_appearance_handler) g_appearance_handler(CMD_ALT_APPEARANCE, BUS_FLAG_BINARY, &payload, 1, NULL);
+}
+
 static int bus_events(int *live, uint32_t *stream) {
     int n;
     pthread_mutex_lock(&g_bus_lock);
@@ -475,14 +512,17 @@ static void server_info(void) {
           && strcmp(str(cluster, "initialURL"), "maps:/car/instrumentcluster/map") == 0
           && num(cluster, "widthPixels") == 800 && num(cluster, "heightPixels") == 298
           && num(cluster, "widthPhysical") == 160 && num(cluster, "heightPhysical") == 60
-          && num(cluster, "maxFPS") == 30 && num(cluster, "features") == 2
+          && num(cluster, "maxFPS") == 60 && num(cluster, "features") == 2
           && num(cluster, "primaryInputDevice") == 3 && num(cluster, "initialViewArea") == 0,
           "the cluster display: its UUID, type 111, the cluster-map URL, the map's size, knob-driven");
     area = get(cluster, "viewAreas") ? get(cluster, "viewAreas")->values[0] : NULL;
     safe = area ? get(area, "safeArea") : NULL;
-    check(area && safe && num(area, "widthPixels") == 800 && num(safe, "heightPixels") == 298
+    check(area && safe && num(area, "widthPixels") == 800 && num(area, "heightPixels") == 298
+          && num(area, "originXPixels") == 0 && num(area, "originYPixels") == 0
+          && num(safe, "originXPixels") == 150 && num(safe, "originYPixels") == 0
+          && num(safe, "widthPixels") == 500 && num(safe, "heightPixels") == 278
           && get(area, "viewAreaTransitionControl") == &g_false && get(safe, "drawUIOutsideSafeArea") == &g_false,
-          "one view area and safe area covering the display");
+          "one view area covering the display, safe between the dials and above the street label");
     check(num((obj *)info, "features") == (0x1234 | (1LL << 26)), "features keeps stock's bits and adds bit 26");
     CFRelease(info);
     check(g_live == live, "stock's /info was released when replaced: %d live", g_live - live);
@@ -672,6 +712,86 @@ static void torn_down_session(void) {
     CFRelease(session);
 }
 
+/* `n` commands from `from` on: all changeMapZoomLevel for the cluster display, `direction`. */
+static int zooms(int from, int n, int64_t direction) {
+    int i, ok = g_sent == from + n;
+    for (i = from; ok && i < from + n; ++i)
+        ok = strcmp(g_sent_type[i], "changeMapZoomLevel") == 0 && strcmp(g_sent_uuid[i], ALT_DISPLAY_UUID) == 0
+             && g_sent_zoom[i] == direction;
+    return ok;
+}
+
+/* The steering-wheel roller over the MAP view: Java's signed MapScale steps (CMD_ALT_ZOOM)
+ * become one changeMapZoomLevel each - in for negative, out for positive, at most
+ * ALT_ZOOM_MAX_STEPS a report - only while a session is held; the handler goes at shutdown. */
+static void wheel_zoom(void) {
+    obj *session;
+    int sent, i;
+    altscreen_module_def.on_init();
+    check(g_zoom_handler && g_appearance_handler && !g_bus_other_handlers,
+          "the module takes CMD_ALT_ZOOM and CMD_ALT_APPEARANCE from the bus at init");
+    sent = g_sent;
+    wheel(1);
+    usleep(50000);
+    check(g_sent == sent, "no session held: the wheel sends nothing");
+
+    session = cluster_setup();
+    sent = g_sent;
+    wheel(-2);
+    for (i = 0; i < 100 && (g_sent < sent + 2 || session->refs != 2); ++i) usleep(10000);
+    check(zooms(sent, 2, 0) && session->refs == 2, "two steps in: two changeMapZoomLevel, zoomDirection 0");
+    sent = g_sent;
+    wheel(1);
+    for (i = 0; i < 100 && (g_sent < sent + 1 || session->refs != 2); ++i) usleep(10000);
+    check(zooms(sent, 1, 1), "a step out: zoomDirection 1");
+    sent = g_sent;
+    wheel(100);
+    for (i = 0; i < 100 && (g_sent < sent + ALT_ZOOM_MAX_STEPS || session->refs != 2); ++i) usleep(10000);
+    usleep(50000);
+    check(zooms(sent, ALT_ZOOM_MAX_STEPS, 1) && session->refs == 2,
+          "a burst is capped at %d steps; every command thread let its session reference go", ALT_ZOOM_MAX_STEPS);
+    sent = g_sent;
+    wheel(0);
+    usleep(50000);
+    check(g_sent == sent, "no step, no command");
+
+    altscreen_module_def.airplay.on_session_teardown(session, 1);
+    check(refs_become(session, 1), "the session goes as before: %d refs", session->refs);
+    CFRelease(session);
+    altscreen_module_def.on_shutdown();
+    check(!g_zoom_handler && !g_appearance_handler, "and the handlers at shutdown");
+}
+
+/* The MMI's night mode (CMD_ALT_APPEARANCE): kept while no session is held and sent after the
+ * next showUI; sent at once while one is; always as setNightMode for the cluster display. */
+static void night_mode(void) {
+    obj *session;
+    int sent, i;
+    altscreen_module_def.on_init();
+    sent = g_sent;
+    mmi_night(1);
+    usleep(50000);
+    check(g_sent == sent, "no session held: the night mode is only kept");
+    session = cluster_setup();
+    for (i = 0; i < 100 && g_sent < sent + 4; ++i) usleep(10000);
+    check(g_sent == sent + 4 && strcmp(g_sent_type[sent], "showUI") == 0
+          && strcmp(g_sent_type[sent + 1], "setNightMode") == 0 && g_sent_night[sent + 1] == 0
+          && strcmp(g_sent_type[sent + 2], "setNightMode") == 0 && g_sent_night[sent + 2] == 1
+          && strcmp(g_sent_uuid[sent + 2], ALT_DISPLAY_UUID) == 0 && strcmp(g_sent_type[sent + 3], "forceKeyFrame") == 0,
+          "the next showUI is followed by setNightMode false then true (a real switch) for the cluster "
+          "display, then forceKeyFrame");
+    sent = g_sent;
+    mmi_night(0);
+    for (i = 0; i < 100 && (g_sent < sent + 1 || session->refs != 2); ++i) usleep(10000);
+    check(g_sent == sent + 1 && strcmp(g_sent_type[sent], "setNightMode") == 0 && g_sent_night[sent] == 0
+          && strcmp(g_sent_uuid[sent], ALT_DISPLAY_UUID) == 0 && session->refs == 2,
+          "a change while the session is held: setNightMode false at once");
+    altscreen_module_def.airplay.on_session_teardown(session, 1);
+    check(refs_become(session, 1), "the session goes as before: %d refs", session->refs);
+    CFRelease(session);
+    altscreen_module_def.on_shutdown();
+}
+
 int main(void) {
     int live;
     server_info();
@@ -681,6 +801,8 @@ int main(void) {
     stream_decryption();
     live_stream();
     torn_down_session();
+    wheel_zoom();
+    night_mode();
     check(g_live == live, "no CF object leaks: %d live", g_live - live);
     shm_unlink(CVR_SHM_NAME);
     printf("altscreen_hook_test: %d checks, %d failures\n", checks, failures);

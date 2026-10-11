@@ -11,21 +11,28 @@ sources:
 
 # Steering-wheel roller - zoom & route-info toggle
 
-The left MFW roller has two axes: **rotation** and **press**. On this branch the cluster shows the
-stock native map, so rotation is left to stock; only the press is repurposed.
+The left MFW roller has two axes: **rotation** and **press**. Rotation zooms the stock native map,
+except while a MOST cluster's MAP view shows the phone's map, which it then zooms instead; the
+press is repurposed.
 
 ## 📋 Context
 
-> MFW roller -> **rotation** = stock native-map zoom - **press** = cluster route-info toggle ->
+> MFW roller -> **rotation** = native-map zoom, or the phone's cluster map on the MOST MAP view -
+> **press** = cluster route-info toggle ->
 > [bap-fctids](../rgd/bap-fctids.md) FctID 19 -> [rgd-activation](../rgd/rgd-activation.md).
 
-## 🔄 Rotation (zoom) -> stock
+## 🔄 Rotation (zoom)
 
-The roller sends rotation as Navigation-BAP `MapScale.steps`. Since the cluster renders the stock
-native map (no CarPlay video plane to zoom), `ScreenCombiBAPListener` does not override `setMapScale`:
-the step falls through to stock, which zooms the native cluster map exactly as stock does. (The
-listener only observes FctID 44 visibility and FctID 54 stage for the KDK layers - see
-[kdk-geometry](../cluster/kdk-geometry.md).)
+The roller sends rotation as Navigation-BAP `MapScale.steps` (positive zooms out).
+`ScreenCombiBAPListener.setMapScale` hands them to `ClusterVideo.zoom` first, which takes them
+only while the phone's cluster stream is live and the MAP view composes it
+([most-map-view](../cluster/most-map-view.md)): it sends them to the hook as `CMD_ALT_ZOOM`
+(at most 8 a report), and the hook asks the phone for one `changeMapZoomLevel` per step on the
+cluster display (the MU1329 reference's command). Stock then gets 0 steps: its map keeps its
+scale and it still answers the request (`updateMapScale`). Otherwise - an FPK cluster, the
+arrows view alone, no live stream, no hook connection - the steps fall through to stock, which
+zooms the native cluster map exactly as stock does. (The listener also observes FctID 44
+visibility and FctID 54 stage for the KDK layers - see [kdk-geometry](../cluster/kdk-geometry.md).)
 
 ## ⚙️ Press (OK) -> route-info toggle
 

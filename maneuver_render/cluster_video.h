@@ -15,7 +15,7 @@
 void cluster_video_start(void);
 void cluster_video_stop(void);
 
-/* Whether the map window wants decoded pictures; from the render thread, every frame. */
+/* Whether the map window wants decoded pictures; from the map thread, every pass. */
 void cluster_video_want(int wanted);
 
 #endif
