@@ -13,41 +13,6 @@ on the instrument cluster, with CarPlay route guidance alongside.
 
 **Disclaimer:** Use at your own risk. These patches modify firmware binaries and system configurations on your infotainment unit. Always back up all original files before making any changes. The authors are not responsible for any damage, bricked devices, or warranty issues resulting from use of these patches.
 
-## 🖼️ Gallery
-
-<sub>Route guidance screenshots from the upstream project.</sub>
-
-<p align="center">
-  <img src="assets/gallery/maneuver_demo.gif" width="90%" /><br />
-  <sub>Cluster maneuver renderer driven through a demo route</sub>
-</p>
-
-**Virtual Cockpit: route guidance from the maneuver renderer**
-
-<p align="center">
-  <img src="assets/gallery/vc_day_nav.jpeg" height="200" />
-  <img src="assets/gallery/vc_night_nav.jpeg" height="200" />
-</p>
-<p align="center">
-  <img src="assets/gallery/vc_full_map.jpeg" height="200" />
-  <img src="assets/gallery/vc_lane_guidance.jpeg" height="200" />
-</p>
-
-**Audi front PDC no longer hides CarPlay** · **Cover art on the cluster**
-
-<p align="center">
-  <img src="assets/gallery/pdc_over_carplay.jpeg" width="45%" />
-  <img src="assets/gallery/cover_art.jpeg" width="45%" />
-</p>
-
-**Head-up display**
-
-<p align="center">
-  <img src="assets/gallery/IMG_0623.jpeg" width="30%" />
-  <img src="assets/gallery/IMG_6302.jpeg" width="30%" />
-  <img src="assets/gallery/IMG_0599.jpeg" width="30%" />
-</p>
-
 ## 📍 Contents
 
 - [Gallery](#-gallery)
