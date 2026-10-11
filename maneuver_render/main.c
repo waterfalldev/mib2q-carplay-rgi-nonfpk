@@ -27,8 +27,14 @@
 
 #include "platform.h"
 
+/* TARGET_FPS is the unit of every per-frame animation constant (render_frame_step) and the
+ * first idle poll rate.  Frames are drawn at PACED_FPS, evenly spaced (frame_pacer.h): nfc19
+ * held 20 on the car; nfc20 paces at 30. */
 #define TARGET_FPS     30
 #define FRAME_TIME_NS  (1000000000L / TARGET_FPS)
+#define PACED_FPS      30
+#include "frame_pacer.h"
+#include "frame_profile.h"
 #include "gl_compat.h"
 #include "render.h"
 #include "arrow_progress.h"
@@ -60,6 +66,43 @@ static int timespec_elapsed_at_least(const struct timespec *now,
 
     dns = now->tv_nsec - last->tv_nsec;
     return dns >= nanoseconds;
+}
+
+static int64_t timespec_ns(const struct timespec *t) {
+    return (int64_t)t->tv_sec * 1000000000LL + t->tv_nsec;
+}
+
+/* Where the slowest frame of each pacing window went (frame_profile.h): the loop's stages,
+ * timed at the watchdog's stage marks, and these events. */
+static cr_frame_profile_t g_profile;
+enum {
+    EV_MANEUVER = 1, EV_PROMOTE = 2, EV_COMMIT = 4, EV_REFRESH = 8, EV_REVEAL = 16,
+    EV_CLEAR = 32, EV_SCENE = 64, EV_CAPTURE = 128, EV_OUTPUT = 256
+};
+static const char *const g_event_names[] = {
+    "maneuver", "promote", "commit", "refresh", "reveal", "clear", "scene", "capture", "output", NULL
+};
+static const char *watch_stage_name(int stage);
+
+/* One pacing line, with the transition-mask layers painted since the previous one (each
+ * set's layers once per push, not every frame) and the most painted in one frame (one set's
+ * while the next maneuver is invisible), then the slowest frame of the same window. */
+static unsigned g_frame_masks_peak;
+static void log_pacing(const char *line, int64_t now_ns) {
+    static unsigned last;
+    char slowest[256];
+    unsigned painted = render_mask_paint_count();
+    fprintf(stderr, "%s pacing: %s masks=%u peak=%u\n", log_stamp(), line, painted - last,
+            g_frame_masks_peak);
+    last = painted;
+    g_frame_masks_peak = 0;
+    if (cr_profile_report(&g_profile, now_ns, watch_stage_name, g_event_names, slowest, sizeof(slowest)))
+        fprintf(stderr, "%s slowest: %s\n", log_stamp(), slowest);
+}
+
+static void sleep_ns(int64_t ns) {
+    struct timespec ts = { (time_t)(ns / 1000000000LL), (long)(ns % 1000000000LL) };
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) { }
 }
 
 /* ================================================================
@@ -115,6 +158,7 @@ static void scene_paint(void *ctx,const maneuver_state_t *m,float x,float y,floa
     (void)ctx;cr_scene_paint(engine_scene(m),x,y,c,s);
 }
 static void prepare_engine_scene(cr_scene_t *scene,const maneuver_state_t *m) {
+    int next=m==&g_engine.next;
     if(!scene)return;
     cr_scene_input_t in;cr_scene_view_t view;
     memset(&in,0,sizeof(in));in.maneuver=*m;
@@ -125,9 +169,14 @@ static void prepare_engine_scene(cr_scene_t *scene,const maneuver_state_t *m) {
         fprintf(stderr,"scene: invalid input; ordinary maneuver fallback\n");return;
     }
     const cr_scene_info_t *info=cr_scene_info(scene);
-    if(info->builds!=before)
+    if(info->builds!=before) {
         fprintf(stderr,"scene: kind=%d fallback=%d commands=%u\n",
             info->kind,info->fallback,info->command_count);
+        /* A rebuilt scene paints different masks; cached mask sets must not outlive it.  The
+         * next maneuver's scene paints set 1 only; the current one's also moves set 1. */
+        if(next)render_invalidate_next_masks();else render_invalidate_masks();
+        cr_profile_event(&g_profile,EV_SCENE);
+    }
 }
 static void prepare_engine_scenes(void) {
     prepare_engine_scene(g_engine.current_scene,&g_engine.current);
@@ -146,7 +195,8 @@ typedef enum {
     WATCH_LANE_FRAMING, WATCH_PREPARE, WATCH_BEGIN_FRAME,
     WATCH_SCENE_DRAW, WATCH_LANE_DRAW, WATCH_END_FRAME,
     WATCH_SCREENSHOT, WATCH_SWAP, WATCH_WINDOW_PROBE,
-    WATCH_HEARTBEAT, WATCH_SLEEP, WATCH_IDLE
+    WATCH_HEARTBEAT, WATCH_SLEEP, WATCH_IDLE,
+    WATCH_SCENE_PREPARE, WATCH_CAPTURE, WATCH_YIELD, WATCH_FOCUS, WATCH_OUTPUT_CHECK
 } renderer_watch_stage_t;
 static unsigned long g_loop_progress;
 static int g_watch_stage = WATCH_STARTUP;
@@ -154,7 +204,10 @@ static volatile int g_renderer_running = 1;
 static volatile int g_render_loop_started;
 
 static void watch_stage(renderer_watch_stage_t stage) {
+    struct timespec now;
     __sync_lock_test_and_set(&g_watch_stage, (int)stage);
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    cr_profile_mark(&g_profile, (int)stage, timespec_ns(&now));
 }
 
 static const char *watch_stage_name(int stage) {
@@ -176,6 +229,11 @@ static const char *watch_stage_name(int stage) {
     case WATCH_HEARTBEAT: return "heartbeat";
     case WATCH_SLEEP: return "sleep";
     case WATCH_IDLE: return "idle";
+    case WATCH_SCENE_PREPARE: return "scene-prepare";
+    case WATCH_CAPTURE: return "most-capture";
+    case WATCH_YIELD: return "yield";
+    case WATCH_FOCUS: return "focus";
+    case WATCH_OUTPUT_CHECK: return "output-check";
     default: return "unknown";
     }
 }
@@ -229,6 +287,7 @@ static void engine_apply_maneuver(const maneuver_state_t *state,double now) {
         cr_progress_reset(&g_arrow);
         maneuver_set_slide(1.0f);
         render_invalidate_masks();
+        cr_profile_event(&g_profile, EV_MANEUVER);
         g_engine.dirty = 1;
         return;
     }
@@ -250,7 +309,8 @@ static void engine_apply_maneuver(const maneuver_state_t *state,double now) {
     cr_progress_begin_handoff(&g_arrow,now);
     maneuver_start_push();
     g_engine.phase = ENGINE_PUSHING;
-    render_invalidate_masks();
+    render_invalidate_next_masks();     /* the current maneuver's set 0 stays valid */
+    cr_profile_event(&g_profile, EV_MANEUVER);
     g_engine.dirty = 1;
     fprintf(stderr, "engine: new maneuver icon=%d\n", state->icon);
 }
@@ -262,12 +322,14 @@ static void engine_refresh_maneuver(const maneuver_state_t *state,double now) {
         engine_apply_maneuver(state,now);
         return;
     }
+    /* Only painted masks go stale: a pending maneuver has none, the next one set 1, and the
+     * current one set 0 and, through the push transform, set 1. */
     if (g_engine.has_pending) {g_engine.pending = *state;}
     else {
-        if (g_engine.has_next) {g_engine.next = *state;}
-        else {g_engine.current = *state;}
+        if (g_engine.has_next) {g_engine.next = *state;render_invalidate_next_masks();}
+        else {g_engine.current = *state;render_invalidate_masks();}
     }
-    render_invalidate_masks();
+    cr_profile_event(&g_profile, EV_REFRESH);
     g_engine.dirty = 1;
 }
 
@@ -286,7 +348,9 @@ static void engine_promote_pending(double now) {
     cr_progress_begin_handoff(&g_arrow,now);
     cr_progress_set(&g_arrow,g_pending_progress_level,g_pending_progress_state,now);
     maneuver_start_push();g_engine.phase=ENGINE_PUSHING;
-    render_invalidate_masks();g_engine.dirty=1;
+    /* Set 0 is the current maneuver's: painted during the slide-in, or due after a commit. */
+    render_invalidate_next_masks();g_engine.dirty=1;
+    cr_profile_event(&g_profile,EV_PROMOTE);
     fprintf(stderr,"engine: promoting queued icon=%d\n",g_engine.next.icon);
 }
 
@@ -315,6 +379,7 @@ static void clear_maneuver(void) {
     g_engine.phase       = ENGINE_IDLE;
     maneuver_set_slide(1.0f);
     render_invalidate_masks();
+    cr_profile_event(&g_profile, EV_CLEAR);
     cr_progress_reset(&g_arrow);
     g_persp_deferred = 0;
     g_fade_active    = 0;
@@ -338,6 +403,7 @@ static void engine_tick(double now) {
             maneuver_commit_pushed_state(&g_engine.current);
             cr_progress_finish_handoff(&g_arrow,now);
             render_invalidate_masks();
+            cr_profile_event(&g_profile, EV_COMMIT);
             g_engine.dirty = 1;
 
             if (g_engine.has_pending) {
@@ -394,6 +460,7 @@ static void apply_output(void) {
         fprintf(stderr, "maneuver_render: rendering %dx%d; free memory %ld KB before, %ld KB after\n",
                 rw, rh, free_before, platform_free_memory_kb());
     }
+    cr_profile_event(&g_profile, EV_OUTPUT);
     g_engine.dirty = 1;
 }
 
@@ -420,6 +487,7 @@ static void capture_most_frame(const struct timespec *now) {
     last = *now;
     captured = g_engine.current;
     captured_output = output;
+    cr_profile_event(&g_profile, EV_CAPTURE);
     if (render_capture_output(CR_MOST_FRAME_PATH) == 0) {
         if (!logged_ok) fprintf(stderr, "maneuver_render: output frame saved to %s\n", CR_MOST_FRAME_PATH);
         logged_ok = 1;
@@ -563,6 +631,10 @@ int main(int argc, char **argv) {
     int dirty = 1;
     int running = 1;
     int announced_first_frame = 0;
+    static cr_frame_pacer_t pacer;
+    cr_pacer_init(&pacer, 1000000000LL / PACED_FPS);
+    fprintf(stderr, "maneuver_render: frames paced at %d fps\n", PACED_FPS);
+    cr_profile_init(&g_profile);
     g_render_loop_started = 1;
 
 #ifdef CR_DIAG_FRAME_LOG
@@ -583,6 +655,8 @@ int main(int argc, char **argv) {
         watch_stage(WATCH_POLL);
         __sync_fetch_and_add(&g_loop_progress, 1);
         clock_gettime(CLOCK_MONOTONIC, &t_start);
+        cr_profile_begin(&g_profile, WATCH_POLL, timespec_ns(&t_start));
+        unsigned masks_at_start = render_mask_paint_count();
 #ifdef CR_DIAG_FRAME_LOG
         stat_loop_iters++;
 #endif
@@ -621,7 +695,7 @@ int main(int argc, char **argv) {
         int progress_state=CR_PROGRESS_OFF;
         double progress_now=(double)t_start.tv_sec+t_start.tv_nsec*1e-9;
         /* Animations advance by elapsed time, not by frames: at 20 fps a per-frame step
-         * made every slide 1.5x slower.  Iterations that render are paced by the swap, so
+         * made every slide 1.5x slower.  Iterations that render are paced (frame_pacer.h), so
          * the gap since the previous rendering iteration is the frame time.  After idle
          * the first frame is one step; a stall longer than 4 frames slows, never jumps. */
         {
@@ -759,6 +833,7 @@ int main(int argc, char **argv) {
                 g_engine.phase = ENGINE_IDLE;
                 maneuver_set_slide(1.0f);
                 render_invalidate_masks();
+                cr_profile_event(&g_profile, EV_REVEAL);
                 g_engine.dirty = 1;
                 /* This direct reveal deliberately bypasses ENGINE_SLIDING_IN,
                  * whose settle edge normally consumes the deferred presentation
@@ -783,9 +858,13 @@ int main(int argc, char **argv) {
         if(cr_progress_tick(&g_arrow,progress_now)) g_engine.dirty=1;
 
         /* Tick engine state machine */
+        watch_stage(WATCH_SCENE_PREPARE);
         prepare_engine_scenes();
+        watch_stage(WATCH_ENGINE);
         engine_tick(progress_now);
+        watch_stage(WATCH_SCENE_PREPARE);
         prepare_engine_scenes();
+        watch_stage(WATCH_ENGINE);
 
         /* Update framebuffer size (HiDPI) */
         int new_w, new_h;
@@ -830,6 +909,7 @@ int main(int argc, char **argv) {
         g_engine.dirty = 0;
 
         int rendered_this_frame = 0;
+        int64_t swap_ns = 0;
         if (dirty) {
             rendered_this_frame = 1;
 #ifdef CR_DIAG_FRAME_LOG
@@ -867,11 +947,16 @@ int main(int argc, char **argv) {
             watch_stage(WATCH_SCREENSHOT);
             if (got_screenshot)
                 save_screenshot(fb_w, fb_h, screenshot_label);
+            watch_stage(WATCH_CAPTURE);
             capture_most_frame(&t_start);
 
+            struct timespec t_swap_start, t_swap_end;
+            clock_gettime(CLOCK_MONOTONIC, &t_swap_start);
             watch_stage(WATCH_SWAP);
             int swap_ok = platform_swap();
             watch_stage(WATCH_IDLE);
+            clock_gettime(CLOCK_MONOTONIC, &t_swap_end);
+            swap_ns = timespec_ns(&t_swap_end) - timespec_ns(&t_swap_start);
             if (!swap_ok) {
                 /* platform_swap recreated the QNX surface.  Repaint it on the
                  * next iteration even when the engine is otherwise idle.  Also
@@ -895,7 +980,9 @@ int main(int argc, char **argv) {
              * (~14-16 vsync cycles).  A cooperative yield keeps the
              * compositor's worker scheduled in time for the next frame
              * — much smoother on QNX displayable composition. */
+            watch_stage(WATCH_YIELD);
             sched_yield();
+            watch_stage(WATCH_IDLE);
 
 #ifdef CR_DIAG_FRAME_LOG
             struct timespec rt_end;
@@ -955,7 +1042,9 @@ int main(int argc, char **argv) {
                     && !render_is_animating()
                     && timespec_elapsed_at_least(&t_start, &focus_last, 30, 0)) {
                 focus_last = t_start;
+                watch_stage(WATCH_FOCUS);
                 platform_ensure_focus();
+                watch_stage(WATCH_IDLE);
             }
         }
 
@@ -989,7 +1078,7 @@ int main(int argc, char **argv) {
             static struct timespec output_last = {0, 0};
             if (timespec_elapsed_at_least(&t_start, &output_last, 1, 0)) {
                 output_last = t_start;
-                watch_stage(WATCH_WINDOW_PROBE);
+                watch_stage(WATCH_OUTPUT_CHECK);
                 platform_check_output();
                 apply_output();
                 watch_stage(WATCH_IDLE);
@@ -1021,19 +1110,41 @@ int main(int argc, char **argv) {
             }
         }
 
-        /* Adaptive IDLE pacing (proven approach from the c_render history, commit e26cce5).
-         * ACTIVE output pacing rides eglSwapBuffers (QNX: eglSwapInterval(2); macOS below) — NEVER
-         * nanosleep, because nanosleep on QNX 6.5 rounds up to the kernel timer tick and won't hold
-         * a precise 30 Hz.  But when the loop produced NO frame this iteration (idle: no route / no
-         * maneuver) there is no swap to pace it, so an always-on renderer would busy-spin 100% CPU.
-         * Throttle idle polling: 30 Hz for the first second, then 10 Hz (1–5 s), then 3 Hz (>5 s);
-         * any activity snaps back to 30 Hz.  Idle timing needs no precision → the QNX nanosleep
-         * granularity is harmless here. */
+        /* ACTIVE pacing, every platform: after a rendered frame sleep to the next PACED_FPS
+         * deadline (frame_pacer.h).  It used to ride eglSwapBuffers alone (QNX interval 2),
+         * which the car did not hold: frames came at up to 53/s and the rate wandered.  The
+         * QNX 6.5 nanosleep tick rounding that once ruled out a sleep does not accumulate,
+         * because deadlines chain from the previous deadline, not from the wake-up.
+         *
+         * Adaptive IDLE pacing (proven approach from the c_render history, commit e26cce5):
+         * when the loop produced NO frame this iteration (idle: no route / no maneuver) an
+         * always-on renderer would busy-spin 100% CPU.  Throttle idle polling: 30 Hz for the
+         * first second, then 10 Hz (1–5 s), then 3 Hz (>5 s); any activity snaps back to
+         * 30 Hz.  Idle timing needs no precision. */
         static int idle_frames = 0;
         g_anim_prev_rendered = rendered_this_frame;
+        char pacing_line[160];
+        struct timespec t_end;
+        clock_gettime(CLOCK_MONOTONIC, &t_end);
+        unsigned frame_masks = render_mask_paint_count() - masks_at_start;
         if (rendered_this_frame) {
             idle_frames = 0;
+            int64_t wait_ns = cr_pacer_frame_done(&pacer, timespec_ns(&t_start), swap_ns,
+                                                  timespec_ns(&t_end));
+            cr_profile_end(&g_profile, 1, frame_masks, wait_ns, timespec_ns(&t_end));
+            if (frame_masks > g_frame_masks_peak) g_frame_masks_peak = frame_masks;
+            if (cr_pacer_report(&pacer, timespec_ns(&t_end), pacing_line, sizeof(pacing_line)))
+                log_pacing(pacing_line, timespec_ns(&t_end));
+            if (wait_ns > 0) {
+                watch_stage(WATCH_SLEEP);
+                sleep_ns(wait_ns);
+                watch_stage(WATCH_IDLE);
+            }
         } else {
+            cr_pacer_idle(&pacer);
+            cr_profile_end(&g_profile, 0, frame_masks, 0, timespec_ns(&t_end));
+            if (cr_pacer_report(&pacer, timespec_ns(&t_end), pacing_line, sizeof(pacing_line)))
+                log_pacing(pacing_line, timespec_ns(&t_end));
             if (idle_frames < 10000) idle_frames++;
             long idle_ns = (idle_frames < TARGET_FPS)     ? FRAME_TIME_NS     /* <1 s: 30 Hz */
                          : (idle_frames < TARGET_FPS * 5) ? 100L * 1000000L  /* 1–5 s: 10 Hz */
@@ -1043,26 +1154,6 @@ int main(int argc, char **argv) {
             nanosleep(&ts, NULL);
             watch_stage(WATCH_IDLE);
         }
-
-#ifndef PLATFORM_QNX
-        /* macOS/dev only: GLFW swap interval 0 gives no vsync throttle, so pace ACTIVE frames to
-         * 30 FPS here. QNX requests interval 2 on each surface; MOST capture has its own clock. */
-        if (rendered_this_frame) {
-            struct timespec t_end;
-            clock_gettime(CLOCK_MONOTONIC, &t_end);
-            long elapsed_ns = (t_end.tv_sec - t_start.tv_sec) * 1000000000L
-                            + (t_end.tv_nsec - t_start.tv_nsec);
-            long sleep_ns = FRAME_TIME_NS - elapsed_ns;
-            if (sleep_ns > 0) {
-                struct timespec ts = { sleep_ns / 1000000000L, sleep_ns % 1000000000L };
-                watch_stage(WATCH_SLEEP);
-                nanosleep(&ts, NULL);
-                watch_stage(WATCH_IDLE);
-            }
-        }
-#else
-        (void)t_start;
-#endif
 
 #ifdef CR_DIAG_FRAME_LOG
         /* 1 Hz render-loop stats.  Steady state should report

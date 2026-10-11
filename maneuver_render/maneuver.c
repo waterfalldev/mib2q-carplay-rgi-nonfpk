@@ -2184,6 +2184,7 @@ static void draw_supplied_scene(const maneuver_state_t *s,float tx,float ty,floa
 }
 
 void maneuver_draw(const maneuver_state_t *s, const maneuver_state_t *next_state) {
+    render_select_mask_set(0);                /* every path starts on the current maneuver's set */
     if (s->icon == ICON_NONE && next_state == NULL) {
         g_flag_active = 0;
         render_begin_outline_mask();
@@ -2208,12 +2209,15 @@ void maneuver_draw(const maneuver_state_t *s, const maneuver_state_t *next_state
     }
 
     /* Combined path: when pushing with a known next maneuver, build joined route
-     * after the draw_* pass so arrow slides continuously between maneuvers. */
+     * after the draw_* pass so arrow slides continuously between maneuvers.  The current
+     * maneuver's masks are set 0 and the next one's set 1; each is painted once after an
+     * invalidation and then only composited (a new next maneuver invalidates set 1 only).
+     * Push frames still run the whole draw below, whose painting replays without GPU work
+     * once clean.  A frame paints at most one set while the next maneuver is invisible. */
     int combined = (next_state != NULL && maneuver_is_pushing());
+    int current_painted = combined && render_masks_dirty();
     if (!combined)
         g_combined_window_active = 0;
-    else
-        render_invalidate_masks();  /* force re-render every frame for crossfade */
 
     if (!combined) {
         if (!g_camera_prepared_this_frame) {
@@ -2262,56 +2266,21 @@ void maneuver_draw(const maneuver_state_t *s, const maneuver_state_t *next_state
     }
 
     /* If masks are cached and still valid, just re-composite + rebuild mesh at current slide
-     * (handles perspective animation and route animation without re-rendering masks) */
-    if (!render_masks_dirty()) {
+     * (handles perspective animation and route animation without re-rendering masks).
+     * Not for a push: its second pass and joined route are built below. */
+    if (!combined && !render_masks_dirty()) {
         compute_slide_params();
-        if (combined)
-            update_combined_camera();
-        /* Update tip_blend on cached frames:
-         * - Pushing FROM ARRIVED: reverse morph bulb→arrow (1→0)
-         * - Settled ARRIVED: forward morph via g_tip_morph_t */
-        if (combined && s->icon == ICON_ARRIVED) {
-            float range = g_anim_target - g_anim_start;
-            float progress = (range > 0.01f) ? (g_route_slide - g_anim_start) / range : 1.0f;
-            if (progress < 0.0f) progress = 0.0f;
-            if (progress > 1.0f) progress = 1.0f;
-            /* Morph out in first 40% of push (synced with morph-in timing) */
-            float morph_out = (progress < 0.4f) ? (1.0f - progress / 0.4f) : 0.0f;
-            g_route_path.tip_blend = morph_out;
-            g_route_path.bulb_radius = ARRIVE_INNER_R - OL_W;
-        } else if (s->icon == ICON_ARRIVED) {
+        /* Settled ARRIVED: forward tip morph via g_tip_morph_t */
+        if (s->icon == ICON_ARRIVED)
             g_route_path.tip_blend = g_tip_morph_t;
-        }
         if (g_route_animating || g_route_slide != 1.0f
                 || (g_tip_morph_active && g_tip_morph_t < 1.0f)) {
             /* Rebuild mesh at current slide (path segments still cached in g_route_path) */
             route_extrude_body();
         }
-        /* Composite with road fade during push (spatial crossfade) */
-        if (combined) {
-            float pp = spatial_xfade();
-            float base_alpha = render_get_global_alpha();
-            render_set_global_alpha(base_alpha * (1.0f - pp));
-            render_composite();
-            render_set_global_alpha(base_alpha);
-        } else {
-            render_composite();
-        }
-        /* Crossfade flags on cached frames (spatial) */
-        if (s->icon == ICON_ARRIVED || (combined && next_state != NULL && next_state->icon == ICON_ARRIVED)) {
-            float pp = combined ? spatial_xfade() : 0.0f;
-            float ba = render_get_global_alpha();
-            if (s->icon == ICON_ARRIVED) {
-                render_set_global_alpha(ba * (1.0f - pp));
-                render_sprite_flag(g_arrive_flag_dx, g_arrive_flag_dy, ARRIVE_FLAG_SZ, (int)g_flag_frame);
-            }
-            if (combined && next_state != NULL && next_state->icon == ICON_ARRIVED) {
-                render_set_global_alpha(ba * pp);
-                render_sprite_flag(g_combined_flag_x, g_combined_flag_y, ARRIVE_FLAG_SZ,
-                                   (int)g_flag_frame);
-            }
-            render_set_global_alpha(ba);
-        }
+        render_composite();
+        if (s->icon == ICON_ARRIVED)
+            render_sprite_flag(g_arrive_flag_dx, g_arrive_flag_dy, ARRIVE_FLAG_SZ, (int)g_flag_frame);
         route_draw_with_fade();
         if (g_route_debug)
             rpath_draw_debug(&g_route_path, g_t_tail, g_t_head);
@@ -2483,9 +2452,13 @@ void maneuver_draw(const maneuver_state_t *s, const maneuver_state_t *next_state
             /* Reset depth so second composite doesn't fight first */
             render_reset_depth();
 
-            /* Pass 2: draw next maneuver masks into FBO, composite fading in.
+            /* Pass 2: draw next maneuver masks into set 1, composite fading in.
              * Save combined route path — DISPATCH_DRAW overwrites g_route_path. */
             g_saved_path = g_route_path;
+            render_select_mask_set(1);
+            /* This frame painted set 0 and the next maneuver is not yet visible: set 1 waits
+             * for the next frame, so the two sets' mask work is spread over two frames. */
+            if (current_painted && pp <= 0.0f) render_hold_mask_set();
             g_masks_only_mode = 1;
             if(scene_supplied(next_state))draw_supplied_scene(next_state,tx,ty,cos_r,sin_r);
             else {
@@ -2499,6 +2472,7 @@ void maneuver_draw(const maneuver_state_t *s, const maneuver_state_t *next_state
 
             render_set_global_alpha(base_alpha * pp);
             render_composite();
+            render_select_mask_set(0);
 
             render_set_global_alpha(base_alpha);
         }

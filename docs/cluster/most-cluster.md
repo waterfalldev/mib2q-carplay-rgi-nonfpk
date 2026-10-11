@@ -16,6 +16,7 @@ sources:
   - test: tests/MostViewHandshakeTest.java
   - test: tests/most/most_output_platform_test.c
   - test: tests/most/most_output_render_test.c
+  - test: tests/most/most_mask_cache_test.c
 ---
 
 # MOST clusters - CarPlay maneuvers in the stock arrows view
@@ -89,8 +90,10 @@ On an opaque MOST output the scene renders at the content size (457x252) with FX
 supersampling, and the final pass copies it 1:1 into the window. The transition masks keep 1.6x
 density (2560x1411 at this size, covering the whole slide): below about 1.5 the arrow shows dark
 notches. The Virtual Cockpit keeps upstream's 1.6x supersampling. The layout stays in the same
-328x181 logical units. This contribution preserves the existing renderer loop;
-shared frame pacing, mask caching and profiling are separate changes on the fork.
+328x181 logical units. Frames are paced evenly at 30 fps.
+
+Each push paints the current and next maneuver's masks once into two mask sets and then only
+composites them. A frame paints at most one set while the next maneuver is still invisible.
 
 If the render targets exceed the GL size limits, fail to allocate or are incomplete, the renderer
 falls back to the platform size and does not try that size again. The log records the render
@@ -124,8 +127,7 @@ encoding where none exists.
 - Vehicle-tested on one MHI2Q unit with 541=1 and an 800x252 arrows view: CarPlay maneuvers in
   the arrows view at native size, map-view round trips and stock-state release on disconnect.
   Other trains and cluster variants have not been tested.
-- A rapid electronic ticking has been reported during animated guidance on the test unit.
-  Mask-cache and pacing experiments are retained separately on the fork; this contribution
-  does not claim their performance results. This separated branch needs its own vehicle
-  validation before release, including FPK regression checks.
+- A rapid electronic ticking during animated guidance on that unit, never with a still arrow,
+  followed the renderer's GPU load. Every frame of a slide used to repaint the 2560x1411 masks;
+  painting them once per push removed nearly all of it.
 - Upstream's REPLACE mode still cancels an active Audi route when the phone connects.
