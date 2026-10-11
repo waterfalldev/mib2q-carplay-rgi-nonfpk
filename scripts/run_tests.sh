@@ -56,6 +56,13 @@ cc -D_GNU_SOURCE -std=c99 -O1 -Wall -Wextra -Werror -Wno-unused-variable -Wno-un
     $DL_LIB -o "$OUT/rgd_tlv"
 "$OUT/rgd_tlv"
 
+printf '%-32s ' rgd_start_burst_test
+cc -D_GNU_SOURCE -std=gnu99 -O1 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter \
+    -Wno-unused-variable -Wno-unused-but-set-variable -DENABLE_LOGGING=0 -Ihook -Ihook/framework -Itests \
+    tests/rgd_start_burst_test.c hook/routeguidance/rgd_tlv.c hook/framework/iap2_protocol.c \
+    -lpthread $DL_LIB -o "$OUT/rgd_start_burst"
+"$OUT/rgd_start_burst"
+
 printf '%-32s ' altscreen_hook_test
 cc -D_GNU_SOURCE -std=gnu99 -O1 -Wall -Wextra -Werror -DENABLE_LOGGING=0 \
     -DALT_SHOW_UI_DELAY_MS=10 -DALT_HOLD_CONNECT_MS=400 "-DCVR_SHM_NAME=\"/cr_cluster_video_test$$\"" \

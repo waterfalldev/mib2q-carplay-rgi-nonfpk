@@ -7,6 +7,7 @@ sources:
   - code: hook/routeguidance/rgd_hook.c
   - code: java_patch/com/luka/carplay/core/ScreenModule.java
   - code: hook/routeguidance/rgd_tlv.h
+  - code: java_patch/de/audi/tghu/navi/app/cluster/ClusterService.java
   - firmware: accessoryd 23G71 +[ACCNavigationRouteGuidanceUpdateInfo keyForType:]
 reconciles:
   - docs/reference/NAVSD_FCTID_MATRIX.md
@@ -128,6 +129,25 @@ stateDiagram-v2
 `hook/routeguidance/rgd_hook.c` holds a deferred flush for `route_state=0` so a momentary reset /
 reroute never reaches Java as a deactivation - any deactivation Java sees is genuine
 (`source_supports_rg=0`, `visible_in_app=0` with no route, or a real route end).
+
+**Start burst.** When guidance starts, the phone sends route states 3, 1, 0, 3, 1 within about
+60 ms, and its reset frame (0) comes after maneuvers it never sends again. A reset frame
+within 2 s (`RGD_START_BURST_MS`) of the subscription's first message, not from rerouting,
+therefore keeps the route aside, and the route comes back - list, maneuvers and generation -
+when the state returns before a different list or new maneuver data. A repeated reset frame
+leaves the kept route; any other reset, a different list, new 0x5202/0x5204 data, a route end
+or a hard clear drops it (map23-map24, `rgd_start_burst_test`). Without it a start showed
+no maneuver beyond `icon=1` until guidance was restarted, because Java also drops its copy when
+the route generation changes.
+
+## ⚙️ The navigator's late "no route" is held while CarPlay guides
+
+When CarPlay guidance starts before the Audi navigation has finished starting, the navigator
+reports no route guidance (`dsiRgActive=false`) a few seconds later. That report overwrote
+CarPlay's `rgActive` claim: `rgiValid` fell and stock showed COMPASS instead of the arrows
+(map23). While `carPlayRgiValidOverride` is set, `ClusterService.updateRgActive(false)` is
+held (`dsiNoRouteHeld`) and replayed when the override is released
+(`NativeGuidanceStateTest`).
 
 ## 📊 Which navigation apps send route guidance
 

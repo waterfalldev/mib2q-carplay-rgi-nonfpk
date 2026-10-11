@@ -41,6 +41,13 @@ DEFINE_LOG_MODULE(RGD);
 #define RGD_START_SLOW_RETRY_MS      30000
 #define RGD_START_FAST_ATTEMPTS          5
 
+/* The phone opens every route subscription with a burst - route state 3, 0, 3, 1, 0, 3, 1
+ * within ~60 ms (map23) - whose reset frames came after the maneuvers it never sends again:
+ * flushing them left both the replay and a live Java client without maneuvers until the
+ * next one.  A reset frame this soon after the first message keeps the route aside, and the
+ * route comes back if the state returns before anything new arrives. */
+#define RGD_START_BURST_MS            2000
+
 static uint64_t now_monotonic_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -67,6 +74,7 @@ static struct {
     bool component_valid;
     uint64_t last_5200_ms;
     unsigned int start_5200_attempts;
+    uint64_t first_520x_ms;   /* this subscription's first message (RGD_START_BURST_MS) */
 
     /* MHI3-like maneuver storage mapping:
      * iOS uses monotonically increasing maneuver indexes (can exceed small caches).
@@ -267,6 +275,93 @@ static const uint64_t RGD_UPD_WRITE_MASK = RGD_UPD_ROUTE_STATE |
                                             RGD_UPD_COMPONENT_IDS |
                                             RGD_UPD_MANEUVER_COUNT |
                                             RGD_UPD_MANEUVER_LIST;
+
+/* The route content a reset frame flushes: the maneuver map, its caches and the merged
+ * 0x5201 snapshot.  Kept aside by a start-burst reset frame (RGD_START_BURST_MS); iAP2
+ * handler thread only, apart from rgd_drop_kept_route. */
+typedef struct {
+    uint16_t current_list[MAX_MANEUVER_LIST];
+    bool current_list_present;
+    uint16_t current_list_count;
+    uint16_t slot_to_iap_idx[MANEUVER_CACHE_SIZE];
+    uint32_t slot_seq[MANEUVER_CACHE_SIZE];
+    uint32_t slot_ver[MANEUVER_CACHE_SIZE];
+    uint32_t seq_counter;
+    uint32_t ver_counter;
+    uint64_t route_generation;
+    uint16_t highest_list_index;
+    uint16_t lane_slot_to_iap_idx[MANEUVER_CACHE_SIZE];
+    uint32_t lane_slot_seq[MANEUVER_CACHE_SIZE];
+    uint32_t lane_seq_counter;
+    rgd_lane_guidance_t lane_cache[MANEUVER_CACHE_SIZE];
+    rgd_maneuver_t slot_cache[MANEUVER_CACHE_SIZE];
+    rgd_update_t update_cache;
+} rgd_route_t;
+
+static rgd_route_t g_kept_route;
+static volatile bool g_kept_route_valid;
+
+/* Copies the route content into g_kept_route (keep) or back into g_rgd. */
+static void rgd_route_copy(bool keep) {
+#define RGD_ROUTE_FIELD(f) (keep ? memcpy(&g_kept_route.f, &g_rgd.f, sizeof(g_rgd.f)) \
+                                 : memcpy(&g_rgd.f, &g_kept_route.f, sizeof(g_rgd.f)))
+    RGD_ROUTE_FIELD(current_list);
+    RGD_ROUTE_FIELD(current_list_present);
+    RGD_ROUTE_FIELD(current_list_count);
+    RGD_ROUTE_FIELD(slot_to_iap_idx);
+    RGD_ROUTE_FIELD(slot_seq);
+    RGD_ROUTE_FIELD(slot_ver);
+    RGD_ROUTE_FIELD(seq_counter);
+    RGD_ROUTE_FIELD(ver_counter);
+    RGD_ROUTE_FIELD(route_generation);
+    RGD_ROUTE_FIELD(highest_list_index);
+    RGD_ROUTE_FIELD(lane_slot_to_iap_idx);
+    RGD_ROUTE_FIELD(lane_slot_seq);
+    RGD_ROUTE_FIELD(lane_seq_counter);
+    RGD_ROUTE_FIELD(lane_cache);
+    RGD_ROUTE_FIELD(slot_cache);
+    RGD_ROUTE_FIELD(update_cache);
+#undef RGD_ROUTE_FIELD
+}
+
+static unsigned rgd_mapped_slots(const uint16_t* map) {
+    unsigned n = 0;
+    for (int i = 0; i < MANEUVER_CACHE_SIZE; i++) n += map[i] != 0xFFFF;
+    return n;
+}
+
+/* The update's maneuver list is the kept route's (the phone repeating it). */
+static bool rgd_kept_list_is(const rgd_update_t* upd) {
+    return g_kept_route_valid && g_kept_route.current_list_present
+        && upd->maneuver_list_count == g_kept_route.current_list_count
+        && memcmp(upd->maneuver_list, g_kept_route.current_list,
+                  upd->maneuver_list_count * sizeof(upd->maneuver_list[0])) == 0;
+}
+
+/* Before a start-burst reset frame flushes the route. */
+static void rgd_keep_route(void) {
+    rgd_route_copy(true);
+    g_kept_route_valid = true;
+    LOG_WARN(LOG_MODULE, "Start-burst reset frame: route kept aside (%u maneuvers, list %s%u)",
+             rgd_mapped_slots(g_kept_route.slot_to_iap_idx),
+             g_kept_route.current_list_present ? "" : "absent/", g_kept_route.current_list_count);
+}
+
+/* New route content, a route end or a session end: the kept route is no longer this one. */
+static void rgd_drop_kept_route(const char* why) {
+    if (!g_kept_route_valid) return;
+    g_kept_route_valid = false;
+    LOG_WARN(LOG_MODULE, "Kept route dropped: %s", why);
+}
+
+/* The route state returned with nothing new since the reset frame: the same route. */
+static void rgd_restore_kept_route(void) {
+    if (!g_kept_route_valid) return;
+    rgd_route_copy(false);
+    g_kept_route_valid = false;
+    LOG_WARN(LOG_MODULE, "Route restored after the start-burst reset (%u maneuvers, generation kept)",
+             rgd_mapped_slots(g_rgd.slot_to_iap_idx));
+}
 
 static int rgd_min_current_index(void) {
     if (g_rgd.current_list_count == 0) return -1;
@@ -1188,7 +1283,9 @@ void rgd_clear_state(const char* reason) {
     g_rgd.component_valid = false;
     g_rgd.last_5200_ms = 0;
     g_rgd.start_5200_attempts = 0;
+    g_rgd.first_520x_ms = 0;
     pthread_mutex_unlock(&g_rgd_start_lock);
+    rgd_drop_kept_route("state cleared");
     g_rgd.have_update = false;
     g_rgd.last_route_state = 0;
     /* Disconnect bypasses time-based debounce — emit state=0 immediately
@@ -1336,6 +1433,7 @@ static void rgd_mark_first_response(uint16_t msgid) {
     pthread_mutex_lock(&g_rgd_start_lock);
     if (!g_rgd.got_520x) {
         g_rgd.got_520x = true;
+        g_rgd.first_520x_ms = now_monotonic_ms();
         first = true;
     }
     pthread_mutex_unlock(&g_rgd_start_lock);
@@ -1378,6 +1476,8 @@ static bool rgd_message_handler(hook_context_t* ctx, const iap2_frame_t* frame) 
          *   source_supports_rg=0.
          */
         g_rgd.have_update = true;
+        if ((upd.present & RGD_UPD_MANEUVER_LIST) && !rgd_kept_list_is(&upd))
+            rgd_drop_kept_route("a new maneuver list");
         bool suppress_update = false;
         bool hard_clear = (upd.present & RGD_UPD_SOURCE_SUPPORTS_RG)
                        && upd.source_supports_route_guidance == 0;
@@ -1391,6 +1491,7 @@ static bool rgd_message_handler(hook_context_t* ctx, const iap2_frame_t* frame) 
             if (upd.route_state == 0) {
                 if (hard_clear) {
                     LOG_INFO(LOG_MODULE, "Route hard clear: source_supports_rg=0");
+                    rgd_drop_kept_route("hard clear");
                     rgd_update_cache_reset();
                     rgd_maneuver_map_reset();
                     rgd_cancel_pending_zero_locked("hard clear", 0);
@@ -1403,6 +1504,14 @@ static bool rgd_message_handler(hook_context_t* ctx, const iap2_frame_t* frame) 
                     bool from_reroute = (prev_state == RGD_STATE_REROUTING)
                                      || (g_rgd.emitted_route_state == RGD_STATE_REROUTING);
 
+                    /* A repeated state=0 frame (map24: two in a row) leaves the kept route. */
+                    if (prev_state > 0) {
+                        if (!from_reroute && g_rgd.first_520x_ms
+                                && now - g_rgd.first_520x_ms <= RGD_START_BURST_MS)
+                            rgd_keep_route();
+                        else
+                            rgd_drop_kept_route("reset frame outside the start burst");
+                    }
                     rgd_update_cache_reset();
                     if (prev_state > 0) {
                         LOG_INFO(LOG_MODULE,
@@ -1422,6 +1531,7 @@ static bool rgd_message_handler(hook_context_t* ctx, const iap2_frame_t* frame) 
             } else {
                 /* state > 0 */
                 if (g_rgd.state_zero_started_ms != 0) {
+                    rgd_restore_kept_route();       /* none kept after a different list (above) */
                     rgd_cancel_pending_zero_locked("route_state>0", upd.route_state);
                 }
                 g_rgd.emitted_route_state = upd.route_state;
@@ -1454,6 +1564,7 @@ static bool rgd_message_handler(hook_context_t* ctx, const iap2_frame_t* frame) 
 
         LOG_INFO(LOG_MODULE, "Maneuver: idx=%u type=%u desc=\"%s\"",
                  man.index, man.maneuver_type, man.description);
+        rgd_drop_kept_route("new maneuver data");
         rgd_cancel_pending_zero("0x5202 maneuver");
         write_bus_maneuver_partial(&man);
     }
@@ -1471,6 +1582,7 @@ static bool rgd_message_handler(hook_context_t* ctx, const iap2_frame_t* frame) 
 
         LOG_INFO(LOG_MODULE, "Lane guidance: idx=%u lanes=%u desc=\"%s\"",
                  lane.lane_guidance_index, lane.lane_count, lane.lane_guidance_description);
+        rgd_drop_kept_route("new lane data");
         rgd_cancel_pending_zero("0x5204 lane");
         for (int li = 0; li < lane.lane_count && li < MAX_LANE_GUIDANCE; li++) {
             const rgd_lane_t* l = &lane.lanes[li];
@@ -1697,6 +1809,7 @@ void rgd_periodic_tick(void) {
     g_rgd.state_zero_from_reroute = false;
     pthread_mutex_unlock(&g_rgd_debounce_lock);
 
+    rgd_drop_kept_route("route ended");
     LOG_INFO(LOG_MODULE, "Route reset timeout: emitting deferred state=0 to Java (elapsed=%llums)",
              (unsigned long long)elapsed);
 
