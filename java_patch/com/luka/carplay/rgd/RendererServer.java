@@ -115,7 +115,7 @@ public class RendererServer {
 
     /** Edge notification only. The listener must not block the socket threads. */
     public interface StateListener {
-        void onRendererStateChanged(String reason);
+        void onRendererStateChanged();
     }
 
     public void setStateListener(StateListener listener) {
@@ -218,7 +218,7 @@ public class RendererServer {
                         lock.notifyAll();
                     }
                     Log.i(TAG, "renderer connected from " + s.getInetAddress() + ":" + s.getPort());
-                    notifyStateChanged("connected");
+                    notifyStateChanged();
 
                     /* Spawn a per-connection reader.  It just drains inbound
                      * heartbeats (and discards their content) — the only
@@ -285,7 +285,7 @@ public class RendererServer {
                         lostCurrent = true;
                     }
                 }
-                if (lostCurrent) notifyStateChanged("send-failed");
+                if (lostCurrent) notifyStateChanged();
             }
         }
         Log.i(TAG, "writer thread exiting");
@@ -335,15 +335,15 @@ public class RendererServer {
                 }
             }
             /* A preempted old reader must never report the new socket dead. */
-            if (lostCurrent) notifyStateChanged("disconnected");
+            if (lostCurrent) notifyStateChanged();
         }
     }
 
-    private void notifyStateChanged(String reason) {
+    private void notifyStateChanged() {
         StateListener l = stateListener;
         if (l == null) return;
         try {
-            l.onRendererStateChanged(reason);
+            l.onRendererStateChanged();
         } catch (Throwable t) {
             Log.w(TAG, "state listener failed: " + t.getMessage());
         }
@@ -378,7 +378,7 @@ public class RendererServer {
         }
         if (changed) {
             Log.i(TAG, "renderer " + reason);
-            notifyStateChanged(reason);
+            notifyStateChanged();
         }
     }
 
@@ -396,7 +396,7 @@ public class RendererServer {
              * had a working renderer; later send failures still count as
              * a lost renderer, not start-up. */
         }
-        if (changed) notifyStateChanged("disconnect-request");
+        if (changed) notifyStateChanged();
     }
 
     /**
@@ -429,7 +429,7 @@ public class RendererServer {
         if (writer != null && writer != Thread.currentThread()) {
             try { writer.join(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         }
-        notifyStateChanged("disposed");
+        notifyStateChanged();
     }
 
     private void closeClientLocked() {

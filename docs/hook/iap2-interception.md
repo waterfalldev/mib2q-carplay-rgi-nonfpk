@@ -42,8 +42,7 @@ cover-art, and `altscreen`, which uses the AirPlay seams rather than iAP2 -
 registers whatever stands in the table at its first real Cinemo boundary, calls each module's
 `on_init`, and tears them down in reverse order. Everything a module wants (Identify, `msgid` filter,
 session state, outgoing transport frames, the raw `NmeTransport::Recv` tap) is declared in its own
-`hook_module_def_t`, so `hook_framework.c` includes no module header. `hook_framework` keeps a
-priority-ordered registry and routes each parsed frame to the modules that asked for its `msgid`.
+`hook_module_def_t`, so `hook_framework.c` includes no module header. `hook_framework` walks that table in order and routes each parsed frame to the modules that asked for its `msgid`.
 The shared object exports only the five Cinemo interposers (build-enforced allowlist) - see
 [integration-seam](integration-seam.md).
 

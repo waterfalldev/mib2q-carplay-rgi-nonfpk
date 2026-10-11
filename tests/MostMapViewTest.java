@@ -9,6 +9,7 @@ import java.net.Socket;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import static testsupport.TestSupport.*;
 
 /** The MOST MAP view through MostPresentation's shared engine, against the shipping display
  *  manager and stock core: MAP 72 -> 82 = {99} only for a measured, renderer-confirmed
@@ -16,17 +17,12 @@ import java.util.Map;
  *  guidance or the phone owning navigation, only while the phone's cluster stream is live;
  *  the wheel zooms it only then. */
 public final class MostMapViewTest {
-    private static int checks;
 
     /** The engine's MAP request itself, below the guidance-and-stream rule. */
     static void requestMap(boolean on) throws Exception {
         Method m = MostPresentation.class.getDeclaredMethod("setMapRequested", boolean.class);
         m.setAccessible(true);
         m.invoke(null, Boolean.valueOf(on));
-    }
-    private static void check(boolean yes, String why) {
-        checks++;
-        if (!yes) throw new AssertionError(why);
     }
 
     static final class Rig implements AutoCloseable {
@@ -183,7 +179,7 @@ public final class MostMapViewTest {
             check(MostPresentation.logicalContext(81) == 73 && MostPresentation.logicalContext(82) == 72
                 && MostPresentation.logicalContext(76) == 76, "Composed contexts map back to their stock views");
             r.choose(82);
-            check(((Integer) MostArrowsTest.field(DisplayManagerMIB2High.class, "lastClusterRequest").get(r.dm)).intValue() == 72,
+            check(((Integer) field(DisplayManagerMIB2High.class, "lastClusterRequest").get(r.dm)).intValue() == 72,
                 "A re-issued 82 is remembered as stock MAP 72");
             r.dsi.drain();
             MostPresentation.setMapLive(false);

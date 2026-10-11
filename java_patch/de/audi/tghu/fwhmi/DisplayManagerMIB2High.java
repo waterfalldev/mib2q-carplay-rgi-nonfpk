@@ -18,24 +18,24 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
 
     /* ---- terminals ---- */
     private static final int MAIN_TERMINAL = 0;
-    private static final int CLUSTER_TERMINAL = 1;
+    private static final int CLUSTER_TERMINAL = com.luka.carplay.core.ScreenModule.TERMINAL_CLUSTER;
 
     /* ---- kombi variant ---- */
     private static final int KOMBI_TYPE_G24 = 4;                 // getKombiType(): single big display (G24)
-    private static final int SYSCONST_KOMBI_VARIANT = 541;
-    private static final int KOMBI_KDK_VIA_DISPLAYABLES = 2;     // A5-class: KDK composed from displayables
+    private static final int SYSCONST_KOMBI_VARIANT = com.luka.carplay.cluster.ClusterPlatform.SYSCONST_KOMBI_MAP_MODE;
+    private static final int KOMBI_KDK_VIA_DISPLAYABLES = com.luka.carplay.cluster.ClusterPlatform.KOMBI_MAP_MODE_FPK;   // A5-class: KDK composed from displayables
 
     /* ---- cluster display contexts ---- */
-    private static final int CTX_MAP         = 72;   // map only
-    private static final int CTX_KDK_NO_MAP  = 73;   // KDK + backings, no map
+    private static final int CTX_MAP         = com.luka.carplay.cluster.MostPresentation.CTX_STOCK_MAP;   // 72, map only
+    private static final int CTX_KDK_NO_MAP  = com.luka.carplay.cluster.MostPresentation.CTX_STOCK_KDK;   // 73, KDK + backings, no map
     private static final int CTX_MAP_KDK     = 74;   // map + KDK + backings
     private static final int CTX_BLANK       = 75;   // empty
     private static final int CTX_MAP_ALT     = 76;   // alt map only
     private static final int CTX_MAP_ALT_KDK = 77;   // alt map + KDK + backings
-    private static final int CTX_CARPLAY_NAV = 80;   // CarPlay: maneuver + backing + stock native map
+    private static final int CTX_CARPLAY_NAV = com.luka.carplay.core.ScreenModule.CTX_CLUSTER;   // 80, CarPlay: maneuver + backing + stock native map
     private static final int CTX_CARPLAY_KDK_MOST = com.luka.carplay.cluster.MostPresentation.CTX_CARPLAY_KDK;   // 81
     private static final int CTX_CARPLAY_MAP_MOST = com.luka.carplay.cluster.MostPresentation.CTX_CARPLAY_MAP;   // 82
-    private static final int FIRST_CARPLAY_CONTEXT = 80;   // every stock context id is < this
+    private static final int FIRST_CARPLAY_CONTEXT = CTX_CARPLAY_NAV;   // every stock context id is < this
 
     /* ---- context-table sizing / G24 KDK variants ---- */
     private static final int DC_SIZE_A5  = 83;    // stock 0..78 + CarPlay 80 (VC), 81 and 82 (MOST arrows / MAP)
@@ -189,7 +189,7 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
         this.dc[75] = new DisplayContext(75, new int[0]);
         this.dc[78] = new DisplayContext(78, new int[]{16, 59});
 
-        /* --- CarPlay cluster: one custom context, A5-class only (not G24) ---
+        /* --- CarPlay cluster contexts (80; 81 and 82 for MOST), A5-class only (not G24) ---
          *   z-order = array order (index 0 = front):
          *     dc[80] = {98, 101, 102, 33}  nav active: maneuver(98) over the two KDK 987 backings
          *                                  (101 = 328x180 sport, 102 = 210x153 popup) over the stock
@@ -217,8 +217,7 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
          * nobody created, and the cluster keeps showing the stock KDK maneuver (displayable 20).
          * WARN level on purpose: this has to reach /tmp/carplay_java.log without carplay_verbose. */
         com.luka.carplay.framework.Log.w("DisplayManager",
-            "cluster platform: kombiType=" + this.framework.getKombiType()
-            + " sysConst(541)=" + this.framework.getSysConst(SYSCONST_KOMBI_VARIANT)
+            "cluster platform: " + com.luka.carplay.cluster.ClusterPlatform.describe(this.framework)
             + " carplayCtx=" + (this.dc[CTX_CARPLAY_NAV] != null));
     }
 
@@ -258,11 +257,9 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
     }
 
     protected void configureDM() {
-        /* NOTE: our CarPlay cluster backing uses the stock Image displayables 101/102 — created
-         * right here (below) because our A5 FPK unit reports sysConst(541)==2 (proven: 101/102
-         * show in dmdt gd).  A fresh id 103 is NOT creatable (unregistered DSI id), so no
-         * createImageDisplayable here for it. */
-        if (this.framework.getSysConst(541) == 2) {
+        /* The CarPlay cluster backing uses the stock Image displayables 101/102, created here when
+         * sysConst(541)==2 (FPK).  A fresh id 103 is NOT creatable (unregistered DSI id). */
+        if (this.framework.getSysConst(SYSCONST_KOMBI_VARIANT) == KOMBI_KDK_VIA_DISPLAYABLES) {
             this.createImageDisplayable(
                 new ResourceLocator(
                     IDisplayManagerKombiControl.DISPLAYABLE_KDK_BACKGROUND_LARGE_STAGE,
@@ -330,11 +327,11 @@ public class DisplayManagerMIB2High extends DisplayManager implements IDisplayLi
     public synchronized void switchContext(int ctx, int terminal, IDisplayListener listener) {
         this.log.log(1000000, "DisplayManager#switchContext visibleKDK %1 terminal %2 ", this.visibleKDKs[terminal], terminal);
         /* Every stock VC screen controller eventually funnels through this method, not only
-         * CombiMapController.  While CarPlay owns terminal 1, accept physical context writes only
-         * from ScreenModule's one serialized worker.  The logical FwHMI main-context still
-         * changes normally and RouteGuidance uses it to enter ctx80 while CarPlay owns the cluster. */
-        /* only while CarPlay owns the Virtual Cockpit composition.  On a MOST or
-         * RGI-only cluster stock keeps every terminal-1 write (ScreenModule.ownsClusterContext). */
+         * CombiMapController.  While CarPlay owns the Virtual Cockpit composition on terminal 1
+         * (ScreenModule.ownsClusterContext), accept physical context writes only from ScreenModule's
+         * one serialized worker.  On a MOST or RGI-only cluster stock keeps every terminal-1 write.
+         * The logical FwHMI main-context still changes normally and RouteGuidance uses it to enter
+         * ctx80 while CarPlay owns the cluster. */
         if (terminal == CLUSTER_TERMINAL
                 && com.luka.carplay.core.ScreenModule.ownsClusterContext()
                 && !com.luka.carplay.core.ScreenModule.isClusterContextWriterThread()) {

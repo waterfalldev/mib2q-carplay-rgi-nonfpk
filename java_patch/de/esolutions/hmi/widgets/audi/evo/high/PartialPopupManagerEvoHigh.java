@@ -209,11 +209,14 @@ public class PartialPopupManagerEvoHigh extends AbstractPartialPopupManager impl
         }
     }
 
+    /** Only popup 62 and the pure OPS are held back while CarPlay keeps the footer hidden; never another popup or the right OPS. */
+    private boolean carPlayFooterGuarded(int id) {
+        return (id == 62 || id == PdcSmallStageGuard.PURE_OPS_POPUP_ID) && this.keepCarPlayStatusLineHidden();
+    }
+
     protected int doShowPopup(IPartialPopupControllerEvo popup, int style) {
-        // Also cover stock queue replay after a fullscreen popup, which bypasses
-        // public showPopup(). Never suppress another popup or the right OPS.
-        if ((popup.getID() == 62 || popup.getID() == PdcSmallStageGuard.PURE_OPS_POPUP_ID)
-            && this.keepCarPlayStatusLineHidden()) {
+        // Also cover stock queue replay after a fullscreen popup, which bypasses public showPopup().
+        if (this.carPlayFooterGuarded(popup.getID())) {
             if (popup.getID() == 62) return 2;
             this.hideFooter();
         }
@@ -221,8 +224,7 @@ public class PartialPopupManagerEvoHigh extends AbstractPartialPopupManager impl
     }
 
     public int showPopup(int i) {
-        if ((i == 62 || i == PdcSmallStageGuard.PURE_OPS_POPUP_ID)
-            && this.keepCarPlayStatusLineHidden()) {
+        if (this.carPlayFooterGuarded(i)) {
             this.hideFooter();
             if (i == 62) return 2;
         }

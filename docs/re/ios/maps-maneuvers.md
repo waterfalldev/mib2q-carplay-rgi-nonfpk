@@ -55,8 +55,8 @@ with role 1 are skipped; role != 1,2 are pushed to the `junctionElementAngle` ar
 - `+[ACCNavigationInfoBuilder accNavigationManeuverUpdateInfoFrom:]` calls `setInfo:data:` directly -
   **no later clamp / abs / re-sign**. It just enumerates `accNavFormat` and forwards each
   `(key.unsignedIntValue as uint16, value)` pair. The signed value ships intact.
-- HU side: `rgd_tlv.c` reads TLV 0x0B as signed BE16 and publishes it as both `turn_angle` and
-  `exit_angle`, so the sign reaches `ManeuverMapper` and the renderer intact.
+- HU side: `rgd_tlv.c` reads TLV 0x0B as signed BE16 and publishes it as `exit_angle`, so the
+  sign reaches `ManeuverMapper` and the renderer intact.
 
 ## 📌 Sentinel
 

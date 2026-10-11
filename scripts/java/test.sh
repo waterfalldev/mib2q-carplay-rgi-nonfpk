@@ -126,7 +126,7 @@ if [ "$GROUP" = all ] || [ "$GROUP" = transports ]; then
     for main in "${transport_plain[@]}" GatedCombiServiceInitStateTest; do sources+=("$TESTS/${main##*.}.java"); done
 fi
 if [ ${#sources[@]} -gt 0 ]; then
-    compile classes "$HOST_CP" "${sources[@]}"
+    compile classes "$HOST_CP" "$TESTS/TestSupport.java" "${sources[@]}"
     classes=$COMPILED_DIR
 fi
 if [ "$GROUP" = all ] || [ "$GROUP" = route ]; then
@@ -196,7 +196,7 @@ if [ "$GROUP" = all ] || [ "$GROUP" = route ] || [ "$GROUP" = contract ]; then
             test -f "$RGD_CONTRACT_FRAMES/$frame" || { echo "Missing native contract frame: $frame" >&2; exit 1; }
             frames+=("$RGD_CONTRACT_FRAMES/$frame")
         done
-        compile rgd-contract "$HOST_CP" "$TESTS/ManeuverChainAudit.java" "$TESTS/RgdNativeContractProbe.java"
+        compile rgd-contract "$HOST_CP" "$TESTS/TestSupport.java" "$TESTS/ManeuverChainAudit.java" "$TESTS/RgdNativeContractProbe.java"
         queue RgdNativeContractProbe "$COMPILED_DIR:$HOST_CP" RgdNativeContractProbe no '' "${frames[@]}"
     elif [ "$GROUP" = contract ]; then
         echo 'RGD_CONTRACT_FRAMES is required for the contract group' >&2; exit 1
@@ -205,7 +205,7 @@ if [ "$GROUP" = all ] || [ "$GROUP" = route ] || [ "$GROUP" = contract ]; then
     fi
 fi
 if [ "$GROUP" = maneuvers ]; then
-    compile maneuvers "$HOST_CP" "$TESTS/ManeuverChainAudit.java" "$TESTS/RampDescriptorAudit.java" "$TESTS/ManeuverIconSelectionAudit.java"
+    compile maneuvers "$HOST_CP" "$TESTS/TestSupport.java" "$TESTS/ManeuverChainAudit.java" "$TESTS/RampDescriptorAudit.java" "$TESTS/ManeuverIconSelectionAudit.java"
     # These exporters report row counts rather than PASS and are not test suites.
     for item in ManeuverChainAudit:java_mapping.csv RampDescriptorAudit:ramp_mapping.csv ManeuverIconSelectionAudit:selection_examples.csv; do
         java -Xverify:none -cp "$COMPILED_DIR:$HOST_CP" "${item%%:*}" "$JAVA_OUTPUT/${item#*:}"

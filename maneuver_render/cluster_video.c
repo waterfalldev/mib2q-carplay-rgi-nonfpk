@@ -15,6 +15,7 @@
 #define CV_ATTACH_RETRY_MS 1000
 
 static int g_run, g_started, g_wanted;
+static pthread_t g_thread;
 
 static uint64_t now_us(void) {
     struct timespec t;
@@ -89,20 +90,21 @@ static void *video_main(void *unused) {
 }
 
 void cluster_video_start(void) {
-    pthread_t thread;
     if (g_started) return;
     __sync_lock_test_and_set(&g_run, 1);
-    if (pthread_create(&thread, NULL, video_main, NULL) != 0) {
+    if (pthread_create(&g_thread, NULL, video_main, NULL) != 0) {
         fprintf(stderr, "cluster_video: reader thread failed errno=%d\n", errno);
         __sync_lock_test_and_set(&g_run, 0);
         return;
     }
-    pthread_detach(thread);
     g_started = 1;
 }
 
 void cluster_video_stop(void) {
+    if (!g_started) return;
     __sync_lock_test_and_set(&g_run, 0);
+    pthread_join(g_thread, NULL);
+    g_started = 0;
 }
 
 void cluster_video_want(int wanted) {

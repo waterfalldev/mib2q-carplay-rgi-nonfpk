@@ -33,6 +33,7 @@
 #include <netinet/tcp.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <sys/select.h>
 
 DEFINE_LOG_MODULE(BUS);
@@ -43,9 +44,9 @@ DEFINE_LOG_MODULE(BUS);
 #define SEND_QUEUE_CAPACITY   256        /* must be a power of two */
 #define BUS_SHUTDOWN_WAIT_MS 2500
 /* Directly indexed events and commands. The highest current command is
- * CMD_ALT_RGI (0x0116); keep Java CarplayBus.MAX_TYPES in sync. */
+ * CMD_ALT_APPEARANCE (0x0114); keep Java CarplayBus.MAX_TYPES in sync. */
 #define MAX_TYPES             0x0120
-#if CMD_ALT_RGI >= MAX_TYPES
+#if CMD_ALT_APPEARANCE >= MAX_TYPES
 #error AltScreen command is outside the bus dispatch table
 #endif
 
@@ -61,12 +62,9 @@ typedef struct frame_s {
 } frame_t;
 
 /* ============================================================
- * Per-type policy + sticky cache
+ * Per-type sticky cache and handler
  * ============================================================ */
 typedef struct {
-    bool          configured;
-    bool          sticky;
-    bus_policy_t  policy;
     frame_t       last;          /* cached sticky frame (payload heap) */
     bool          has_last;
     bus_handler_t handler;
@@ -96,7 +94,7 @@ static int         g_ring_count = 0;
  * Global state
  *
  *   g_lock      : general shared state (queue, client fd, tx seq,
- *                 sticky cache, per-type policy/sticky flags).
+ *                 sticky cache).
  *   g_htable_rw : dedicated rwlock for the handler table.  Readers
  *                 (dispatch) hold it for the duration of the handler
  *                 callback; writers (bus_on/bus_off) block until no
@@ -129,7 +127,6 @@ static bool            g_connector_created = false;
 static bool            g_writer_created = false;
 static bool            g_timer_created = false;
 
-/* g_listen_fd removed - hook is now TCP client, no listening socket. */
 static int             g_client_fd = -1;    /* protected by g_lock */
 /* PID that ran bus_init().  dio_manager fork()s helper processes: a fork INHERITS g_client_fd
  * + the thread-state flags but NOT the threads.  When such a fork exits, its __destructor runs
@@ -182,10 +179,11 @@ static hook_result_t frame_dup(frame_t* dst, const frame_t* src) {
 static bool q_is_full(void) { return g_ring_count == SEND_QUEUE_CAPACITY; }
 static bool q_is_empty(void) { return g_ring_count == 0; }
 
-static hook_result_t q_enqueue_nolock(const frame_t* f) {
+/* Takes over f's payload when it succeeds. */
+static hook_result_t q_enqueue_nolock(frame_t* f) {
     if (q_is_full()) return HOOK_ERR_BUSY;
-    hook_result_t r = frame_dup(&g_ring[g_ring_tail], f);
-    if (r != HOOK_OK) return r;
+    g_ring[g_ring_tail] = *f;
+    f->payload = NULL;
     g_ring_tail = (g_ring_tail + 1) % SEND_QUEUE_CAPACITY;
     g_ring_count++;
     return HOOK_OK;
@@ -203,21 +201,27 @@ static bool q_dequeue_nolock(frame_t* out) {
 /* ============================================================
  * IO: write full frame to fd, big-endian header
  * ============================================================ */
-static int write_all(int fd, const void* buf, size_t len) {
-    const uint8_t* p = (const uint8_t*)buf;
-    while (len > 0) {
-        /* flags MUST be 0 on QNX 6.5: the io-pkt stack does NOT implement MSG_NOSIGNAL (the macro
-         * is defined in the headers but send() with it returns ENOSYS = "Function not implemented"),
-         * which silently killed the WHOLE bus (RGD + coverart never reached Java).  SIGPIPE is
-         * suppressed process-wide instead (SIG_IGN at bus init). */
-        ssize_t n = send(fd, p, len, 0);
+/* Header and payload in one call; a short write continues with the rest.  No MSG_NOSIGNAL:
+ * QNX 6.5's io-pkt answers it with ENOSYS, so SIGPIPE is ignored process-wide (bus init). */
+static int write_frame(int fd, const uint8_t* hdr, const uint8_t* payload, size_t len) {
+    struct iovec iov[2];
+    int first = 0, count = len > 0 && payload ? 2 : 1;
+    iov[0].iov_base = (void*)hdr;
+    iov[0].iov_len = BUS_HEADER_SIZE;
+    iov[1].iov_base = (void*)payload;
+    iov[1].iov_len = len;
+    while (first < count) {
+        ssize_t n = writev(fd, iov + first, count - first);
         if (n < 0) {
             if (errno == EINTR) continue;
             return -1;
         }
         if (n == 0) return -1;
-        p += n;
-        len -= (size_t)n;
+        while (first < count && (size_t)n >= iov[first].iov_len) n -= (ssize_t)iov[first++].iov_len;
+        if (first < count) {
+            iov[first].iov_base = (uint8_t*)iov[first].iov_base + n;
+            iov[first].iov_len -= (size_t)n;
+        }
     }
     return 0;
 }
@@ -252,18 +256,10 @@ static int send_frame(int fd, uint32_t gen, bool published, const frame_t* f) {
             return -1;
         }
     }
-    int rc = 0;
-    if (write_all(fd, hdr, sizeof(hdr)) != 0) {
-        LOG_WARN(LOG_MODULE, "send header failed fd=%d type=0x%04x len=%u err=%s",
+    int rc = write_frame(fd, hdr, f->payload, f->len);
+    if (rc != 0)
+        LOG_WARN(LOG_MODULE, "send failed fd=%d type=0x%04x len=%u err=%s",
                  fd, f->type, f->len, strerror(errno));
-        rc = -1;
-    } else if (f->len > 0 && f->payload) {
-        if (write_all(fd, f->payload, f->len) != 0) {
-            LOG_WARN(LOG_MODULE, "send payload failed fd=%d type=0x%04x len=%u err=%s",
-                     fd, f->type, f->len, strerror(errno));
-            rc = -1;
-        }
-    }
     if (rc != 0 && published) {
         /* Retire before another writer can append bytes to a partial frame. */
         int saved_errno = errno;
@@ -277,28 +273,8 @@ static int send_frame(int fd, uint32_t gen, bool published, const frame_t* f) {
 }
 
 /* ============================================================
- * Per-type configuration
+ * Inbound handlers
  * ============================================================ */
-void bus_set_sticky(uint16_t type, bool sticky) {
-    pthread_mutex_lock(&g_lock);
-    type_slot_t* s = slot_for(type);
-    if (s) {
-        s->configured = true;
-        s->sticky = sticky;
-    }
-    pthread_mutex_unlock(&g_lock);
-}
-
-void bus_set_policy(uint16_t type, bus_policy_t policy) {
-    pthread_mutex_lock(&g_lock);
-    type_slot_t* s = slot_for(type);
-    if (s) {
-        s->configured = true;
-        s->policy = policy;
-    }
-    pthread_mutex_unlock(&g_lock);
-}
-
 hook_result_t bus_on(uint16_t type, bus_handler_t handler, void* ctx) {
     if (!slot_for(type)) {
         LOG_WARN(LOG_MODULE, "bus_on: type 0x%04x out of range (max=0x%04x)", type, MAX_TYPES);
@@ -321,82 +297,54 @@ void bus_off(uint16_t type) {
     pthread_rwlock_unlock(&g_htable_rw);
 }
 
-bool bus_is_connected(void) {
-    pthread_mutex_lock(&g_lock);
-    bool connected = (g_client_fd >= 0);
-    pthread_mutex_unlock(&g_lock);
-    return connected;
-}
-
 /* ============================================================
- * bus_send — sticky cache update + mutex-backed ring enqueue.
- *
- * Sticky cache + tx_seq update happens under g_lock (rare-ish path,
- * needs frame_dup heap allocation).  The ring enqueue is under g_lock
- * by design for MU1316/QNX reliability.
+ * bus_send — one payload copy for the queue and, for a sticky type, one
+ * for its cache.  Both are made before g_lock, which then only orders the
+ * sequence number, the cache and the ring (mutex-backed by design for
+ * MU1316/QNX reliability).
  * ============================================================ */
 hook_result_t bus_send(uint16_t type, uint8_t flags,
                        const uint8_t* payload, uint32_t len) {
     if (len > BUS_MAX_PAYLOAD) return HOOK_ERR_PARAM;
     if (len && !payload) return HOOK_ERR_PARAM;
-    if (!slot_for(type)) {
+    type_slot_t* s = slot_for(type);
+    if (!s) {
         LOG_WARN(LOG_MODULE, "bus_send: type 0x%04x out of range", type);
         return HOOK_ERR_PARAM;
     }
 
-    frame_t f;
-    f.type = type;
-    f.flags = flags;
-    f.len = len;
-    f.seq = 0;
-    f.payload = NULL;
-    if (len > 0) {
-        f.payload = (uint8_t*)malloc(len);
-        if (!f.payload) return HOOK_ERR_MEMORY;
-        memcpy(f.payload, payload, len);
+    const frame_t source = { .type = type, .flags = flags, .len = len, .payload = (uint8_t*)payload };
+    const bool sticky = (flags & BUS_FLAG_STICKY) != 0;
+    frame_t queued, cached;
+    if (frame_dup(&queued, &source) != HOOK_OK) return HOOK_ERR_MEMORY;
+    if (sticky && frame_dup(&cached, &source) != HOOK_OK) {
+        /* Keep the previous valid cache intact; never publish a cache
+         * entry with len > 0 and a NULL payload after allocation fails. */
+        frame_dispose(&queued);
+        return HOOK_ERR_MEMORY;
     }
-
-    /* Sticky cache + seq under g_lock.  This is short and bounded,
-     * uncontended on the producer hot path (only sticky-flagged sends
-     * reach the cache copy). */
-    type_slot_t* s = slot_for(type);
-    uint32_t my_seq;
 
     pthread_mutex_lock(&g_lock);
     if (g_shutdown) {                       /* no enqueue after drain — would leak / touch freed state */
         pthread_mutex_unlock(&g_lock);
-        if (f.payload) free(f.payload);
+        frame_dispose(&queued);
+        if (sticky) frame_dispose(&cached);
         return HOOK_ERR_BUSY;
     }
-    my_seq = g_tx_seq++;
-    f.seq = my_seq;
-
-    if ((flags & BUS_FLAG_STICKY) || s->sticky) {
-        frame_t cached;
-        if (frame_dup(&cached, &f) != HOOK_OK) {
-            /* Keep the previous valid cache intact; never publish a cache
-             * entry with len > 0 and a NULL payload after allocation fails. */
-            g_tx_seq--;
-            pthread_mutex_unlock(&g_lock);
-            frame_dispose(&f);
-            return HOOK_ERR_MEMORY;
-        }
+    queued.seq = g_tx_seq++;
+    if (sticky) {
+        cached.seq = queued.seq;
         if (s->has_last) frame_dispose(&s->last);
         s->last = cached;
         s->has_last = true;
     }
-
-    hook_result_t enq = q_enqueue_nolock(&f);
-    if (enq == HOOK_OK) {
-        pthread_cond_signal(&g_cond);
-    } else {
-        if (g_tx_seq == my_seq + 1) g_tx_seq--;
-    }
+    hook_result_t enq = q_enqueue_nolock(&queued);
+    if (enq == HOOK_OK) pthread_cond_signal(&g_cond);
+    else if (g_tx_seq == queued.seq + 1) g_tx_seq--;
     pthread_mutex_unlock(&g_lock);
 
-    if (f.payload) free(f.payload);
-
     if (enq != HOOK_OK) {
+        frame_dispose(&queued);
         LOG_WARN(LOG_MODULE, "send queue full, dropped type=0x%04x", type);
     }
     return enq;
@@ -545,7 +493,7 @@ static int read_all(int fd, void* buf, size_t len) {
 /* Read one inbound frame from the peer (Java) and dispatch it to the registered
  * handler.  Blocks until a frame arrives, EOF, or error.  Makes the bus
  * BIDIRECTIONAL: the hook now both sends events AND receives commands
- * (CMD_ALT_ZOOM, CMD_ALT_ZONE, …) that modules register for via bus_on().
+ * (CMD_ALT_ZOOM, CMD_ALT_APPEARANCE) that modules register for via bus_on().
  * Returns 0 = ok, -1 = disconnect (framing lost / EOF → reconnect). */
 static int read_frame(int fd, uint32_t gen) {
     uint8_t hdr[BUS_HEADER_SIZE];
@@ -635,8 +583,6 @@ static void* connector_main(void* arg) {
         while (!g_shutdown && fd < 0) {
             fd = try_connect_once();
             if (fd < 0) {
-                LOG_DEBUG(LOG_MODULE, "connect failed (%s), retrying in %d ms",
-                          strerror(errno), backoff_ms);
                 usleep(backoff_ms * 1000);
                 if (backoff_ms < 2000) backoff_ms *= 2;
             }
@@ -968,6 +914,13 @@ void bus_shutdown(void) {
 /* ============================================================
  * Text builder
  * ============================================================ */
+static void bt_append(bus_text_builder_t* b, const char* s, size_t n) {
+    if (b->overflow) return;
+    if (b->len + n > b->cap) { b->overflow = true; return; }
+    memcpy(b->buf + b->len, s, n);
+    b->len += (uint32_t)n;
+}
+
 void bus_text_begin_with(bus_text_builder_t* b, const char* object_name,
                          uint8_t* buf, uint32_t cap) {
     b->buf = buf;
@@ -976,9 +929,9 @@ void bus_text_begin_with(bus_text_builder_t* b, const char* object_name,
     b->own_buf = false;
     b->overflow = false;
     if (object_name && object_name[0]) {
-        bus_text_raw(b, "@");
-        bus_text_raw(b, object_name);
-        bus_text_raw(b, "\n");
+        bt_append(b, "@", 1);
+        bt_append(b, object_name, strlen(object_name));
+        bt_append(b, "\n", 1);
     }
 }
 
@@ -990,19 +943,12 @@ hook_result_t bus_text_begin_heap(bus_text_builder_t* b, const char* object_name
     return HOOK_OK;
 }
 
-void bus_text_free(bus_text_builder_t* b) {
+static void bus_text_free(bus_text_builder_t* b) {
     if (b && b->own_buf && b->buf) {
         free(b->buf);
         b->buf = NULL;
         b->own_buf = false;
     }
-}
-
-static void bt_append(bus_text_builder_t* b, const char* s, size_t n) {
-    if (b->overflow) return;
-    if (b->len + n > b->cap) { b->overflow = true; return; }
-    memcpy(b->buf + b->len, s, n);
-    b->len += (uint32_t)n;
 }
 
 /* Append a value string with sanitization.  The wire format is newline-
@@ -1013,15 +959,11 @@ static void bt_append(bus_text_builder_t* b, const char* s, size_t n) {
  * UTF-8 multibyte sequences and ordinary punctuation pass through. */
 static void bt_append_sanitized(bus_text_builder_t* b, const char* s) {
     if (!s) return;
-    while (*s) {
-        unsigned char c = (unsigned char)*s++;
-        if (c < 0x20) {
-            bt_append(b, " ", 1);
-        } else {
-            char ch = (char)c;
-            bt_append(b, &ch, 1);
-        }
-    }
+    uint32_t start = b->len;
+    bt_append(b, s, strlen(s));
+    if (b->overflow) return;
+    for (uint32_t i = start; i < b->len; i++)
+        if (b->buf[i] < 0x20) b->buf[i] = ' ';
 }
 
 static void bt_kv_begin(bus_text_builder_t* b, const char* key, char type_ch) {
@@ -1065,28 +1007,6 @@ void bus_text_bool(bus_text_builder_t* b, const char* key, bool value) {
     bt_kv_begin(b, key, 'b');
     bt_append(b, value ? "true" : "false", value ? 4 : 5);
     bt_nl(b);
-}
-
-void bus_text_fmt(bus_text_builder_t* b, const char* key, char type,
-                  const char* fmt, ...) {
-    if (!b || !key || !fmt) return;
-    char scratch[512];
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(scratch, sizeof(scratch), fmt, ap);
-    va_end(ap);
-    if (n <= 0) return;
-    if ((size_t)n >= sizeof(scratch)) n = (int)sizeof(scratch) - 1;
-    scratch[n] = '\0';
-    bt_kv_begin(b, key, type);
-    /* Same sanitization as bus_text_str - format may embed user strings. */
-    bt_append_sanitized(b, scratch);
-    bt_nl(b);
-}
-
-void bus_text_raw(bus_text_builder_t* b, const char* line) {
-    if (!b || !line) return;
-    bt_append(b, line, strlen(line));
 }
 
 hook_result_t bus_send_text(uint16_t type, uint8_t flags, bus_text_builder_t* b) {

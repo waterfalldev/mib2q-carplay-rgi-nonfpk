@@ -3,11 +3,10 @@ import com.luka.carplay.bus.CarplayBus;
 import com.luka.carplay.framework.Log;
 import java.lang.reflect.Method;
 import java.util.Arrays;
+import static testsupport.TestSupport.*;
 
 /** Real parser -> BAP bridge/stock sender and renderer queue; no HU/network. */
 public final class ManeuverParityTest {
-    static int checks;
-    static void check(boolean ok, String why) { checks++; if (!ok) throw new AssertionError(why); }
     static boolean send(ManeuverChainAudit a, RouteGuidance.State s) throws Exception {
         return ((Boolean)a.sendRenderer.invoke(a.bridge, s, Integer.valueOf(0))).booleanValue();
     }
@@ -15,12 +14,12 @@ public final class ManeuverParityTest {
         return (short)(((packet[offset]&255)<<8)|(packet[offset+1]&255));
     }
     static byte[] latest(ManeuverChainAudit a) throws Exception {
-        Object[] q=(Object[])a.get(a.renderer,"writeQueue");
-        int tail=((Integer)a.get(a.renderer,"writeTail")).intValue();
-        return (byte[])a.get(q[(tail+q.length-1)%q.length],"packet");
+        Object[] q=(Object[])get(a.renderer,"writeQueue");
+        int tail=((Integer)get(a.renderer,"writeTail")).intValue();
+        return (byte[])get(q[(tail+q.length-1)%q.length],"packet");
     }
     static byte[] packet(ManeuverChainAudit a, int mt, int angle, int j, int side) throws Exception {
-        a.reset(); RouteGuidance.State s=a.state(mt,angle,j,side,0,new int[]{-90,0,90});
+        a.reset(); RouteGuidance.State s=a.state(mt,angle,j,side,new int[]{-90,0,90});
         check(send(a,s),"initial packet"); return a.pendingPacket();
     }
     public static void main(String[] args) throws Exception {
@@ -76,7 +75,7 @@ public final class ManeuverParityTest {
         int[][] rampRoads={null,new int[0],new int[]{-1000,1000},new int[]{-90,35,90},new int[]{0,35}};
         int[][] rampExpected={new int[]{0},new int[]{0},new int[]{0},new int[]{-180,70,180,0},new int[]{0,70}};
         for(int mt:new int[]{8,22,23}) for(int c=0;c<rampRoads.length;c++) {
-            a.reset();RouteGuidance.State ramp=a.state(mt,35,0,0,0,rampRoads[c]);
+            a.reset();RouteGuidance.State ramp=a.state(mt,35,0,0,rampRoads[c]);
             check(send(a,ramp),"off-ramp with incomplete road data");b=a.pendingPacket();
             check(b[7]==rampExpected[c].length,"continuing highway retained, zero not duplicated");
             for(int i=0;i<rampExpected[c].length;i++)
@@ -84,11 +83,11 @@ public final class ManeuverParityTest {
             check(angle(b,4)==(mt==22?-90:90),"road correction keeps single-bend ramp");
         }
         for(int mt:new int[]{1,9,13,50}) {
-            a.reset();check(send(a,a.state(mt,-45,0,0,0,null)),"non-off-ramp packet");
+            a.reset();check(send(a,a.state(mt,-45,0,0,null)),"non-off-ramp packet");
             check(a.pendingPacket()[7]==0,"do not invent a through-road for ordinary turns/merges");
         }
         int[] crowded=new int[18];for(int i=0;i<crowded.length;i++)crowded[i]=40+i;
-        a.reset();check(send(a,a.state(8,30,0,0,0,crowded)),"bounded highway roads");b=a.pendingPacket();
+        a.reset();check(send(a,a.state(8,30,0,0,crowded)),"bounded highway roads");b=a.pendingPacket();
         check(b[7]==18 && angle(b,42)==0,"reserve final wire slot for continuing highway");
         for(int i=0;i<17;i++)check(angle(b,8+2*i)==2*crowded[i],"keep original branch order");
         b=packet(a,1,-90,-1,0); check(b[2]==0 && b[7]==0,"NO_INFO must be empty in renderer");
@@ -108,23 +107,23 @@ public final class ManeuverParityTest {
             }
         for (int mt : new int[]{1,5,28}) {
             a.reset();
-            RouteGuidance.State raw=a.state(mt,-160,mt==28?1:0,0,0,
+            RouteGuidance.State raw=a.state(mt,-160,mt==28?1:0,0,
                 new int[]{-1000,-181,-160,-67,-1,0,43,90,157,181,1000});
             check(send(a,raw),"raw roads packet");b=a.pendingPacket();
             check(b[7]==7,"invalid roads filtered without dropping valid roads");
             int[] expected={-320,-134,-2,0,86,180,314};
             for(int i=0;i<expected.length;i++) check(angle(b,8+i*2)==expected[i],"exact raw side road");
         }
-        a.reset(); RouteGuidance.State circle=a.state(28,1000,1,0,0,new int[]{10,90});
+        a.reset(); RouteGuidance.State circle=a.state(28,1000,1,0,new int[]{10,90});
         check(send(a,circle),"missing circle angle initial");
         circle.mTurnAngle[0]=0; circle.mExitAngle[0]=0;
         check(send(a,circle),"same numeric fallback but now valid must enable snap");
         check((latest(a)[1]&16)!=0 && (latest(a)[1]&8)==0,"snap policy change is new geometry");
 
-        a.reset(); RouteGuidance.State s=a.state(1,-90,0,0,0,new int[]{-90,0});
-        a.set(a.renderer,"running",Boolean.FALSE);
+        a.reset(); RouteGuidance.State s=a.state(1,-90,0,0,new int[]{-90,0});
+        set(a.renderer,"running",Boolean.FALSE);
         check(!send(a,s),"disconnected send must fail");
-        a.set(a.renderer,"running",Boolean.TRUE);
+        set(a.renderer,"running",Boolean.TRUE);
         check(send(a,s),"identical input must retry after failed send");
         check(!send(a,s),"successful unchanged input should suppress");
         s.mJunctionAngles[0]=new int[]{-90,0,90};
@@ -144,18 +143,18 @@ public final class ManeuverParityTest {
             a.sendBap.invoke(a.bridge,s);
             check(a.capture.last==null && !send(a,s),"invalid primary index must not skip to next");
         }
-        a.reset();s=a.state(10,0,0,0,0,null);
+        a.reset();s=a.state(10,0,0,0,null);
         check(send(a,s),"arrived initial");s.mVer[0]++;
         check(!send(a,s),"arrived parking updates must not restart animation");
         s.mType[0]=24;check(send(a,s),"arrived side change must send");
 
         RouteGuidance rg=new RouteGuidance();
         Method parse=RouteGuidance.class.getDeclaredMethod("parse",CarplayBus.Data.class);parse.setAccessible(true);
-        String[] deltas={"m0_type:n:4\nm0_junction_type:n:0\nm0_driving_side:n:1\nmaneuver_count:n:1\nmaneuver_list:s:0\nm0_turn_angle:n:-1\n",
+        String[] deltas={"m0_type:n:4\nm0_junction_type:n:0\nm0_driving_side:n:1\nmaneuver_count:n:1\nmaneuver_list:s:0\nm0_exit_angle:n:-1\n",
             "m0_exit_angle:n:90\n"};
         for(int i=0;i<deltas.length;i++) {
             byte[] text=deltas[i].getBytes("UTF-8");parse.invoke(rg,CarplayBus.parseText(text,text.length));
-            s=(RouteGuidance.State)a.get(rg,"state");a.reset();a.sendBap.invoke(a.bridge,s);
+            s=(RouteGuidance.State)get(rg,"state");a.reset();a.sendBap.invoke(a.bridge,s);
             check(send(a,s),"parsed angle update");b=a.pendingPacket();
             check(a.sender.input[0].direction==(i==0?64:192) && b[3]==(i==0?-1:1),"parser aliases agree in BAP and renderer");
         }
@@ -174,15 +173,15 @@ public final class ManeuverParityTest {
         }
         a.reset();check(a.renderer.sendProgress(0,1,-1),"legacy empty"); b=latest(a);
         check(b[1]==0 && b[4]==0,"legacy sender must stay unmarked");
-        a.reset();RouteGuidance.State blinking=a.state(2,90,0,0,0,new int[]{-90,0,90});
+        a.reset();RouteGuidance.State blinking=a.state(2,90,0,0,new int[]{-90,0,90});
         blinking.distManeuverM=10;
-        a.set(a.bridge,"hasLastDistM",Boolean.TRUE);a.set(a.bridge,"lastDistM",Integer.valueOf(10));
-        a.set(a.bridge,"lastBarOn",Boolean.TRUE);a.set(a.bridge,"lastBar",Integer.valueOf(0));
-        a.set(a.bridge,"lastProgressState",Integer.valueOf(RendererServer.PROGRESS_BLINK_LOW));
+        set(a.bridge,"hasLastDistM",Boolean.TRUE);set(a.bridge,"lastDistM",Integer.valueOf(10));
+        set(a.bridge,"lastBarOn",Boolean.TRUE);set(a.bridge,"lastBar",Integer.valueOf(0));
+        set(a.bridge,"lastProgressState",Integer.valueOf(RendererServer.PROGRESS_BLINK_LOW));
         check(((Boolean)a.sendRenderer.invoke(a.bridge,blinking,Integer.valueOf(100))).booleanValue(),"blink snapshot send");
         b=a.pendingPacket();check(b[44]==2 && b[46]==0 && b[47]==1,"maneuver snapshot lost current HUD phase");
         for(int type:new int[]{4,52,53}) {
-            a.reset(); RouteGuidance.State ordinary=a.state(type,45,0,0,0,new int[]{-90,0,90});
+            a.reset(); RouteGuidance.State ordinary=a.state(type,45,0,0,new int[]{-90,0,90});
             check(send(a,ordinary),"ordinary family initial send");
             check(a.pendingPacket()[7]==0,"unused side streets entered renderer packet");
             ordinary.mJunctionAngles[0]=new int[]{-135,45,1000};

@@ -20,6 +20,7 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 import sun.misc.Unsafe;
+import static testsupport.TestSupport.*;
 
 /**
  * cluster-state ownership.  Uses the supplied stock ClusterService,
@@ -27,41 +28,6 @@ import sun.misc.Unsafe;
  * constructors) with the shipping BAPBridge and ClusterLayerController.
  */
 public final class ClusterOwnershipTest {
-    private static int checks;
-    private static final Unsafe U = unsafe();
-
-    static void check(boolean ok, String why) {
-        checks++;
-        if (!ok) throw new AssertionError(why);
-    }
-
-    static Unsafe unsafe() {
-        try {
-            Field f = Unsafe.class.getDeclaredField("theUnsafe");
-            f.setAccessible(true);
-            return (Unsafe) f.get(null);
-        } catch (Exception e) { throw new AssertionError(e); }
-    }
-
-    static Field field(Class<?> type, String name) throws Exception {
-        for (Class<?> c = type; c != null; c = c.getSuperclass()) {
-            try { Field f = c.getDeclaredField(name); f.setAccessible(true); return f; }
-            catch (NoSuchFieldException e) { }
-        }
-        throw new NoSuchFieldException(name);
-    }
-
-    static void set(Object target, String name, Object value) throws Exception {
-        field(target.getClass(), name).set(target, value);
-    }
-
-    static Object get(Object target, String name) throws Exception {
-        return field(target.getClass(), name).get(target);
-    }
-
-    static void setStatic(Class<?> type, String name, Object value) throws Exception {
-        field(type, name).set(null, value);
-    }
 
     static IFrameworkAccess framework(final int kombiMapMode) {
         return (IFrameworkAccess) Proxy.newProxyInstance(ClusterOwnershipTest.class.getClassLoader(),
@@ -113,10 +79,10 @@ public final class ClusterOwnershipTest {
     static void komoStateIsNeverForged(int kombiMapMode) throws Exception {
         IFrameworkAccess fw = framework(kombiMapMode);
         installCarPlayFramework(fw);
-        NavigationEnv env = (NavigationEnv) U.allocateInstance(NavigationEnv.class);
+        NavigationEnv env = (NavigationEnv) alloc(NavigationEnv.class);
         set(env, "framework", fw);
-        ClusterViewMode view = (ClusterViewMode) U.allocateInstance(ClusterViewMode.class);
-        Service service = (Service) U.allocateInstance(Service.class);
+        ClusterViewMode view = (ClusterViewMode) alloc(ClusterViewMode.class);
+        Service service = (Service) alloc(Service.class);
         service.rates = new ArrayList<Integer>();
         set(service, "clusterViewMode", view);
         set(view, "env", env);
@@ -124,18 +90,18 @@ public final class ClusterOwnershipTest {
         /* The cluster really reported graphics available at full rate. */
         set(view, "gfxAvailable", Boolean.TRUE);
         set(view, "dataRate", Integer.valueOf(2));
-        KOMOService komo = (KOMOService) U.allocateInstance(KOMOService.class);
+        KOMOService komo = (KOMOService) alloc(KOMOService.class);
         set(komo, "service", service);
         set(komo, "logChannel", silentLogChannel());
         BAPBridge bridge = new BAPBridge();
         set(bridge, "csRef", service);
-        Method force = BAPBridge.class.getDeclaredMethod("forceGfxAvailable", Boolean.TYPE);
-        force.setAccessible(true);
+        Method stop = BAPBridge.class.getDeclaredMethod("stopCustomRenderer", Boolean.TYPE);
+        stop.setAccessible(true);
         for (int fallback = 0; fallback < 2; fallback++) {
             set(bridge, "komoService", fallback == 0 ? komo : null);
             boolean[] edges = {true, false, true, true, false, false};
             for (int i = 0; i < edges.length; i++) {
-                force.invoke(bridge, Boolean.valueOf(edges[i]));
+                stop.invoke(bridge, Boolean.valueOf(edges[i]));
                 check(((Integer) get(view, "dataRate")).intValue() == 2,
                     "541=" + kombiMapMode + ": KOMO dataRate forged by edge " + i);
                 check(((Boolean) get(view, "gfxAvailable")).booleanValue(),

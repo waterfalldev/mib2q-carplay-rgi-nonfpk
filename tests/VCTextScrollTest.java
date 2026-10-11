@@ -11,14 +11,10 @@ import java.io.InputStream;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
+import static testsupport.TestSupport.*;
 
 /** Deterministic font-free runtime tests; optional official Unicode fixtures. */
 public final class VCTextScrollTest {
-    private static int checks;
-    private static void check(boolean value, String label) {
-        checks++;
-        if (!value) throw new AssertionError(label);
-    }
     private static void equal(Object a, Object b, String label) {
         check(a.equals(b), label + ": expected <" + a + "> got <" + b + ">");
     }

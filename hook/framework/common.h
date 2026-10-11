@@ -15,7 +15,6 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
-#include <strings.h>
 #include <ctype.h>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -53,37 +52,14 @@ typedef enum {
     HOOK_ERR_PARAM = -2,
     HOOK_ERR_MEMORY = -3,
     HOOK_ERR_IO = -4,
-    HOOK_ERR_NOT_FOUND = -5,
     HOOK_ERR_BUSY = -6
 } hook_result_t;
-
-/* Hook priority (lower = earlier) */
-typedef enum {
-    HOOK_PRIORITY_FIRST = 0,
-    HOOK_PRIORITY_HIGH = 25,
-    HOOK_PRIORITY_NORMAL = 50,
-    HOOK_PRIORITY_LOW = 75,
-    HOOK_PRIORITY_LAST = 100
-} hook_priority_t;
 
 /* Message direction */
 typedef enum {
     MSG_DIR_INCOMING = 0,   /* From iPhone to HU (decode path) */
     MSG_DIR_OUTGOING = 1    /* From HU to iPhone (encode/send path) */
 } msg_direction_t;
-
-/* Portable strcasestr for QNX 6.5 */
-static inline char* cp_strcasestr(const char* haystack, const char* needle) {
-    if (!haystack || !needle) return NULL;
-    if (!*needle) return (char*)haystack;
-    size_t needle_len = strlen(needle);
-    for (; *haystack; haystack++) {
-        if (strncasecmp(haystack, needle, needle_len) == 0) {
-            return (char*)haystack;
-        }
-    }
-    return NULL;
-}
 
 /* Binary read helpers (big-endian) */
 static inline uint16_t read_be16(const uint8_t* p) {
@@ -117,25 +93,26 @@ static inline void write_be64(uint8_t* p, uint64_t v) {
     write_be32(p + 4, (uint32_t)(v & 0xFFFFFFFF));
 }
 
-/* Safe string copy */
-static inline void safe_strcpy(char* dst, const char* src, size_t dst_size) {
-    if (!dst || dst_size == 0) return;
-    if (!src) {
-        dst[0] = '\0';
-        return;
+/* Absolute CLOCK_REALTIME deadline `ms` from now, for pthread_cond_timedwait. */
+static inline void deadline_after_ms(struct timespec* deadline, long ms) {
+    clock_gettime(CLOCK_REALTIME, deadline);
+    deadline->tv_sec += ms / 1000L;
+    deadline->tv_nsec += (ms % 1000L) * 1000000L;
+    if (deadline->tv_nsec >= 1000000000L) {
+        deadline->tv_sec++;
+        deadline->tv_nsec -= 1000000000L;
     }
-    size_t src_len = strlen(src);
-    size_t copy_len = (src_len < dst_size - 1) ? src_len : dst_size - 1;
-    memcpy(dst, src, copy_len);
-    dst[copy_len] = '\0';
 }
 
-/* Current timestamp in milliseconds */
-static inline uint64_t get_timestamp_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
-}
+/* Bounded wait: with `lock` held, block on `cond` until `pred` holds or `ms` elapse.
+ * The caller re-reads `pred` afterwards to learn which. */
+#define COND_WAIT_MS(cond, lock, ms, pred) do { \
+    struct timespec dl_; \
+    int rc_ = 0; \
+    deadline_after_ms(&dl_, (ms)); \
+    while (!(pred) && rc_ != ETIMEDOUT) \
+        rc_ = pthread_cond_timedwait((cond), (lock), &dl_); \
+} while (0)
 
 /* Raw transport-receive seam (cover art).
  * The framework interposes NmeTransport::Recv(NmeArray<uchar>&) — the symmetric

@@ -73,16 +73,6 @@ static cr_output_t g_map = { "map", CR_MAP_DISPLAYABLE_ID, CR_MOST_MAP_OUTPUT_PA
  * the health check knows to keep recovering (vs "renderer not yet up, ignore"). */
 static int g_window_expected = 0;
 
-/* Overridable IDs (env: CR_CONTEXT_ID, CR_DISPLAY_ID) */
-static int g_displayable_id;
-static int g_context_id;
-static int g_display_id;
-
-static int read_env_int(const char *name, int def) {
-    const char *v = getenv(name);
-    return (v && v[0]) ? atoi(v) : def;
-}
-
 /* The request Java writes in place (this unit's /tmp is procnto shared memory: no rename),
  * so a read can race the write.  Only a complete "<width> <height>\n" in range counts:
  *   OUTPUT_ABSENT  no file (Virtual Cockpit, before any MOST session, or no MAP view):
@@ -603,12 +593,6 @@ void platform_release_displayable(void) {
     release_output(&g_arrows);
 }
 
-/* Context focus is Java-driven now (DisplayManager.switchContext); this
- * renderer runs no dmdt.  Kept as a no-op so main.c / the macOS stub still
- * link against the same symbol. */
-void platform_ensure_focus(void) {
-}
-
 static void signal_handler(int sig) {
     /* Only use async-signal-safe functions (write, signal, raise). */
     static const char msg_segv[] = "platform_qnx: caught SIGSEGV\n";
@@ -637,13 +621,6 @@ int platform_init(int width, int height) {
     /* A MOST session earlier in this boot. */
     g_arrows.requested = read_output_request(&g_arrows, &g_arrows.out_w, &g_arrows.out_h) == OUTPUT_SIZE;
 
-    /* Our own displayable id (98), NOT the stock route-guidance slot (20).
-     * No env override — pointing the renderer at a different id would silently
-     * leave us out of the cluster MOST encoder path. */
-    g_displayable_id = CR_DISPLAYABLE_ID;
-    g_context_id     = read_env_int("CR_CONTEXT_ID", CR_CONTEXT_ID);
-    g_display_id     = read_env_int("CR_DISPLAY_ID", CR_DISPLAY_ID);
-
     if (!getenv("IPL_CONFIG_DIR"))
         putenv("IPL_CONFIG_DIR=/etc/eso/production");
 
@@ -655,8 +632,7 @@ int platform_init(int width, int height) {
     /* Force line-buffered stderr so output isn't lost on crash */
     setvbuf(stderr, NULL, _IOLBF, 0);
 
-    fprintf(stderr, "platform_qnx: displayable=%d context=%d display=%d\n",
-            g_displayable_id, g_context_id, g_display_id);
+    fprintf(stderr, "platform_qnx: displayable=%d\n", CR_DISPLAYABLE_ID);
     if (!output_is_content(&g_arrows))
         fprintf(stderr, "platform_qnx: output window %dx%d (MOST KOMO stream) for %dx%d content\n",
                 g_arrows.out_w, g_arrows.out_h, g_width, g_height);
@@ -716,7 +692,7 @@ int platform_init(int width, int height) {
     eglBindAPI(EGL_OPENGL_ES_API);
 
     fprintf(stderr, "platform_qnx: display_create_window(%dx%d, disp=%d)...\n",
-            width, height, g_displayable_id);
+            width, height, CR_DISPLAYABLE_ID);
     if (create_window_and_egl_surface(&g_arrows) != 0) {
         return -1;
     }
@@ -797,17 +773,6 @@ void platform_shutdown(void) {
 void platform_get_framebuffer_size(int *width, int *height) {
     *width = g_width;
     *height = g_height;
-}
-
-void platform_get_routing_ids(int *display_id, int *context_id, int *displayable_id) {
-    if (display_id) *display_id = g_display_id;
-    if (context_id) *context_id = g_context_id;
-    if (displayable_id) *displayable_id = g_displayable_id;
-}
-
-int platform_key_tap(int key) {
-    (void)key;
-    return 0;
 }
 
 #endif /* PLATFORM_QNX */

@@ -36,7 +36,7 @@ public class RouteGuidance implements CarplayBus.Listener {
     /* State */
     private BAPBridge bap;
     private volatile boolean running;
-    private boolean rgActive = false;
+    private volatile boolean rgActive = false;
     /* Separate from rgActive: route intent/BAP ownership may already be active while stock
      * ctx 74 is still held.  FRAME_READY gates the route-text scroll and cached-state replay. */
     private boolean presentationConfirmed = false;
@@ -89,8 +89,8 @@ public class RouteGuidance implements CarplayBus.Listener {
 
     private final BAPBridge.PresentationListener bapPresentationListener =
         new BAPBridge.PresentationListener() {
-            public void onPresentationStateChanged(String reason) {
-                requestPresentationCheck(reason);
+            public void onPresentationStateChanged() {
+                requestPresentationCheck();
             }
         };
 
@@ -163,8 +163,6 @@ public class RouteGuidance implements CarplayBus.Listener {
         public int[] mTurnAngle = new int[MAX_MANEUVERS];
         /* Distinguish a received -1 degree value from the legacy empty-slot -1. */
         public boolean[] mTurnAnglePresent = new boolean[MAX_MANEUVERS];
-        /* Z-LevelGuidance: 0=none, 1=up, 2=down, -1=unknown */
-        public int[] mZLevel = new int[MAX_MANEUVERS];
         public int[] mJunctionType = new int[MAX_MANEUVERS];
         public int[] mDrivingSide = new int[MAX_MANEUVERS];
         public int[] mDistance = new int[MAX_MANEUVERS];
@@ -258,7 +256,6 @@ public class RouteGuidance implements CarplayBus.Listener {
             mType[i] = -1;
             mTurnAngle[i] = -1;
             mTurnAnglePresent[i] = false;
-            mZLevel[i] = -1;
             mJunctionType[i] = -1;
             mDrivingSide[i] = -1;
             mDistance[i] = -1;
@@ -448,7 +445,7 @@ public class RouteGuidance implements CarplayBus.Listener {
         /* Parse into state (delta) */
         parse(d);
         if (state.dirtyMask == 0) {
-            if (rgActive && !presentationConfirmed) requestPresentationCheck("empty-rgi-delta");
+            if (rgActive && !presentationConfirmed) requestPresentationCheck();
             return;
         }
 
@@ -535,8 +532,8 @@ public class RouteGuidance implements CarplayBus.Listener {
                 /* ctx 80 (black backing + maneuver plane) and the Maps /map URL follow the BAP
                  * start itself: that is the edge on which the Kombi animates its KDK slot in, so
                  * waiting for FRAME_READY only left the slot empty next to Maps' own turn card
-                 * (seen 2026-09-21).  presentationConfirmed still tracks renderer/BAP readiness
-                 * for the text hold and position scroll, but no longer gates the context. */
+                 * (seen 2026-09-21).  presentationConfirmed tracks renderer/BAP readiness for
+                 * the text hold and position scroll only, not the context. */
                 presentationConfirmed = false;
                 rgActive = bap != null && bap.onStart();
                 com.luka.carplay.core.ScreenModule.setNavActive(rgActive);
@@ -545,7 +542,7 @@ public class RouteGuidance implements CarplayBus.Listener {
                         Log.w(TAG, "RG activation pending: BAP start did not complete; keeping ctx 74");
                         bapStartPendingLogged = true;
                     }
-                    requestPresentationCheck("bap-start-pending");
+                    requestPresentationCheck();
                 } else {
                     bapStartPendingLogged = false;
                 }
@@ -591,11 +588,11 @@ public class RouteGuidance implements CarplayBus.Listener {
             }
             if (updatePublished) state.clearDirty();
             if (bap.takePositionScrollChange() || !confirmed) wakePositionScroll();
-            if (!confirmed || !updatePublished) requestPresentationCheck("presentation-update-pending");
+            if (!confirmed || !updatePublished) requestPresentationCheck();
         }
     }
 
-    private void requestPresentationCheck(String reason) {
+    private void requestPresentationCheck() {
         synchronized (presentationLock) {
             if (!running) return;
             presentationDrivePending = true;
@@ -622,8 +619,10 @@ public class RouteGuidance implements CarplayBus.Listener {
             + (mode == com.luka.carplay.core.ScreenModule.VIEWAREA_SMALLSCREEN ? "smallscreen" : "fullscreen"));
     }
 
-    /** Steering-wheel encoder press: toggle phase without touching the HMI/BAP caller thread. */
-    private synchronized void requestInfoModeToggle() {
+    /** Steering-wheel encoder press: toggle phase without touching the HMI/BAP caller thread.
+     *  Not synchronized: it runs on the DSI key callback and must not wait for a BAP update
+     *  that holds the route monitor; it reads only volatile flags and queues under presentationLock. */
+    private void requestInfoModeToggle() {
         /* Same phase toggle in both views, with all text in FctID 19:
          * smallscreen shows U+25CC + duration, fullscreen shows arrival + duration.
          * FctID 20 stays empty. The old smallscreen branch
@@ -819,6 +818,13 @@ public class RouteGuidance implements CarplayBus.Listener {
      * Parsing
      * ============================================================ */
 
+    /* Any of these makes a frame a route update (hasRouteUpdate). */
+    private static final String[] ROUTE_UPDATE_KEYS = {
+        "route_state", "maneuver_state", "maneuver_count", "maneuver_list", "dist_dest_m",
+        "dist_maneuver_m", "eta_seconds", "time_remaining_seconds", "current_road", "destination",
+        "visible_in_app", "component_ids", "component_count", "source_supports_rg"
+    };
+
     private void parse(CarplayBus.Data d) {
         // Dirty means pending publication, not just changed in this frame.
         // Keep failed HUD/renderer updates across subsequent distance-only deltas.
@@ -847,23 +853,8 @@ public class RouteGuidance implements CarplayBus.Listener {
                 state.markAllDirtyForReplay();
             }
         }
-        boolean isRouteUpdateDelta =
-            d.has("route_state") ||
-            d.has("maneuver_state") ||
-            d.has("maneuver_count") ||
-            d.has("maneuver_list") ||
-            d.has("dist_dest_m") ||
-            d.has("dist_maneuver_m") ||
-            d.has("eta_seconds") ||
-            d.has("time_remaining_seconds") ||
-            d.has("current_road") ||
-            d.has("destination") ||
-            d.has("visible_in_app") ||
-            d.has("component_ids") ||
-            d.has("component_count") ||
-            d.has("source_supports_rg");
-        if (isRouteUpdateDelta) {
-            hasRouteUpdate = true;
+        for (int k = 0; k < ROUTE_UPDATE_KEYS.length && !hasRouteUpdate; k++) {
+            if (d.has(ROUTE_UPDATE_KEYS[k])) hasRouteUpdate = true;
         }
 
         if (d.has("disconnect_reason")) {
@@ -1024,55 +1015,33 @@ public class RouteGuidance implements CarplayBus.Listener {
                 state.markDirty(State.DIRTY_VISIBLE_IN_APP);
             }
         }
-        if (d.has("lane_guidance_showing")) {
-            int v = d.num("lane_guidance_showing", -1);
-            if (v != state.laneGuidanceShowing) {
-                state.laneGuidanceShowing = v;
-                state.markDirty(State.DIRTY_LANE_GUIDANCE);
-            }
-        }
-        if (d.has("lane_guidance_total")) {
-            int v = d.num("lane_guidance_total", -1);
-            if (v != state.laneGuidanceTotal) {
-                state.laneGuidanceTotal = v;
-                state.markDirty(State.DIRTY_LANE_GUIDANCE);
-            }
-        }
-        if (d.has("lane_guidance_index")) {
-            int v = d.num("lane_guidance_index", -1);
-            if (v != state.laneGuidanceIndex) {
-                state.laneGuidanceIndex = v;
-                state.markDirty(State.DIRTY_LANE_GUIDANCE);
-            }
-        }
-        if (d.has("lane_guidance_slot")) {
-            int v = d.num("lane_guidance_slot", -1);
-            if (v != state.laneGuidanceSlot) {
-                state.laneGuidanceSlot = v;
-                state.markDirty(State.DIRTY_LANE_GUIDANCE);
-            }
+        int showing = intOr(d, "lane_guidance_showing", state.laneGuidanceShowing);
+        int total = intOr(d, "lane_guidance_total", state.laneGuidanceTotal);
+        int index = intOr(d, "lane_guidance_index", state.laneGuidanceIndex);
+        int slot = intOr(d, "lane_guidance_slot", state.laneGuidanceSlot);
+        if (showing != state.laneGuidanceShowing || total != state.laneGuidanceTotal
+                || index != state.laneGuidanceIndex || slot != state.laneGuidanceSlot) {
+            state.laneGuidanceShowing = showing;
+            state.laneGuidanceTotal = total;
+            state.laneGuidanceIndex = index;
+            state.laneGuidanceSlot = slot;
+            state.markDirty(State.DIRTY_LANE_GUIDANCE);
         }
 
-        if (d.has("dist_dest_m")) {
-            int v = d.num("dist_dest_m", -1);
-            if (v != state.distDestM) {
-                state.distDestM = v;
-                state.markDirty(State.DIRTY_DIST_DEST);
-            }
+        int distDest = intOr(d, "dist_dest_m", state.distDestM);
+        if (distDest != state.distDestM) {
+            state.distDestM = distDest;
+            state.markDirty(State.DIRTY_DIST_DEST);
         }
-        if (d.has("dist_maneuver_m")) {
-            int v = d.num("dist_maneuver_m", -1);
-            if (v != state.distManeuverM) {
-                state.distManeuverM = v;
-                state.markDirty(State.DIRTY_DIST_MAN);
-            }
+        int distManeuver = intOr(d, "dist_maneuver_m", state.distManeuverM);
+        if (distManeuver != state.distManeuverM) {
+            state.distManeuverM = distManeuver;
+            state.markDirty(State.DIRTY_DIST_MAN);
         }
-        if (d.has("eta_seconds")) {
-            int v = d.num("eta_seconds", -1);
-            if (v != state.etaSeconds) {
-                state.etaSeconds = v;
-                state.markDirty(State.DIRTY_ETA);
-            }
+        int eta = intOr(d, "eta_seconds", state.etaSeconds);
+        if (eta != state.etaSeconds) {
+            state.etaSeconds = eta;
+            state.markDirty(State.DIRTY_ETA);
         }
         if (d.has("time_remaining_seconds")) {
             long v = d.num64("time_remaining_seconds", -1);
@@ -1082,96 +1051,51 @@ public class RouteGuidance implements CarplayBus.Listener {
                 state.markDirty(State.DIRTY_TIME_REMAINING);
             }
         }
-        if (d.has("current_road")) {
-            String v = d.str("current_road");
-            if (!strEq(state.currentRoad, v)) {
-                state.currentRoad = v;
-                state.markDirty(State.DIRTY_CURRENT_ROAD);
-            }
+        String road = strOr(d, "current_road", state.currentRoad);
+        if (!strEq(road, state.currentRoad)) {
+            state.currentRoad = road;
+            state.markDirty(State.DIRTY_CURRENT_ROAD);
         }
-        if (d.has("destination")) {
-            String v = d.str("destination");
-            if (!strEq(state.destination, v)) {
-                state.destination = v;
-                state.markDirty(State.DIRTY_DESTINATION);
-            }
+        String destination = strOr(d, "destination", state.destination);
+        if (!strEq(destination, state.destination)) {
+            state.destination = destination;
+            state.markDirty(State.DIRTY_DESTINATION);
         }
 
-        /* Parse lane-guidance cache lg0_, lg1_, ... */
+        /* The slots this frame carries: lane-guidance cache lg<i>_ and maneuvers m<i>_. */
+        boolean[] lgSlots = new boolean[MAX_MANEUVERS], mSlots = new boolean[MAX_MANEUVERS];
+        for (int k = 0; k < d.size(); k++) {
+            markSlot(d.key(k), "lg", lgSlots);
+            markSlot(d.key(k), "m", mSlots);
+        }
         for (int i = 0; i < MAX_MANEUVERS; i++) {
+            if (!lgSlots[i]) continue;
             String p = "lg" + i + "_";
-
-            if (d.has(p + "index")) {
-                int v = d.num(p + "index", -1);
-                if (v != state.lgIndex[i]) {
-                    state.lgIndex[i] = v;
-                    state.lgLaneCount[i] = -1;
-                    state.lgLaneComplete[i] = -1;
-                    state.lgLanePositions[i] = null;
-                    state.lgLaneDirections[i] = null;
-                    state.lgLaneStatus[i] = null;
-                    state.lgLaneAngles[i] = null;
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
+            boolean lanes = false;
+            if (setInt(d, p + "index", state.lgIndex, i)) {
+                state.lgLaneCount[i] = -1;
+                state.lgLaneComplete[i] = -1;
+                state.lgLanePositions[i] = null;
+                state.lgLaneDirections[i] = null;
+                state.lgLaneStatus[i] = null;
+                state.lgLaneAngles[i] = null;
+                lanes = true;
             }
-            if (d.has(p + "lane_count")) {
-                int v = d.num(p + "lane_count", -1);
-                if (v != state.lgLaneCount[i]) {
-                    state.lgLaneCount[i] = v;
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
-            }
-            if (d.has(p + "lane_complete")) {
-                int v=d.num(p+"lane_complete",-1);
-                if(v!=state.lgLaneComplete[i]) {
-                    state.lgLaneComplete[i]=v;state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
-            }
-            if (d.has(p + "lane_positions")) {
-                int[] v = d.intList(p + "lane_positions");
-                if (!intArrayEq(state.lgLanePositions[i], v)) {
-                    state.lgLanePositions[i] = v;
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
-            }
-            if (d.has(p + "lane_directions")) {
-                int[] v = d.intList(p + "lane_directions");
-                if (!intArrayEq(state.lgLaneDirections[i], v)) {
-                    state.lgLaneDirections[i] = v;
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
-            }
-            if (d.has(p + "lane_status")) {
-                int[] v = d.intList(p + "lane_status");
-                if (!intArrayEq(state.lgLaneStatus[i], v)) {
-                    state.lgLaneStatus[i] = v;
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
-            }
-            if (d.has(p + "lane_angles")) {
-                int[][] v = parseLaneAnglesMatrix(d.str(p + "lane_angles", null));
-                if (!intMatrixEq(state.lgLaneAngles[i], v)) {
-                    state.lgLaneAngles[i] = v;
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
-            }
+            lanes |= setInt(d, p + "lane_count", state.lgLaneCount, i);
+            lanes |= setInt(d, p + "lane_complete", state.lgLaneComplete, i);
+            lanes |= setList(d, p + "lane_positions", state.lgLanePositions, i);
+            lanes |= setList(d, p + "lane_directions", state.lgLaneDirections, i);
+            lanes |= setList(d, p + "lane_status", state.lgLaneStatus, i);
+            lanes |= setAngles(d, p + "lane_angles", state.lgLaneAngles, i);
+            if (lanes) state.markDirty(State.DIRTY_LANE_GUIDANCE);
         }
 
-        /* Parse maneuvers m0_, m1_, ... */
+        /* MHI3 gating: discard all per-slot maneuver data while there is no route update yet, or
+         * the maneuver list is explicitly empty.  It gates every key of a slot, new ones included. */
+        if (!acceptsManeuverData()) return;
         for (int i = 0; i < MAX_MANEUVERS; i++) {
+            if (!mSlots[i]) continue;
             String p = "m" + i + "_";
-
-            /* MHI3 gating: discard ALL per-index maneuver data for this slot when we have no route
-             * update yet, or the maneuver list is explicitly empty (canProcessManeuverIndex is
-             * index-independent — it's a global "accept maneuver data right now?" check).
-             * Gate on the predicate ALONE: the old key-list form omitted z_level/exit_info/
-             * exit_angle/lane_count/lane_positions/lane_directions/lane_status/linked_lane_guidance_*,
-             * so a delta carrying only those keys bypassed the gate and polluted a rejected slot
-             * (audit #7).  Predicate-only is also future-proof — new keys are gated automatically. */
-            if (!canProcessManeuverIndex(i)) {
-                continue;
-            }
-
             if (d.has(p + "ver")) {
                 int v = d.num(p + "ver", -1);
                 if (v >= 0 && v != state.mVer[i]) {
@@ -1182,180 +1106,98 @@ public class RouteGuidance implements CarplayBus.Listener {
                 }
             }
 
-            if (d.has(p + "type")) {
-                int v = d.num(p + "type", -1);
-                if (v != state.mType[i]) {
-                    state.mType[i] = v;
-                    state.markManeuverDirty(i, State.MAN_DIR_ICON);
-                }
-            }
-            if (d.has(p + "turn_angle")) {
-                int v = d.num(p + "turn_angle", 1000);
-                if (v != state.mTurnAngle[i] || v != state.mExitAngle[i]
-                        || !state.mTurnAnglePresent[i]) {
-                    state.mTurnAngle[i] = v;
-                    state.mTurnAnglePresent[i] = true;
-                    /*
-                     * Our C hook currently publishes the iAP2 "exit angle" field under the
-                     * legacy key name "turn_angle". Keep an explicit copy so side-streets
-                     * mapping can use MHI3-like naming.
-                     */
-                    state.mExitAngle[i] = v;
-                    state.markManeuverDirty(i, State.MAN_DIR_ICON);
-                }
-            }
-            if (d.has(p + "z_level")) {
-                int v = d.num(p + "z_level", -1);
-                if (v != state.mZLevel[i]) {
-                    state.mZLevel[i] = v;
-                    state.markManeuverDirty(i, State.MAN_DIR_ICON);
-                }
-            }
-            if (d.has(p + "zlevel")) {
-                int v = d.num(p + "zlevel", -1);
-                if (v != state.mZLevel[i]) {
-                    state.mZLevel[i] = v;
-                    state.markManeuverDirty(i, State.MAN_DIR_ICON);
-                }
-            }
-            if (d.has(p + "junction_type")) {
-                int v = d.num(p + "junction_type", -1);
-                if (v != state.mJunctionType[i]) {
-                    state.mJunctionType[i] = v;
-                    state.markManeuverDirty(i, State.MAN_DIR_ICON);
-                }
-            }
-            if (d.has(p + "driving_side")) {
-                int v = d.num(p + "driving_side", -1);
-                if (v != state.mDrivingSide[i]) {
-                    state.mDrivingSide[i] = v;
-                    state.markManeuverDirty(i, State.MAN_DIR_ICON);
-                }
-            }
-            if (d.has(p + "distance")) {
-                int v = d.num(p + "distance", -1);
-                if (v != state.mDistance[i]) {
-                    state.mDistance[i] = v;
-                    /*
-                     * MHI3 computes bargraph in the maneuver-update path (tbt_renderer updateCurrentManeuver)
-                     * using distanceBetweenManeuver. Trigger a distance+bargraph refresh when this changes.
-                     */
-                    state.markDirty(State.DIRTY_DIST_MAN);
-                }
-            }
-            if (d.has(p + "name")) {
-                String v = d.str(p + "name");
-                if (!strEq(state.mName[i], v)) {
-                    state.mName[i] = v;
-                    state.markManeuverDirty(i, State.MAN_DIR_TEXT);
-                }
-            }
-            if (d.has(p + "after_road")) {
-                String v = d.str(p + "after_road");
-                if (!strEq(state.mAfterRoad[i], v)) {
-                    state.mAfterRoad[i] = v;
-                    state.markManeuverDirty(i, State.MAN_DIR_TEXT);
-                }
-            }
-            if (d.has(p + "exit_info")) {
-                String v = d.str(p + "exit_info");
-                if (!strEq(state.mExitInfo[i], v)) {
-                    state.mExitInfo[i] = v;
-                    state.markManeuverDirty(i, State.MAN_DIR_TEXT);
-                }
-            }
-            if (d.has(p + "junction_angles")) {
-                int[] newAngles = d.intList(p + "junction_angles");
-                if (!intArrayEq(state.mJunctionAngles[i], newAngles)) {
-                    state.mJunctionAngles[i] = newAngles;
-                    /* Side streets influence the maneuver rendering. */
-                    state.markManeuverDirty(i, State.MAN_DIR_ICON);
-                }
-            }
+            boolean icon = setInt(d, p + "type", state.mType, i);
+            icon |= setInt(d, p + "junction_type", state.mJunctionType, i);
+            icon |= setInt(d, p + "driving_side", state.mDrivingSide, i);
+            icon |= setList(d, p + "junction_angles", state.mJunctionAngles, i);   /* side streets */
             if (d.has(p + "exit_angle")) {
                 int v = d.num(p + "exit_angle", 1000);
-                if (v != state.mExitAngle[i] || v != state.mTurnAngle[i]
-                        || !state.mTurnAnglePresent[i]) {
+                if (v != state.mExitAngle[i] || v != state.mTurnAngle[i] || !state.mTurnAnglePresent[i]) {
                     state.mExitAngle[i] = v;
                     state.mTurnAngle[i] = v;
                     state.mTurnAnglePresent[i] = true;
-                    state.markManeuverDirty(i, State.MAN_DIR_ICON);
+                    icon = true;
                 }
             }
-            if (d.has(p + "lane_count")) {
-                int v = d.num(p + "lane_count", -1);
-                if (v != state.mLaneCount[i]) {
-                    state.mLaneCount[i] = v;
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
-            }
-            if (d.has(p + "linked_lane_guidance_index")) {
-                int v = d.num(p + "linked_lane_guidance_index", -1);
-                if (v != state.mLinkedLaneGuidanceIndex[i]) {
-                    state.mLinkedLaneGuidanceIndex[i] = v;
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
-            }
-            if (d.has(p + "linked_lane_guidance_slot")) {
-                int v = d.num(p + "linked_lane_guidance_slot", -1);
-                if (v != state.mLinkedLaneGuidanceSlot[i]) {
-                    state.mLinkedLaneGuidanceSlot[i] = v;
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
-            }
-            if (d.has(p + "lane_positions")) {
-                int[] v = d.intList(p + "lane_positions");
-                if (!intArrayEq(state.mLanePositions[i], v)) {
-                    state.mLanePositions[i] = v;
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
-            }
-            if (d.has(p + "lane_directions")) {
-                int[] v = d.intList(p + "lane_directions");
-                if (!intArrayEq(state.mLaneDirections[i], v)) {
-                    state.mLaneDirections[i] = v;
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
-            }
-            if (d.has(p + "lane_status")) {
-                int[] v = d.intList(p + "lane_status");
-                if (!intArrayEq(state.mLaneStatus[i], v)) {
-                    state.mLaneStatus[i] = v;
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
-            }
-            if (d.has(p + "lane_angles")) {
-                int[][] v = parseLaneAnglesMatrix(d.str(p + "lane_angles", null));
-                if (!intMatrixEq(state.mLaneAngles[i], v)) {
-                    state.mLaneAngles[i] = v;
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
-                }
-            }
-        }
+            if (icon) state.markManeuverDirty(i, State.MAN_DIR_ICON);
 
+            /* MHI3 computes the bargraph in the maneuver-update path (tbt_renderer
+             * updateCurrentManeuver) from distanceBetweenManeuver: refresh distance and bargraph. */
+            if (setInt(d, p + "distance", state.mDistance, i)) state.markDirty(State.DIRTY_DIST_MAN);
+
+            boolean text = setStr(d, p + "name", state.mName, i);
+            text |= setStr(d, p + "after_road", state.mAfterRoad, i);
+            text |= setStr(d, p + "exit_info", state.mExitInfo, i);
+            if (text) state.markManeuverDirty(i, State.MAN_DIR_TEXT);
+
+            boolean lanes = setInt(d, p + "lane_count", state.mLaneCount, i);
+            lanes |= setInt(d, p + "linked_lane_guidance_index", state.mLinkedLaneGuidanceIndex, i);
+            lanes |= setInt(d, p + "linked_lane_guidance_slot", state.mLinkedLaneGuidanceSlot, i);
+            lanes |= setList(d, p + "lane_positions", state.mLanePositions, i);
+            lanes |= setList(d, p + "lane_directions", state.mLaneDirections, i);
+            lanes |= setList(d, p + "lane_status", state.mLaneStatus, i);
+            lanes |= setAngles(d, p + "lane_angles", state.mLaneAngles, i);
+            if (lanes) state.markDirty(State.DIRTY_LANE_GUIDANCE);
+        }
+    }
+
+    /* A field of the frame, or the value it already has when the frame does not carry it. */
+    private static int intOr(CarplayBus.Data d, String key, int current) {
+        return d.has(key) ? d.num(key, -1) : current;
+    }
+
+    private static String strOr(CarplayBus.Data d, String key, String current) {
+        return d.has(key) ? d.str(key) : current;
+    }
+
+    /* Slot setters: the frame's value for key into a[i]; true when it changed. */
+    private static boolean setInt(CarplayBus.Data d, String key, int[] a, int i) {
+        int v = intOr(d, key, a[i]);
+        if (v == a[i]) return false;
+        a[i] = v;
+        return true;
+    }
+
+    private static boolean setStr(CarplayBus.Data d, String key, String[] a, int i) {
+        String v = strOr(d, key, a[i]);
+        if (strEq(v, a[i])) return false;
+        a[i] = v;
+        return true;
+    }
+
+    private static boolean setList(CarplayBus.Data d, String key, int[][] a, int i) {
+        if (!d.has(key)) return false;
+        int[] v = d.intList(key);
+        if (intArrayEq(a[i], v)) return false;
+        a[i] = v;
+        return true;
+    }
+
+    private static boolean setAngles(CarplayBus.Data d, String key, int[][][] a, int i) {
+        if (!d.has(key)) return false;
+        int[][] v = parseLaneAnglesMatrix(d.str(key, null));
+        if (intMatrixEq(a[i], v)) return false;
+        a[i] = v;
+        return true;
+    }
+
+    /* Marks slot i when key is prefix, the decimal i (below slots.length) and '_'. */
+    private static void markSlot(String key, String prefix, boolean[] slots) {
+        if (!key.startsWith(prefix)) return;
+        int i = 0, at = prefix.length();
+        while (at < key.length() && i < slots.length && key.charAt(at) >= '0' && key.charAt(at) <= '9')
+            i = i * 10 + (key.charAt(at++) - '0');
+        if (at > prefix.length() && at < key.length() && key.charAt(at) == '_' && i < slots.length)
+            slots[i] = true;
     }
 
     /**
      * Match dio_manager CRouteGuidanceUpdateProcessorImpl::isRouteGuidanceManeuverIndexGreater.
+     * The C hook already gates on the original iOS indexes and remaps them into fixed slots, so
+     * only the list matters here: none yet allows, an explicit empty one rejects.
      */
-    private boolean canProcessManeuverIndex(int idx) {
-        if (!hasRouteUpdate) {
-            return false;
-        }
-        if (state.maneuverOrder == null) {
-            /* Null list -> allow processing. */
-            return true;
-        }
-        if (state.maneuverOrder.length == 0) {
-            /* Explicit empty list -> reject. */
-            return false;
-        }
-        /*
-         * Our C hook remaps iOS maneuver indexes into fixed slots [0..MAX_MANEUVERS-1] and applies the
-         * real MHI3 index gating using the original iOS indexes. At this layer, "idx" is a slot index,
-         * so comparing it to min(maneuverOrder) would be meaningless and could drop valid updates.
-         */
-        return true;
+    private boolean acceptsManeuverData() {
+        return hasRouteUpdate && (state.maneuverOrder == null || state.maneuverOrder.length > 0);
     }
 
     private static boolean strEq(String a, String b) {
@@ -1363,7 +1205,7 @@ public class RouteGuidance implements CarplayBus.Listener {
         return a.equals(b);
     }
 
-    private static boolean intArrayEq(int[] a, int[] b) {
+    static boolean intArrayEq(int[] a, int[] b) {
         if (a == b) return true;
         if (a == null || b == null) return false;
         if (a.length != b.length) return false;

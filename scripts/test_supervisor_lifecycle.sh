@@ -28,7 +28,13 @@ export STARTUP_TEST_DIO STARTUP_TEST_MONITOR
 DIODIR=$STARTUP_APP H=$STARTUP_HOOKS WLOG=$TEST_DIR/startup.log \
 OWNER_FILE=$TEST_DIR/startup.owner \
     sh "$ROOT/deploy/smartphone_integrator/carplay_startup.sh" alpha beta
-sleep 1
+# dio_manager and the monitor are started in the background; wait for both to write their files.
+WAIT_N=0
+while [ $WAIT_N -lt 100 ]; do
+    [ -s "$TEST_DIR/dio.env" ] && [ -s "$TEST_DIR/monitor.env" ] && break
+    sleep 0.1
+    WAIT_N=$((WAIT_N + 1))
+done
 STARTUP_OLD_IFS=$IFS
 IFS='|' read STARTUP_DIO_PID STARTUP_DIO_PRELOAD STARTUP_DIO_ARGS < "$STARTUP_TEST_DIO"
 IFS='|' read STARTUP_MON_PRELOAD STARTUP_MON_PID < "$STARTUP_TEST_MONITOR"

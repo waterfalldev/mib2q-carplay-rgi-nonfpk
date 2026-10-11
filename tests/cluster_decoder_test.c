@@ -6,6 +6,7 @@
 #define CD_OMX_CORE NULL
 #define CD_STATE_WAIT_MS 300
 #include "../maneuver_render/cluster_decoder.c"
+#include "../maneuver_render/h264_sps.c"
 #include "most/check.h"
 
 #include <stdlib.h>
@@ -489,18 +490,18 @@ int main(void) {
         size_t n;
         int matrix, range;
         n = sps_plain(sps);
-        range = sps_range(sps, (uint32_t)n, &matrix);
+        range = h264_sps_range(sps, (uint32_t)n, &matrix);
         check(range == -1 && matrix == -1, "an SPS without VUI signals no range (%d)", range);
         n = sps_high(sps, 1, 1);
         check(memmem(sps, n, "\x00\x00\x03", 3) != NULL, "the high-profile SPS needs emulation prevention");
-        range = sps_range(sps, (uint32_t)n, &matrix);
+        range = h264_sps_range(sps, (uint32_t)n, &matrix);
         check(range == 1 && matrix == 1, "high profile past scaling lists, poc type 1, fields and an extended "
               "aspect ratio: full range, matrix 1 (%d, %d)", range, matrix);
         n = sps_high(sps, 0, -1);
-        range = sps_range(sps, (uint32_t)n, &matrix);
+        range = h264_sps_range(sps, (uint32_t)n, &matrix);
         check(range == 0 && matrix == -1, "video range, no colour description (%d, %d)", range, matrix);
-        check(sps_range(sps, 12, &matrix) == -1, "a cut SPS signals nothing");
-        check(sps_range(frame, sizeof(frame), &matrix) == -1, "no SPS: nothing");
+        check(h264_sps_range(sps, 12, &matrix) == -1, "a cut SPS signals nothing");
+        check(h264_sps_range(frame, sizeof(frame), &matrix) == -1, "no SPS: nothing");
 
         n = sps_high(sps, 1, 1);
         check(cluster_decoder_feed(8, 1, sps, (uint32_t)n, 0) == 0 && g_range == 1, "a full-range stream's config");

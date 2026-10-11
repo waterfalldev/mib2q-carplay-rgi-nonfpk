@@ -6,19 +6,14 @@
  *   context : de.audi.app.terminalmode.IContext
  *     .getFramework()      -> IFrameworkAccess  (HMI service app, storage, DSI svc…)
  *     .getServiceManager() -> IServiceManager   (OSGi service lookup)
- *     .getDeviceManager()  -> IDeviceManager
- *   IFrameworkAccess.getHmiServiceApp() -> IHMIServiceApp
- *     (the object TMVirtualButtonListener uses: getVirtualButtonModel(...) — our roller).
  *
  * Copyright (c) 2026 LuKa (@LuKa_dev)
  */
 package com.luka.carplay.core;
 
 import de.audi.app.terminalmode.IContext;
-import de.audi.app.terminalmode.device.IDeviceManager;
 import de.audi.app.terminalmode.osgi.IServiceManager;
 import de.audi.atip.base.IFrameworkAccess;
-import de.audi.atip.hmi.IHMIServiceApp;
 
 import org.osgi.framework.ServiceReference;
 
@@ -33,11 +28,8 @@ public final class FrameworkRef {
 
     public boolean isReady() { return ctx != null && fw != null; }
 
-    public IContext context()               { return ctx; }
     public IFrameworkAccess framework()      { return fw; }
     public IServiceManager serviceManager()  { return ctx != null ? ctx.getServiceManager() : null; }
-    public IDeviceManager deviceManager()    { return ctx != null ? ctx.getDeviceManager() : null; }
-    public IHMIServiceApp hmiServiceApp()    { return fw != null ? fw.getHmiServiceApp() : null; }
 
     /** Paired lookup handle: callers with a session lifecycle must release it. */
     public ServiceHandle getServiceHandle(Class iface) {

@@ -207,20 +207,16 @@ public class HighPriorityResourceTracker
 
     private void parkingActivated() {
         PdcSmallStageGuard.parkingStopped();
-        if (this.context.getDeviceManager().getActiveDevice().isCarplayDevice()) {
+        boolean carplay = this.context.getDeviceManager().getActiveDevice().isCarplayDevice();
+        if (carplay) {
             ChoiceModelApp choicemodelapp = this.context
                 .getChoiceModel(ICoreTerminalModeModelBank.SWITCH_TO_MAIN_WIZARD_CHOICE);
             choicemodelapp.setValue(choicemodelapp.getValue() == 0 ? 1 : 0);
-            this.context
-                .getChoiceModel(ICoreTerminalModeModelBank.SMARTPHONE_SCREEN_BLOCKED_CHOICE)
-                .setValue(this.context.getDeviceManager().getActiveDevice().isCarplayDevice() ? 3 : 4);
-            this.rvcActive.accept(new Boolean(true));
-        } else {
-            this.context
-                .getChoiceModel(ICoreTerminalModeModelBank.SMARTPHONE_SCREEN_BLOCKED_CHOICE)
-                .setValue(this.context.getDeviceManager().getActiveDevice().isCarplayDevice() ? 3 : 4);
-            this.rvcActive.accept(new Boolean(true));
         }
+        this.context
+            .getChoiceModel(ICoreTerminalModeModelBank.SMARTPHONE_SCREEN_BLOCKED_CHOICE)
+            .setValue(carplay ? 3 : 4);
+        this.rvcActive.accept(new Boolean(true));
 
         this.smartphoneProperties.getPropertyMURVCActive().accept(new Boolean(true));
     }

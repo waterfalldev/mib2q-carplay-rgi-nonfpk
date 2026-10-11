@@ -73,7 +73,7 @@ in this firmware dump, so treat those exact names as inferred. None of this chai
 
 On this branch the cluster keeps showing the **stock native map** (its own MOST video path), and our
 maneuver plane is composited into that stream ([compositing](../../cluster/compositing.md)), so the patch does not need to drive
-the gfx gate itself. `BAPBridge.forceGfxAvailable` writes data rate + `gfxAvailable` only when
-`Util.isClusterMapMOST()` is true and is a no-op on the FPK cluster; forcing the data rate there parked
-the stock kombi map in its hidden context (see [java-cleanup-audit](../../maintenance/java-cleanup-audit.md)). Context 80 is selected on the
+the gfx gate itself. `BAPBridge` never writes the KOMO data rate or `gfxAvailable`: they are the
+cluster's own reports, and forcing the data rate parked the stock kombi map in its hidden context on FPK
+(see [java-cleanup-audit](../../maintenance/java-cleanup-audit.md)). Context 80 is selected on the
 RGI BAP start, not on a renderer first-frame handshake ([rgd-activation](../../rgd/rgd-activation.md), [display-contexts](../../cluster/display-contexts.md)).

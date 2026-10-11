@@ -10,6 +10,7 @@ import de.audi.tghu.navi.app.cluster.KOMOService;
 import java.lang.reflect.*;
 import java.util.*;
 import sun.misc.Unsafe;
+import static testsupport.TestSupport.*;
 
 /** FPK must bypass the MOST setters: they hide the stock map after disconnect.
  * Use real MU1316 service objects and install the framework used by BAPBridge.
@@ -19,19 +20,6 @@ public final class KomoGraphicsStateTest {
         List<Integer> rates;
         Service() { super(null, null, null, null, null, null); } // Unsafe bypasses HU startup
         public void setKOMODataRate(int rate) { rates.add(rate); }
-    }
-    private static Field field(Object object, String name) throws Exception {
-        for (Class<?> c = object.getClass(); c != null; c = c.getSuperclass()) {
-            try { Field f = c.getDeclaredField(name); f.setAccessible(true); return f; }
-            catch (NoSuchFieldException e) { }
-        }
-        throw new NoSuchFieldException(name);
-    }
-    private static void set(Object object, String name, Object value) throws Exception {
-        field(object, name).set(object, value);
-    }
-    private static void check(boolean value, String why) {
-        if (!value) throw new AssertionError(why);
     }
     public static void main(String[] args) throws Exception {
         Log.setLevel(-1);
@@ -62,14 +50,14 @@ public final class KomoGraphicsStateTest {
         Constructor<?> ctor = Class.forName("com.luka.carplay.rgd.BAPBridge$SilentLogChannel").getDeclaredConstructor();
         ctor.setAccessible(true); set(komo, "logChannel", ctor.newInstance());
         BAPBridge bridge = new BAPBridge(); set(bridge, "csRef", service);
-        Method force = BAPBridge.class.getDeclaredMethod("forceGfxAvailable", Boolean.TYPE);
-        force.setAccessible(true);
+        Method stop = BAPBridge.class.getDeclaredMethod("stopCustomRenderer", Boolean.TYPE);
+        stop.setAccessible(true);
         for (boolean fallback : new boolean[]{false, true}) {
             set(bridge, "komoService", fallback ? null : komo);
             for (boolean active : new boolean[]{true, true, false, false, true, false}) {
-                service.rates.clear(); force.invoke(bridge, active);
-                check(field(view, "dataRate").getInt(view) == 0, "FPK dataRate mutated");
-                check(!field(view, "gfxAvailable").getBoolean(view), "FPK gfxAvailable mutated");
+                service.rates.clear(); stop.invoke(bridge, active);
+                check(field(view.getClass(), "dataRate").getInt(view) == 0, "FPK dataRate mutated");
+                check(!field(view.getClass(), "gfxAvailable").getBoolean(view), "FPK gfxAvailable mutated");
                 check(service.rates.isEmpty(), "FPK received MOST pacing updates");
             }
         }

@@ -38,8 +38,8 @@ flowchart LR
 
 - **Type** (`0x5202`/0x03) - `EManeuverType` 0-53, verified against MHI3 dio_manager
   `CDIONavigationMetadataTypeInfo::toString`.
-- **JunctionElementExitAngle** (`0x5202`/0x0B) - signed BE16; `rgd_tlv.c` publishes it as both
-  `turn_angle` and `exit_angle`. See [rgd-tlv](rgd-tlv.md).
+- **JunctionElementExitAngle** (`0x5202`/0x0B) - signed BE16; `rgd_tlv.c` publishes it as
+  `exit_angle`. See [rgd-tlv](rgd-tlv.md).
 - **drivingSide** (`0x5202`/0x08) - 0/1; side fallback when the angle is absent.
 
 ## 📊 Complete type -> BAP element table (0-53)
@@ -84,7 +84,7 @@ flowchart LR
 | 53 | CHANGE_HIGHWAY_RIGHT | CHANGE_LANE | RIGHT |
 
 The `-1` `MT_NOT_SET` sentinel (the `RouteGuidance.State` default) -> `NO_SYMBOL / STRAIGHT`. The `255`
-wire sentinel (`MAN_TYPE_NOT_SET` in `rgd_tlv.h`) and any type outside `0-53` are rejected by
+wire sentinel and any type outside `0-53` are rejected by
 `ManeuverMapper.isValidType()` in `BAPBridge` **before** `map()` is ever called. A valid in-range type
 that falls through the switch (e.g. a roundabout-family type arriving with the wrong `junctionType`) ->
 `NO_INFO / STRAIGHT`.

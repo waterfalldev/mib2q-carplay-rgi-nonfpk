@@ -1,7 +1,7 @@
 /*
  * ManeuverMapper - Maps CarPlay (iAP2) ManeuverType to BAP mainElement + direction
  *
- * Based on TBT_MAPPING_PLAN.md and mib2-android-auto-vc patterns.
+ * Based on mib2-android-auto-vc patterns.
  * Uses correct MU1316 LSD BAP constants.
  *
  *
@@ -47,11 +47,6 @@ public class ManeuverMapper {
     public static final int MICHIGAN_TURN = 34;
     public static final int DOUBLE_TURN = 35;
     public static final int DIRECTION_TO_WAYPOINT = 38;
-    /*
-     * MHI3 tbt_renderer uses mainElement=44 for ferry, but MU1316 BAP spec
-     * (CombiBAPConstantsNavi) only defines up to 38 and IconUtil has no case 44.
-     * Map ferry to FOLLOW_STREET instead - matches EXIT_FERRY behavior.
-     */
 
     /* BAP Direction constants */
     public static final int DIR_STRAIGHT = 0;
@@ -115,23 +110,7 @@ public class ManeuverMapper {
     public static final int MT_U_TURN_WHEN_POSSIBLE       = 26;
     public static final int MT_ARRIVE_END_OF_DIRECTIONS   = 27;
     public static final int MT_ROUNDABOUT_EXIT_1          = 28;
-    public static final int MT_ROUNDABOUT_EXIT_2          = 29;
-    public static final int MT_ROUNDABOUT_EXIT_3          = 30;
-    public static final int MT_ROUNDABOUT_EXIT_4          = 31;
-    public static final int MT_ROUNDABOUT_EXIT_5          = 32;
-    public static final int MT_ROUNDABOUT_EXIT_6          = 33;
-    public static final int MT_ROUNDABOUT_EXIT_7          = 34;
-    public static final int MT_ROUNDABOUT_EXIT_8          = 35;
-    public static final int MT_ROUNDABOUT_EXIT_9          = 36;
-    public static final int MT_ROUNDABOUT_EXIT_10         = 37;
-    public static final int MT_ROUNDABOUT_EXIT_11         = 38;
-    public static final int MT_ROUNDABOUT_EXIT_12         = 39;
-    public static final int MT_ROUNDABOUT_EXIT_13         = 40;
-    public static final int MT_ROUNDABOUT_EXIT_14         = 41;
-    public static final int MT_ROUNDABOUT_EXIT_15         = 42;
-    public static final int MT_ROUNDABOUT_EXIT_16         = 43;
-    public static final int MT_ROUNDABOUT_EXIT_17         = 44;
-    public static final int MT_ROUNDABOUT_EXIT_18         = 45;
+    public static final int MT_ROUNDABOUT_EXIT_5          = 32;   /* exits 2..18 are 29..45 */
     public static final int MT_ROUNDABOUT_EXIT_19         = 46;
     public static final int MT_SHARP_LEFT_TURN            = 47;
     public static final int MT_SHARP_RIGHT_TURN           = 48;
@@ -161,8 +140,7 @@ public class ManeuverMapper {
     public static int[] map(int maneuverType, int turnAngle, int junctionType, int drivingSide,
                             boolean anglePresent) {
         if (!anglePresent) turnAngle = 1000;
-        int mainElement;
-        int direction;
+        boolean leftHand = drivingSide == DRIVING_SIDE_LEFT;
 
         /*
          * IMPORTANT (MHI3 parity):
@@ -178,90 +156,58 @@ public class ManeuverMapper {
          */
 
         /* Explicit "not set" sentinel from our State init */
-        if (maneuverType == MT_NOT_SET) {
-            mainElement = NO_SYMBOL;
-            direction = DIR_STRAIGHT;
-            return new int[] { mainElement, direction };
-        }
+        if (maneuverType == MT_NOT_SET) return new int[] { NO_SYMBOL, DIR_STRAIGHT };
 
-        /* Global mappings (apply regardless of junctionType) */
-        if (maneuverType == MT_NO_TURN || maneuverType == MT_FOLLOW_ROAD) {
-            mainElement = FOLLOW_STREET;
-            direction = DIR_STRAIGHT;
-            return new int[] { mainElement, direction };
+        /*
+         * Global mappings (apply regardless of junctionType). MHI3 uses mainElement=44 for
+         * ferry, which the MU1316 BAP spec does not define, so ferry entry maps to FOLLOW_STREET.
+         */
+        if (maneuverType == MT_NO_TURN || maneuverType == MT_FOLLOW_ROAD
+            || maneuverType == MT_ENTER_FERRY || maneuverType == MT_CHANGE_FERRY) {
+            return new int[] { FOLLOW_STREET, DIR_STRAIGHT };
         }
         if (maneuverType == MT_ARRIVE_END_OF_NAVIGATION
             || maneuverType == MT_ARRIVE_AT_DESTINATION
             || maneuverType == MT_ARRIVE_END_OF_DIRECTIONS) {
-            mainElement = ARRIVED;
-            direction = DIR_STRAIGHT;
-            return new int[] { mainElement, direction };
+            return new int[] { ARRIVED, DIR_STRAIGHT };
         }
-        if (maneuverType == MT_CHANGE_HIGHWAY_LEFT) {
-            mainElement = CHANGE_LANE;
-            direction = DIR_LEFT;
-            return new int[] { mainElement, direction };
-        }
-        if (maneuverType == MT_CHANGE_HIGHWAY_RIGHT) {
-            mainElement = CHANGE_LANE;
-            direction = DIR_RIGHT;
-            return new int[] { mainElement, direction };
-        }
-        if (maneuverType == MT_ENTER_FERRY || maneuverType == MT_CHANGE_FERRY) {
-            mainElement = FOLLOW_STREET;
-            direction = DIR_STRAIGHT;
-            return new int[] { mainElement, direction };
-        }
+        if (maneuverType == MT_CHANGE_HIGHWAY_LEFT) return new int[] { CHANGE_LANE, DIR_LEFT };
+        if (maneuverType == MT_CHANGE_HIGHWAY_RIGHT) return new int[] { CHANGE_LANE, DIR_RIGHT };
         if (maneuverType == MT_START_ROUTE
             || maneuverType == MT_EXIT_FERRY
             || maneuverType == MT_CHANGE_HIGHWAY) {
-            mainElement = TURN;
-            direction = directionFromTurnAngle(turnAngle);
-            return new int[] { mainElement, direction };
+            return new int[] { TURN, directionFromTurnAngle(turnAngle) };
         }
         if (maneuverType == MT_U_TURN_AT_ROUNDABOUT) {
-            mainElement = (drivingSide == DRIVING_SIDE_LEFT) ? ROUNDABOUT_TRS_LEFT : ROUNDABOUT_TRS_RIGHT;
-            direction = DIR_UTURN;
-            return new int[] { mainElement, direction };
+            return new int[] { leftHand ? ROUNDABOUT_TRS_LEFT : ROUNDABOUT_TRS_RIGHT, DIR_UTURN };
         }
         if (maneuverType == MT_ENTER_ROUNDABOUT) {
             /* MHI3 maps ENTER_ROUNDABOUT to TURN left/right depending on driving side. */
-            mainElement = TURN;
-            direction = (drivingSide == DRIVING_SIDE_LEFT) ? DIR_LEFT : DIR_RIGHT;
-            direction = applyDsiNavBapDirectionOverride(maneuverType, direction);
-            return new int[] { mainElement, direction };
+            return new int[] { TURN, leftHand ? DIR_LEFT : DIR_RIGHT };
         }
 
         /*
          * JunctionType gate (see comment above):
          * - For junctionType!=0, only allow the "roundabout exit" family for junctionType==1.
+         * The DSINavBap direction override is skipped for these types.
          */
         if (junctionType != JUNCTION_SINGLE_INTERSECTION) {
-            if (junctionType != JUNCTION_ROUNDABOUT) {
-                mainElement = NO_INFO;
-                direction = DIR_STRAIGHT;
-                return new int[] { mainElement, direction };
+            if (junctionType == JUNCTION_ROUNDABOUT) {
+                if (maneuverType == MT_EXIT_ROUNDABOUT) {
+                    return new int[] { leftHand ? EXIT_ROUNDABOUT_TRS_LEFT : EXIT_ROUNDABOUT_TRS_RIGHT,
+                                       leftHand ? DIR_LEFT : DIR_RIGHT };
+                }
+                if (maneuverType >= MT_ROUNDABOUT_EXIT_1 && maneuverType <= MT_ROUNDABOUT_EXIT_19) {
+                    return new int[] { leftHand ? ROUNDABOUT_TRS_LEFT : ROUNDABOUT_TRS_RIGHT,
+                                       directionFromAngle16(turnAngle) };
+                }
             }
-
-            if (maneuverType == MT_EXIT_ROUNDABOUT) {
-                mainElement = (drivingSide == DRIVING_SIDE_LEFT) ? EXIT_ROUNDABOUT_TRS_LEFT : EXIT_ROUNDABOUT_TRS_RIGHT;
-                direction = (drivingSide == DRIVING_SIDE_LEFT) ? DIR_LEFT : DIR_RIGHT;
-                /* DSINavBap override is skipped for this type */
-                return new int[] { mainElement, direction };
-            }
-
-            if (maneuverType >= MT_ROUNDABOUT_EXIT_1 && maneuverType <= MT_ROUNDABOUT_EXIT_19) {
-                mainElement = (drivingSide == DRIVING_SIDE_LEFT) ? ROUNDABOUT_TRS_LEFT : ROUNDABOUT_TRS_RIGHT;
-                direction = directionFromAngle16(turnAngle);
-                /* DSINavBap override is skipped for this type */
-                return new int[] { mainElement, direction };
-            }
-
-            /* For any other maneuverType while junctionType==1, MHI3 returns NO_INFO. */
-            mainElement = NO_INFO;
-            direction = DIR_STRAIGHT;
-            return new int[] { mainElement, direction };
+            /* Any other maneuverType while junctionType==1, and any other junctionType: NO_INFO. */
+            return new int[] { NO_INFO, DIR_STRAIGHT };
         }
+
+        int mainElement;
+        int direction;
 
         switch (maneuverType) {
             case MT_STRAIGHT_AHEAD:
@@ -513,7 +459,7 @@ public class ManeuverMapper {
          * - if 1..67  => SLIGHT_RIGHT
          * - if 113..180 => SHARP_RIGHT
          */
-        if (exitAngle != 0 && exitAngle > 0 && exitAngle <= 180) {
+        if (exitAngle > 0 && exitAngle <= 180) {
             if (exitAngle <= 67) return DIR_SLIGHT_RIGHT;
             if (exitAngle > 112) return DIR_SHARP_RIGHT;
         }

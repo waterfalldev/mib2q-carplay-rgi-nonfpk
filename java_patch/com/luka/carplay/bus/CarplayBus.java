@@ -39,7 +39,6 @@ public final class CarplayBus {
     /* flags */
     public static final int FLAG_STICKY = 0x01;
     public static final int FLAG_BINARY = 0x02;
-    public static final int FLAG_REPLAY = 0x04;
 
     /* events hook -> Java */
     public static final int EVT_HELLO       = 0x0001;
@@ -52,10 +51,7 @@ public final class CarplayBus {
     /* commands Java -> hook (mirror bus_protocol.h) */
     public static final int CMD_SYNC_REQ       = 0x0100;   /* replay all sticky state       */
     public static final int CMD_ALT_ZOOM       = 0x0110;   /* [i8 signed MapScale step]     */
-    public static final int CMD_ALT_ZONE       = 0x0111;   /* [u8 0=full/1=sport/2=classic][u16 LE durationMs] */
-    public static final int CMD_ALT_ZONE_ACK   = 0x0112;   /* hook->Java [u8 mode][i32 LE status]       */
     public static final int CMD_ALT_APPEARANCE = 0x0114;   /* [u8 night 0/1] the MMI's night mode        */
-    public static final int CMD_ALT_RGI        = 0x0116;   /* [u8 0=off 1=on] confirmed RGI presentation */
 
     public interface Listener {
         void onFrame(int type, int flags, byte[] payload, int len);
@@ -279,19 +275,23 @@ public final class CarplayBus {
     /* ---- text payload parser (hook -> Java "key:type:val\n" frames) ---- */
     public static class Data {
         private static final int MAX = 1024;
-        private String[] keys = new String[MAX];
-        private String[] vals = new String[MAX];
-        private int count = 0;
+        /* The keys in frame order; values by key, the first of a repeated key winning. */
+        private final java.util.ArrayList keys = new java.util.ArrayList();
+        private final java.util.HashMap vals = new java.util.HashMap();
         private boolean overflow;
 
         void put(String key, String value) {
-            if (count < MAX) { keys[count] = key; vals[count] = value; count++; }
-            else overflow = true;
+            if (keys.size() >= MAX) { overflow = true; return; }
+            keys.add(key);
+            if (!vals.containsKey(key)) vals.put(key, value);
         }
 
+        /** The i-th key of the frame, in frame order. */
+        public String key(int i) { return (String) keys.get(i); }
+
         public String str(String key, String def) {
-            for (int i = 0; i < count; i++) if (key.equals(keys[i])) return vals[i];
-            return def;
+            String v = (String) vals.get(key);
+            return v != null ? v : def;
         }
         public String str(String key) { return str(key, null); }
 
@@ -331,11 +331,8 @@ public final class CarplayBus {
             }
             return out;
         }
-        public boolean has(String key) {
-            for (int i = 0; i < count; i++) if (key.equals(keys[i])) return true;
-            return false;
-        }
-        public int size() { return count; }
+        public boolean has(String key) { return vals.containsKey(key); }
+        public int size() { return keys.size(); }
         public boolean overflowed() { return overflow; }
     }
 

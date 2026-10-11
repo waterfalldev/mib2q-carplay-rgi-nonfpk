@@ -120,18 +120,14 @@ public class ExternalEventsListener
                                         "<<- [%1.actionProxyCallPerformed] AP_METHOD_HMI_ACTIVATED",
                                         LOGCLASS
                                     );
-                                    if (CarPlayApp.isActive()
-                                        && !ExternalEventsListener.this.stateHandler.getCurrentState()
-                                            .isAccessRestricted(Resource.SCREEN)) {
+                                    if (ExternalEventsListener.this.carPlayOwnsScreen()) {
                                         PdcSmallStageGuard.carPlayScreenActivated(
                                             ExternalEventsListener.this.hmiService
                                         );
                                     }
                                     if (ExternalEventsListener.this.bigStage) {
                                         ExternalEventsListener.this.hmiActivated();
-                                    } else if (CarPlayApp.isActive()
-                                        && !ExternalEventsListener.this.stateHandler.getCurrentState()
-                                            .isAccessRestricted(Resource.SCREEN)
+                                    } else if (ExternalEventsListener.this.carPlayOwnsScreen()
                                         && PdcSmallStageGuard.shouldKeepCarPlayScreen()) {
                                         /* Entering CarPlay while OPS is already small still
                                          * needs SCREEN. Keep input with the parking popup. */
@@ -148,9 +144,7 @@ public class ExternalEventsListener
                                         LOGCLASS
                                     );
                                     if (ExternalEventsListener.this.screenActive
-                                        && CarPlayApp.isActive()
-                                        && !ExternalEventsListener.this.stateHandler.getCurrentState()
-                                            .isAccessRestricted(Resource.SCREEN)
+                                        && ExternalEventsListener.this.carPlayOwnsScreen()
                                         && PdcSmallStageGuard.isParkingHmiDeactivation(actionProxy.parking)) {
                                         /* On the real unit the parking SMALL_STAGE can also publish
                                          * AP 1002.  Treat it as part of the same partial-OPS
@@ -246,13 +240,15 @@ public class ExternalEventsListener
         this.lastActionProxyCall.accept(new ActionProxyCall(actionProxyId));
     }
 
+    private boolean carPlayOwnsScreen() {
+        return CarPlayApp.isActive() && !this.stateHandler.getCurrentState().isAccessRestricted(Resource.SCREEN);
+    }
+
     private void hmiDeactivated() {
         // SMALL_STAGE can precede AP 1001 when returning to CarPlay with OPS
         // already open. Keep that valid guard; revoke it for a real takeover
         // even when an inactive app/restricted SCREEN short-circuited callers.
-        if (!CarPlayApp.isActive()
-            || this.stateHandler.getCurrentState().isAccessRestricted(Resource.SCREEN)
-            || !PdcSmallStageGuard.shouldKeepCarPlayScreen()) {
+        if (!this.carPlayOwnsScreen() || !PdcSmallStageGuard.shouldKeepCarPlayScreen()) {
             PdcSmallStageGuard.reset();
         }
         this.context.getKeyEventsHandler().deactivate();
@@ -340,8 +336,7 @@ public class ExternalEventsListener
             this.hmiActivated();
         } else if (!isBigStage
                    && this.screenActive
-                   && CarPlayApp.isActive()
-                   && !this.stateHandler.getCurrentState().isAccessRestricted(Resource.SCREEN)
+                   && this.carPlayOwnsScreen()
                    && PdcSmallStageGuard.shouldKeepCarPlayScreen()) {
             /* Keep SCREEN owned by TerminalMode so the right OPS panel overlays
              * CarPlay instead of minimizing it.  Input remains disabled while

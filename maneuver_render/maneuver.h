@@ -86,16 +86,13 @@ void maneuver_prepare_frame(const maneuver_state_t *state, const maneuver_state_
 void maneuver_draw(const maneuver_state_t *state, const maneuver_state_t *next_state);
 
 /* Route path animation control. */
-void maneuver_start_anim(void);       /* reset slide=0, start auto-animation */
 int  maneuver_is_animating(void);     /* 1 while transition animation running (for engine state) */
 int  maneuver_needs_redraw(void);    /* 1 while any animation needs continuous rendering */
-int  maneuver_is_presentationally_settled(void); /* flag may still loop after ARRIVED settles */
 void maneuver_set_slide(float t);     /* set slide manually (stops auto-anim) */
-float maneuver_get_slide(void);       /* get current slide value */
 
 /* Push-out transition: slide the blue path forward through the exit.
  * On completion, maneuver_is_pushing() returns 0 -- caller should then
- * switch to new maneuver state and call maneuver_start_anim(). */
+ * commit the new maneuver state with maneuver_commit_pushed_state(). */
 void maneuver_start_push(void);       /* begin push-out (slide 1->2) */
 int  maneuver_is_pushing(void);       /* 1 while push-out running */
 void maneuver_commit_pushed_state(const maneuver_state_t *state);
@@ -103,9 +100,6 @@ void maneuver_commit_pushed_state(const maneuver_state_t *state);
 /* Debug overlay toggle. */
 void maneuver_toggle_debug(void);     /* toggle path debug overlay */
 int  maneuver_is_debug(void);         /* 1 if debug overlay active */
-
-/* Get human-readable name for an icon type (for debug overlay). */
-const char *maneuver_icon_name(int icon);
 
 #ifdef __cplusplus
 }

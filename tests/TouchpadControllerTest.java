@@ -1,14 +1,12 @@
 import com.luka.carplay.input.TouchpadController;
 import java.util.ArrayList;
+import static testsupport.TestSupport.*;
 
 /** Touchpad input must still navigate focus after removing the HU overlay. */
 public final class TouchpadControllerTest {
     private static final class Sink implements TouchpadController.TouchSink {
         final ArrayList<Integer> keys = new ArrayList<Integer>();
         public void postDpad(int key) { keys.add(Integer.valueOf(key)); }
-    }
-    private static void check(boolean value, String message) {
-        if (!value) throw new AssertionError(message);
     }
     public static void main(String[] args) {
         TouchpadController input = TouchpadController.getInstance();

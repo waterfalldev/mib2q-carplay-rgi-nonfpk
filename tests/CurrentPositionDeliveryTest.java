@@ -5,13 +5,11 @@ import de.audi.atip.interapp.combi.bap.navi.CombiBAPServiceNavi;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import static testsupport.TestSupport.*;
 
 /** Real bridge + presentation worker, only BAP/renderer endpoints substituted. */
 public final class CurrentPositionDeliveryTest {
     private static final String ROAD = "North Pennsylvania Avenue via Washington Boulevard and Main Street";
-    private static void check(boolean ok, String why) { RgiDeliveryRecoveryTest.check(ok, why); }
-    private static void set(Object obj, String key, Object value) throws Exception { RgiDeliveryRecoveryTest.set(obj, key, value); }
-    private static Object get(Object obj, String key) throws Exception { return RgiDeliveryRecoveryTest.get(obj, key); }
     private static Object call(Object obj, String name) throws Exception {
         return RgiDeliveryRecoveryTest.method(obj.getClass(), name).invoke(obj);
     }

@@ -6,10 +6,8 @@
 
 #include "logging.h"
 
-#if ENABLE_LOGGING || ENABLE_STATE_TRACE || ENABLE_ALTSCREEN_PACE_TRACE
+#if ENABLE_LOGGING || ENABLE_STATE_TRACE
 
-/* Maximum tracked dump files for once-only dumps */
-#define MAX_DUMP_FILES 32
 #define MAX_LOG_LINE 1024
 #define LOG_QUEUE_CAPACITY 64
 #define LOG_SHUTDOWN_WAIT_MS 750
@@ -26,7 +24,6 @@ static struct {
     pthread_mutex_t lock;
     pthread_cond_t cond;
     bool initialized;
-    bool lock_initialized;
     bool writer_created;
     bool writer_running;
     bool shutdown;
@@ -36,33 +33,11 @@ static struct {
     unsigned queue_head;
     unsigned queue_tail;
     unsigned queue_count;
-    unsigned dropped;
-    /* Tracked dump files */
-    char* dumped_files[MAX_DUMP_FILES];
-    int dump_count;
 } g_log = {
     .fd = -1,
-    .initialized = false,
-    .lock_initialized = false,
-    .dump_count = 0
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .cond = PTHREAD_COND_INITIALIZER
 };
-
-/* The log lock is first touched concurrently by the bus connector/writer/timer
- * threads and the cover-art worker after lazy runtime initialisation.  A
- * plain `if (!lock_initialized)` guard let two of them race into pthread_mutex_init
- * on the same mutex (undefined behaviour → nondeterministic startup crash).
- * pthread_once makes the init run exactly once regardless of which thread is first. */
-static pthread_once_t g_log_lock_once = PTHREAD_ONCE_INIT;
-
-static void log_lock_init_once(void) {
-    pthread_mutex_init(&g_log.lock, NULL);
-    pthread_cond_init(&g_log.cond, NULL);
-    g_log.lock_initialized = true;
-}
-
-static void ensure_lock_init(void) {
-    pthread_once(&g_log_lock_once, log_lock_init_once);
-}
 
 /* Real write function pointer */
 typedef ssize_t (*write_func_t)(int fd, const void* buf, size_t count);
@@ -141,7 +116,7 @@ static void* log_writer_main(void* unused) {
         pthread_mutex_lock(&g_log.lock);
         while (!g_log.shutdown && g_log.queue_count == 0)
             pthread_cond_wait(&g_log.cond, &g_log.lock);
-#if (ENABLE_STATE_TRACE || ENABLE_ALTSCREEN_PACE_TRACE) && !ENABLE_LOGGING
+#if ENABLE_STATE_TRACE && !ENABLE_LOGGING
         /* Trace-only shutdown is itself evidence. Drain already-enqueued
          * terminal records before exiting; log_shutdown still caps the wait,
          * so a wedged filesystem cannot become a watchdog hang. */
@@ -163,8 +138,8 @@ static void* log_writer_main(void* unused) {
             g_log.fd = open(g_log.config.log_path,
                             O_WRONLY | O_CREAT | O_APPEND, 0644);
         if (g_log.fd >= 0) {
+            /* Unbuffered write, no fsync per line: that only stalls QNX /dev/shmem. */
             (void)do_write(g_log.fd, entry.data, entry.len);
-            if (g_log.config.flush_immediate) (void)fsync(g_log.fd);
             check_rotation();
         }
     }
@@ -198,7 +173,6 @@ static void log_apply_defaults_locked(void) {
 }
 
 hook_result_t log_init(const log_config_t* config) {
-    ensure_lock_init();
     pthread_mutex_lock(&g_log.lock);
 
     if (g_log.initialized) {
@@ -232,9 +206,7 @@ hook_result_t log_init(const log_config_t* config) {
 void log_shutdown(void) {
     pthread_t writer;
     bool collect = false;
-    int waited_ms = 0;
 
-    ensure_lock_init();
     pthread_mutex_lock(&g_log.lock);
 
     /* fork children inherit state/fds but not the writer thread. They must not
@@ -245,23 +217,12 @@ void log_shutdown(void) {
     }
 
     g_log.shutdown = true;
-#if !((ENABLE_STATE_TRACE || ENABLE_ALTSCREEN_PACE_TRACE) && !ENABLE_LOGGING)
+#if !(ENABLE_STATE_TRACE && !ENABLE_LOGGING)
     g_log.queue_head = g_log.queue_tail = g_log.queue_count = 0;
 #endif
     pthread_cond_broadcast(&g_log.cond);
-    while (g_log.writer_created && g_log.writer_running &&
-           waited_ms < LOG_SHUTDOWN_WAIT_MS) {
-        struct timespec deadline;
-        int wait_ms = 10;
-        clock_gettime(CLOCK_REALTIME, &deadline);
-        deadline.tv_nsec += wait_ms * 1000000L;
-        if (deadline.tv_nsec >= 1000000000L) {
-            deadline.tv_sec++;
-            deadline.tv_nsec -= 1000000000L;
-        }
-        (void)pthread_cond_timedwait(&g_log.cond, &g_log.lock, &deadline);
-        waited_ms += wait_ms;
-    }
+    COND_WAIT_MS(&g_log.cond, &g_log.lock, LOG_SHUTDOWN_WAIT_MS,
+                 !g_log.writer_created || !g_log.writer_running);
     if (g_log.writer_created && !g_log.writer_running) {
         writer = g_log.writer_tid;
         g_log.writer_created = false;
@@ -285,37 +246,17 @@ void log_shutdown(void) {
         g_log.fd = -1;
     }
 
-    /* Free tracked dump files */
-    for (int i = 0; i < g_log.dump_count; i++) {
-        if (g_log.dumped_files[i]) {
-            free(g_log.dumped_files[i]);
-            g_log.dumped_files[i] = NULL;
-        }
-    }
-    g_log.dump_count = 0;
-
     g_log.initialized = false;
     g_log.owner_pid = 0;
     pthread_mutex_unlock(&g_log.lock);
 }
 
-void log_set_level(log_level_t level) {
-    ensure_lock_init();
-    pthread_mutex_lock(&g_log.lock);
-    g_log.config.min_level = level;
-    pthread_mutex_unlock(&g_log.lock);
-}
-
-log_level_t log_get_level(void) {
-    return g_log.config.min_level;
-}
-
 void log_write(log_level_t level, const char* module, const char* fmt, ...) {
-    log_config_t cfg;
+    log_level_t min_level;
     char line[MAX_LOG_LINE];
     int off = 0;
 
-    ensure_lock_init();
+    if (g_log.initialized && level < g_log.config.min_level) return;
     pthread_mutex_lock(&g_log.lock);
 
     /* Auto-init if needed. Same defaults AND the same verbose-marker check as log_init() — this is the
@@ -332,32 +273,19 @@ void log_write(log_level_t level, const char* module, const char* fmt, ...) {
         pthread_mutex_unlock(&g_log.lock);
         return;
     }
-    cfg = g_log.config;
+    min_level = g_log.config.min_level;
     pthread_mutex_unlock(&g_log.lock);
 
-    if (level < cfg.min_level) return;
+    if (level < min_level) return;
 
-    /* Timestamp */
-    if (cfg.include_timestamp) {
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        struct tm tm;
-        localtime_r(&ts.tv_sec, &tm);
-        off += snprintf(line + off, sizeof(line) - off,
-                       "%02d:%02d:%02d.%03d ",
-                       tm.tm_hour, tm.tm_min, tm.tm_sec,
-                       (int)(ts.tv_nsec / 1000000));
-    }
-
-    /* Level */
-    if (cfg.include_level) {
-        off += snprintf(line + off, sizeof(line) - off, "[%s] ", level_str(level));
-    }
-
-    /* Module */
-    if (cfg.include_module && module) {
-        off += snprintf(line + off, sizeof(line) - off, "[%s] ", module);
-    }
+    struct timespec ts;
+    struct tm tm;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    localtime_r(&ts.tv_sec, &tm);
+    off += snprintf(line + off, sizeof(line) - off, "%02d:%02d:%02d.%03d [%s] ",
+                    tm.tm_hour, tm.tm_min, tm.tm_sec,
+                    (int)(ts.tv_nsec / 1000000), level_str(level));
+    if (module) off += snprintf(line + off, sizeof(line) - off, "[%s] ", module);
 
     /* snprintf reports the size it wanted, not the bytes it stored. Keep the
      * cursor inside the fixed stack record even if a future caller supplies an
@@ -373,8 +301,8 @@ void log_write(log_level_t level, const char* module, const char* fmt, ...) {
         int written = vsnprintf(line + off, (size_t)available, fmt, ap);
         if (written > 0) {
             /* vsnprintf returns the untruncated size. Clamp before using off as
-             * a memory length; the old code passed that oversized value to
-             * write(), reading beyond this stack buffer. */
+             * a memory length: passed to write(), the untruncated size would read
+             * beyond this stack buffer. */
             off += (written >= available) ? (available - 1) : written;
         }
     }
@@ -397,7 +325,6 @@ void log_write(log_level_t level, const char* module, const char* fmt, ...) {
     if (g_log.queue_count == LOG_QUEUE_CAPACITY) {
         g_log.queue_head = (g_log.queue_head + 1u) % LOG_QUEUE_CAPACITY;
         --g_log.queue_count;
-        ++g_log.dropped;
     }
     g_log.queue[g_log.queue_tail].len = (size_t)off;
     memcpy(g_log.queue[g_log.queue_tail].data, line, (size_t)off);
@@ -415,81 +342,6 @@ bool log_verbose(void) {
         verbose = access("/mnt/app/carplay_verbose", F_OK) == 0
                || access("/tmp/carplay_verbose", F_OK) == 0;
     return verbose != 0;
-}
-
-void log_hexdump(log_level_t level, const char* module, const char* prefix,
-                 const uint8_t* data, size_t len, size_t max_bytes) {
-    if (!data || len == 0) return;
-
-    size_t dump_len = (max_bytes > 0 && len > max_bytes) ? max_bytes : len;
-
-    char line[MAX_LOG_LINE];
-    int off = 0;
-
-    if (prefix) {
-        int n = snprintf(line + off, sizeof(line) - (size_t)off, "%s ", prefix);
-        if (n > 0) off += (n >= (int)sizeof(line) - off)
-                           ? ((int)sizeof(line) - off - 1) : n;
-    }
-    if (off < (int)sizeof(line) - 1) {
-        int available = (int)sizeof(line) - off;
-        int n = snprintf(line + off, (size_t)available, "len=%zu bytes=", len);
-        if (n > 0) off += (n >= available) ? (available - 1) : n;
-    }
-
-    for (size_t i = 0; i < dump_len && off < (int)sizeof(line) - 4; i++) {
-        int available = (int)sizeof(line) - off;
-        int n = snprintf(line + off, (size_t)available, "%02X ", data[i]);
-        if (n <= 0) break;
-        off += (n >= available) ? (available - 1) : n;
-    }
-
-    if (dump_len < len && off < (int)sizeof(line) - 1)
-        (void)snprintf(line + off, sizeof(line) - (size_t)off, "...");
-
-    log_write(level, module, "%s", line);
-}
-
-hook_result_t log_dump_file(const char* path, const uint8_t* data, size_t len) {
-    if (!path || !data || len == 0) return HOOK_ERR_PARAM;
-
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) return HOOK_ERR_IO;
-
-    ssize_t written = do_write(fd, data, len);
-    close(fd);
-
-    if (written != (ssize_t)len) return HOOK_ERR_IO;
-
-    LOG_DEBUG("LOG", "Dumped %zu bytes to %s", len, path);
-    return HOOK_OK;
-}
-
-hook_result_t log_dump_file_once(const char* path, const uint8_t* data, size_t len) {
-    if (!path || !data || len == 0) return HOOK_ERR_PARAM;
-
-    ensure_lock_init();
-    pthread_mutex_lock(&g_log.lock);
-
-    /* Check if already dumped */
-    for (int i = 0; i < g_log.dump_count; i++) {
-        if (g_log.dumped_files[i] && strcmp(g_log.dumped_files[i], path) == 0) {
-            pthread_mutex_unlock(&g_log.lock);
-            return HOOK_OK; /* Already dumped */
-        }
-    }
-
-    /* Track this file */
-    if (g_log.dump_count < MAX_DUMP_FILES) {
-        g_log.dumped_files[g_log.dump_count] = strdup(path);
-        if (g_log.dumped_files[g_log.dump_count]) {
-            g_log.dump_count++;
-        }
-    }
-
-    pthread_mutex_unlock(&g_log.lock);
-
-    return log_dump_file(path, data, len);
 }
 
 #endif /* ENABLE_LOGGING */

@@ -299,6 +299,10 @@ static void mmi_night(int night) {
     if (g_appearance_handler) g_appearance_handler(CMD_ALT_APPEARANCE, BUS_FLAG_BINARY, &payload, 1, NULL);
 }
 
+/* Polls every 10 ms for up to ms while cond holds. */
+#define WAIT_WHILE(ms, cond) \
+    do { int wait_i_; for (wait_i_ = 0; wait_i_ < (ms) / 10 && (cond); ++wait_i_) usleep(10000); } while (0)
+
 static int bus_events(int *live, uint32_t *stream) {
     int n;
     pthread_mutex_lock(&g_bus_lock);
@@ -310,13 +314,11 @@ static int bus_events(int *live, uint32_t *stream) {
 }
 /* Waits up to a second for the n-th bus event. */
 static int bus_event(int n, int *live, uint32_t *stream) {
-    int i;
-    for (i = 0; i < 100 && bus_events(NULL, NULL) < n; ++i) usleep(10000);
+    WAIT_WHILE(1000, bus_events(NULL, NULL) < n);
     return bus_events(live, stream) == n;
 }
 static int refs_become(obj *o, int refs) {
-    int i;
-    for (i = 0; i < 150 && o->refs != refs; ++i) usleep(10000);
+    WAIT_WHILE(1500, o->refs != refs);
     return o->refs == refs;
 }
 
@@ -477,7 +479,7 @@ static obj *cluster_setup(void) {
     static const int cluster_only[] = { 111 };
     hook_setup_ctx_t setup;
     obj *request = setup_request(cluster_only, 1), *reply = dict(), *session = dict();
-    int sent = g_sent, i;
+    int sent = g_sent;
     memset(&setup, 0, sizeof(setup));
     setup.request = request;
     setup.response = reply;
@@ -485,7 +487,7 @@ static obj *cluster_setup(void) {
     altscreen_module_def.airplay.on_setup_response(&setup);
     CFRelease(reply);
     CFRelease(request);
-    for (i = 0; i < 100 && (g_sent < sent + 2 || session->refs != 2); ++i) usleep(10000);
+    WAIT_WHILE(1000, g_sent < sent + 2 || session->refs != 2);
     return session;
 }
 
@@ -553,7 +555,7 @@ static void setup_replies(void) {
     static const int ordinary[] = { 110, 101 }, cluster_only[] = { 111 };
     hook_setup_ctx_t setup;
     obj *request = setup_request(ordinary, 2), *reply = dict(), *enabled, *streams, *screen, *session = dict();
-    int fd, i;
+    int fd;
     memset(&setup, 0, sizeof(setup));
     setup.request = request;
     setup.response = reply;
@@ -587,7 +589,7 @@ static void setup_replies(void) {
           "a cluster-stream reply keeps stock's streams and adds 111 on port %d, one lsm-pf lets in", g_port);
     CFRelease(reply);
     CFRelease(request);
-    for (i = 0; i < 100 && (g_sent < 2 || session->refs != 2); ++i) usleep(10000);
+    WAIT_WHILE(1000, g_sent < 2 || session->refs != 2);
     check(g_sent == 2 && strcmp(g_sent_type[0], "showUI") == 0 && strcmp(g_sent_uuid[0], ALT_DISPLAY_UUID) == 0
           && strcmp(g_sent_url[0], "maps:/car/instrumentcluster/map") == 0
           && strcmp(g_sent_type[1], "forceKeyFrame") == 0 && g_sent_url[1][0] == '\0' && session->refs == 2,
@@ -639,7 +641,7 @@ static void live_stream(void) {
     cvr_reader_t ring;
     obj *session = cluster_setup();
     uint32_t stream = 0;
-    int fd, fd2, live, events = bus_events(NULL, NULL), sent = g_sent, i;
+    int fd, fd2, live, events = bus_events(NULL, NULL), sent = g_sent;
     live_wire();
     fd = connect_receiver();
     check(fd >= 0 && write(fd, g_wire, g_wire_size) == (ssize_t)g_wire_size && bus_event(events + 1, &live, &stream)
@@ -649,14 +651,14 @@ static void live_stream(void) {
           "a renderer joining reads its config and key frame (stream %u)", stream);
 
     cvr_reader_request_key(&ring);
-    for (i = 0; i < 100 && g_sent < sent + 1; ++i) usleep(10000);
+    WAIT_WHILE(1000, g_sent < sent + 1);
     check(g_sent == sent + 1 && strcmp(g_sent_type[sent], "forceKeyFrame") == 0,
           "the renderer's key-frame request reaches the phone as forceKeyFrame");
     cvr_reader_request_key(&ring);
     cvr_reader_request_key(&ring);
     usleep(ALT_KEYFRAME_MIN_MS * 1000 / 2);
     check(g_sent == sent + 1, "more requests within ALT_KEYFRAME_MIN_MS wait");
-    for (i = 0; i < 150 && g_sent < sent + 2; ++i) usleep(10000);
+    WAIT_WHILE(1500, g_sent < sent + 2);
     usleep(2 * ALT_POLL_MS * 1000);
     check(g_sent == sent + 2, "then go out together, once: %d commands", g_sent - sent);
 
@@ -738,18 +740,29 @@ static void wheel_zoom(void) {
     session = cluster_setup();
     sent = g_sent;
     wheel(-2);
-    for (i = 0; i < 100 && (g_sent < sent + 2 || session->refs != 2); ++i) usleep(10000);
+    WAIT_WHILE(1000, g_sent < sent + 2 || session->refs != 2);
     check(zooms(sent, 2, 0) && session->refs == 2, "two steps in: two changeMapZoomLevel, zoomDirection 0");
     sent = g_sent;
     wheel(1);
-    for (i = 0; i < 100 && (g_sent < sent + 1 || session->refs != 2); ++i) usleep(10000);
+    WAIT_WHILE(1000, g_sent < sent + 1 || session->refs != 2);
     check(zooms(sent, 1, 1), "a step out: zoomDirection 1");
     sent = g_sent;
     wheel(100);
-    for (i = 0; i < 100 && (g_sent < sent + ALT_ZOOM_MAX_STEPS || session->refs != 2); ++i) usleep(10000);
+    WAIT_WHILE(1000, g_sent < sent + ALT_ZOOM_MAX_STEPS || session->refs != 2);
     usleep(50000);
     check(zooms(sent, ALT_ZOOM_MAX_STEPS, 1) && session->refs == 2,
-          "a burst is capped at %d steps; every command thread let its session reference go", ALT_ZOOM_MAX_STEPS);
+          "a burst is capped at %d steps; every batch let its session reference go", ALT_ZOOM_MAX_STEPS);
+    sent = g_sent;
+    wheel(3);
+    wheel(-2);
+    wheel(1);
+    WAIT_WHILE(1000, g_sent < sent + 6 || session->refs != 2);
+    {
+        static const int64_t turned[6] = {1, 1, 1, 0, 0, 1};
+        int ok = g_sent == sent + 6;
+        for (i = 0; ok && i < 6; ++i) ok = g_sent_zoom[sent + i] == turned[i];
+        check(ok, "quick reports reach the phone in the order turned: out x3, in x2, out");
+    }
     sent = g_sent;
     wheel(0);
     usleep(50000);
@@ -766,14 +779,14 @@ static void wheel_zoom(void) {
  * next showUI; sent at once while one is; always as setNightMode for the cluster display. */
 static void night_mode(void) {
     obj *session;
-    int sent, i;
+    int sent;
     altscreen_module_def.on_init();
     sent = g_sent;
     mmi_night(1);
     usleep(50000);
     check(g_sent == sent, "no session held: the night mode is only kept");
     session = cluster_setup();
-    for (i = 0; i < 100 && g_sent < sent + 4; ++i) usleep(10000);
+    WAIT_WHILE(1000, g_sent < sent + 4);
     check(g_sent == sent + 4 && strcmp(g_sent_type[sent], "showUI") == 0
           && strcmp(g_sent_type[sent + 1], "setNightMode") == 0 && g_sent_night[sent + 1] == 0
           && strcmp(g_sent_type[sent + 2], "setNightMode") == 0 && g_sent_night[sent + 2] == 1
@@ -782,7 +795,7 @@ static void night_mode(void) {
           "display, then forceKeyFrame");
     sent = g_sent;
     mmi_night(0);
-    for (i = 0; i < 100 && (g_sent < sent + 1 || session->refs != 2); ++i) usleep(10000);
+    WAIT_WHILE(1000, g_sent < sent + 1 || session->refs != 2);
     check(g_sent == sent + 1 && strcmp(g_sent_type[sent], "setNightMode") == 0 && g_sent_night[sent] == 0
           && strcmp(g_sent_uuid[sent], ALT_DISPLAY_UUID) == 0 && session->refs == 2,
           "a change while the session is held: setNightMode false at once");

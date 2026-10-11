@@ -40,9 +40,8 @@ typedef struct cluster_surface cluster_surface_t;
 /* Create screen context + managed window + buffers.  NULL on failure. */
 cluster_surface_t *cluster_surface_create(const cluster_surface_cfg *cfg);
 
-/* Native handles for the caller's pixel pipeline (eglCreateWindowSurface / OMX). */
+/* The native window for the caller's pixel pipeline (eglCreateWindowSurface / OMX). */
 screen_window_t    cluster_surface_window(cluster_surface_t *s);
-screen_context_t   cluster_surface_context(cluster_surface_t *s);
 
 /* Cheap health probe (~every 5 s): 1 = window lost/disowned → caller should tear
  * down its EGL/OMX surface, call cluster_surface_recreate(), then rebind. */

@@ -89,17 +89,7 @@
  *   5=REROUTING, 6=PROCEED_TO_ROUTE
  */
 #define RGD_STATE_NO_ROUTE_SET      0
-#define RGD_STATE_ROUTE_SET         1
-#define RGD_STATE_ARRIVED           2
-#define RGD_STATE_LOADING           3
-#define RGD_STATE_LOCATING          4
 #define RGD_STATE_REROUTING         5
-#define RGD_STATE_PROCEED_TO_ROUTE  6
-
-/* Backward-compatible aliases used throughout the hook code. */
-#define RGD_STATE_NOT_SET           RGD_STATE_NO_ROUTE_SET
-#define RGD_STATE_NOT_ACTIVE        RGD_STATE_NO_ROUTE_SET
-#define RGD_STATE_ACTIVE            RGD_STATE_ROUTE_SET
 
 /* ============================================================
  * RouteGuidanceManeuverUpdate (0x5202) TLV IDs
@@ -126,91 +116,6 @@
 #define LANE_MSG_TLV_LANE_GUIDANCE_INDEX     0x0001
 #define LANE_MSG_TLV_LANE_INFORMATIONS       0x0002
 #define LANE_MSG_TLV_LANE_GUIDANCE_DESC      0x0003
-
-/*
- * Maneuver types.
- *
- * Verified against MHI3 dio_manager type-info strings
- * (CDIONavigationMetadataTypeInfo::toString(EManeuverType)):
- *   0=NO_TURN, 1=LEFT_TURN, 2=RIGHT_TURN, ... , 53=CHANGE_HIGHWAY_RIGHT
- */
-#define MAN_TYPE_NOT_SET                    255
-#define MAN_TYPE_NO_TURN                    0
-#define MAN_TYPE_LEFT_TURN                  1
-#define MAN_TYPE_RIGHT_TURN                 2
-#define MAN_TYPE_STRAIGHT_AHEAD             3
-#define MAN_TYPE_U_TURN                     4
-#define MAN_TYPE_FOLLOW_ROAD                5
-#define MAN_TYPE_ENTER_ROUNDABOUT           6
-#define MAN_TYPE_EXIT_ROUNDABOUT            7
-#define MAN_TYPE_OFF_RAMP                   8
-#define MAN_TYPE_ON_RAMP                    9
-#define MAN_TYPE_ARRIVE_END_OF_NAVIGATION   10
-#define MAN_TYPE_START_ROUTE                11
-#define MAN_TYPE_ARRIVE_AT_DESTINATION      12
-#define MAN_TYPE_KEEP_LEFT                  13
-#define MAN_TYPE_KEEP_RIGHT                 14
-#define MAN_TYPE_ENTER_FERRY                15
-#define MAN_TYPE_EXIT_FERRY                 16
-#define MAN_TYPE_CHANGE_FERRY               17
-#define MAN_TYPE_START_ROUTE_WITH_U_TURN    18
-#define MAN_TYPE_U_TURN_AT_ROUNDABOUT       19
-#define MAN_TYPE_LEFT_TURN_AT_END           20
-#define MAN_TYPE_RIGHT_TURN_AT_END          21
-#define MAN_TYPE_HIGHWAY_OFF_RAMP_LEFT      22
-#define MAN_TYPE_HIGHWAY_OFF_RAMP_RIGHT     23
-#define MAN_TYPE_ARRIVE_DESTINATION_LEFT    24
-#define MAN_TYPE_ARRIVE_DESTINATION_RIGHT   25
-#define MAN_TYPE_U_TURN_WHEN_POSSIBLE       26
-#define MAN_TYPE_ARRIVE_END_OF_DIRECTIONS   27
-#define MAN_TYPE_ROUNDABOUT_EXIT_1          28
-#define MAN_TYPE_ROUNDABOUT_EXIT_2          29
-#define MAN_TYPE_ROUNDABOUT_EXIT_3          30
-#define MAN_TYPE_ROUNDABOUT_EXIT_4          31
-#define MAN_TYPE_ROUNDABOUT_EXIT_5          32
-#define MAN_TYPE_ROUNDABOUT_EXIT_6          33
-#define MAN_TYPE_ROUNDABOUT_EXIT_7          34
-#define MAN_TYPE_ROUNDABOUT_EXIT_8          35
-#define MAN_TYPE_ROUNDABOUT_EXIT_9          36
-#define MAN_TYPE_ROUNDABOUT_EXIT_10         37
-#define MAN_TYPE_ROUNDABOUT_EXIT_11         38
-#define MAN_TYPE_ROUNDABOUT_EXIT_12         39
-#define MAN_TYPE_ROUNDABOUT_EXIT_13         40
-#define MAN_TYPE_ROUNDABOUT_EXIT_14         41
-#define MAN_TYPE_ROUNDABOUT_EXIT_15         42
-#define MAN_TYPE_ROUNDABOUT_EXIT_16         43
-#define MAN_TYPE_ROUNDABOUT_EXIT_17         44
-#define MAN_TYPE_ROUNDABOUT_EXIT_18         45
-#define MAN_TYPE_ROUNDABOUT_EXIT_19         46
-#define MAN_TYPE_SHARP_LEFT_TURN            47
-#define MAN_TYPE_SHARP_RIGHT_TURN           48
-#define MAN_TYPE_SLIGHT_LEFT_TURN           49
-#define MAN_TYPE_SLIGHT_RIGHT_TURN          50
-#define MAN_TYPE_CHANGE_HIGHWAY             51
-#define MAN_TYPE_CHANGE_HIGHWAY_LEFT        52
-#define MAN_TYPE_CHANGE_HIGHWAY_RIGHT       53
-
-/*
- * Distance units (as observed in MHI3 dio_manager type-info strings).
- *
- * mediabase::CDIONavigationMetadataTypeInfo::toString(EDistanceRemainingDisplayUnits):
- *   0=KM, 1=MILES, 2=M, 3=YARDS, 4=FT
- */
-#define DIST_UNIT_KM        0
-#define DIST_UNIT_MILES     1
-#define DIST_UNIT_METERS    2
-#define DIST_UNIT_YARDS     3
-#define DIST_UNIT_FEET      4
-
-/*
- * Driving side (as observed in MHI3 tbt_renderer logging and captured iAP2 packets):
- *   0 = right-hand traffic
- *   1 = left-hand traffic
- *
- * Note: this field is optional; if the TLV is missing, we don't publish the bus key.
- */
-#define DRIVING_SIDE_RIGHT   0
-#define DRIVING_SIDE_LEFT    1
 
 /* ============================================================
  * Data Structures
@@ -260,46 +165,36 @@ typedef struct {
     uint8_t  status;         /* 0=NOT_GOOD, 1=GOOD, 2=PREFERRED */
     int16_t  angles[MAX_LANE_ANGLES]; /* full laneAngles vector from 0x5204/0x0002 */
     uint8_t  angle_count;
-    char     description[64];
 } rgd_lane_t;
 
 /* Lane guidance data (from 0x5204) */
 typedef struct {
     uint64_t present;
-    uint16_t component_ids[MAX_COMPONENT_LIST];
-    uint16_t component_count;
     uint16_t lane_guidance_index;
     rgd_lane_t lanes[MAX_LANE_GUIDANCE];
     uint8_t lane_count;
     uint8_t lane_complete; /* full, explicit ordered snapshot; no capacity truncation */
-    char lane_guidance_description[64];
 } rgd_lane_guidance_t;
 
-/* Route update data (from 0x5201) */
+/* Route update data (from 0x5201).  Only the fields the bus snapshot publishes are kept. */
 typedef struct {
     uint64_t present;
     uint16_t component_ids[MAX_COMPONENT_LIST];
     uint16_t component_count;
     uint8_t route_state;
     uint8_t maneuver_state;
-    uint8_t distance_units;
-    uint8_t dist_to_maneuver_units;
     uint8_t visible_in_app;
     uint8_t lane_guidance_showing;
     uint8_t source_supports_route_guidance;
     uint16_t maneuver_count;
     uint16_t lane_guidance_index;
     int16_t lane_guidance_slot;  /* Bus-only remapped slot for lane_guidance_index */
-    uint16_t lane_guidance_total;
     uint32_t distance_remaining;
     uint32_t dist_to_maneuver;
     uint64_t eta;
     uint64_t time_remaining;
     char current_road[256];
     char destination[256];
-    char distance_string[64];
-    char dist_to_maneuver_string[64];
-    char source_name[64];
     uint16_t maneuver_list[MAX_MANEUVER_LIST];
     uint16_t maneuver_list_count;
 } rgd_update_t;
@@ -313,35 +208,24 @@ typedef struct {
 #define RGD_UPD_ETA                  (1ULL << 5)
 #define RGD_UPD_TIME_REMAINING       (1ULL << 6)
 #define RGD_UPD_DISTANCE_REMAINING   (1ULL << 7)
-#define RGD_UPD_DISTANCE_STRING      (1ULL << 8)
-#define RGD_UPD_DISTANCE_UNITS       (1ULL << 9)
-#define RGD_UPD_DIST_TO_MANEUVER     (1ULL << 10)
-#define RGD_UPD_DIST_TO_MANEUVER_STR (1ULL << 11)
-#define RGD_UPD_DIST_TO_MANEUVER_UNI (1ULL << 12)
-#define RGD_UPD_MANEUVER_COUNT       (1ULL << 13)
-#define RGD_UPD_MANEUVER_LIST        (1ULL << 14)
-#define RGD_UPD_VISIBLE_IN_APP       (1ULL << 15)
-#define RGD_UPD_LANE_INDEX           (1ULL << 16)
-#define RGD_UPD_LANE_TOTAL           (1ULL << 17)
-#define RGD_UPD_LANE_SHOWING         (1ULL << 18)
-#define RGD_UPD_SOURCE_NAME          (1ULL << 19)
-#define RGD_UPD_SOURCE_SUPPORTS_RG   (1ULL << 20)
-#define RGD_UPD_LANE_SLOT            (1ULL << 21)  /* Bus-only remapped lane slot */
+#define RGD_UPD_DIST_TO_MANEUVER     (1ULL << 8)
+#define RGD_UPD_MANEUVER_COUNT       (1ULL << 9)
+#define RGD_UPD_MANEUVER_LIST        (1ULL << 10)
+#define RGD_UPD_VISIBLE_IN_APP       (1ULL << 11)
+#define RGD_UPD_LANE_INDEX           (1ULL << 12)
+#define RGD_UPD_LANE_SHOWING         (1ULL << 13)
+#define RGD_UPD_SOURCE_SUPPORTS_RG   (1ULL << 14)
+#define RGD_UPD_LANE_SLOT            (1ULL << 15)  /* Bus-only remapped lane slot */
 
 /* rgd_lane_guidance_t present bits */
-#define RGD_LANE_COMPONENT_IDS       (1ULL << 0)
-#define RGD_LANE_GUIDANCE_INDEX      (1ULL << 1)
-#define RGD_LANE_INFORMATIONS        (1ULL << 2)
-#define RGD_LANE_GUIDANCE_DESC       (1ULL << 3)
+#define RGD_LANE_GUIDANCE_INDEX      (1ULL << 0)
+#define RGD_LANE_INFORMATIONS        (1ULL << 1)
 
 /* Maneuver data (from 0x5202) */
 typedef struct {
     uint64_t present;
-    uint16_t component_ids[MAX_COMPONENT_LIST];
-    uint16_t component_count;
     uint16_t index;
     uint8_t maneuver_type;
-    uint8_t distance_units;
     uint8_t driving_side;
     uint8_t junction_type;
     int16_t exit_angle;
@@ -350,40 +234,33 @@ typedef struct {
     uint32_t distance_between;
     char description[256];
     char after_road_name[256];
-    char distance_string[64];
     rgd_lane_t lanes[MAX_LANE_GUIDANCE];
     uint8_t lane_count;
-    uint16_t lane_guidance_raw_len;
 #if RGD_TRACE_RAW_FULL
     char lane_guidance_hex[(RGD_HEX_PREVIEW_MAX * 3) + 1];
 #endif
     uint16_t linked_lane_guidance_index;
-    uint16_t exit_info_raw_len;
 #if RGD_TRACE_RAW_FULL
     char exit_info_hex[(RGD_HEX_PREVIEW_MAX * 3) + 1];
 #endif
     char exit_info_str[RGD_EXIT_INFO_MAX + 1];
-    uint8_t valid;
 } rgd_maneuver_t;
 
 /* rgd_maneuver_t present bits */
-#define RGD_MAN_COMPONENT_IDS        (1ULL << 0)
-#define RGD_MAN_INDEX                (1ULL << 1)
-#define RGD_MAN_DESCRIPTION          (1ULL << 2)
-#define RGD_MAN_TYPE                 (1ULL << 3)
-#define RGD_MAN_AFTER_ROAD           (1ULL << 4)
-#define RGD_MAN_DISTANCE_BETWEEN     (1ULL << 5)
-#define RGD_MAN_DISTANCE_STRING      (1ULL << 6)
-#define RGD_MAN_DISTANCE_UNITS       (1ULL << 7)
-#define RGD_MAN_DRIVING_SIDE         (1ULL << 8)
-#define RGD_MAN_JUNCTION_TYPE        (1ULL << 9)
-#define RGD_MAN_JUNCTION_ANGLES      (1ULL << 10)
-#define RGD_MAN_EXIT_ANGLE           (1ULL << 11)
-#define RGD_MAN_LANE_GUIDANCE_RAW    (1ULL << 12)
-#define RGD_MAN_EXIT_INFO_RAW        (1ULL << 13)
-#define RGD_MAN_EXIT_INFO_STR        (1ULL << 14)
-#define RGD_MAN_LANE_GUIDANCE        (1ULL << 15)  /* Parsed lane data in lanes[] */
-#define RGD_MAN_LINKED_LANE_INDEX    (1ULL << 16)  /* Scalar linked lane guidance index */
+#define RGD_MAN_INDEX                (1ULL << 0)
+#define RGD_MAN_DESCRIPTION          (1ULL << 1)
+#define RGD_MAN_TYPE                 (1ULL << 2)
+#define RGD_MAN_AFTER_ROAD           (1ULL << 3)
+#define RGD_MAN_DISTANCE_BETWEEN     (1ULL << 4)
+#define RGD_MAN_DRIVING_SIDE         (1ULL << 5)
+#define RGD_MAN_JUNCTION_TYPE        (1ULL << 6)
+#define RGD_MAN_JUNCTION_ANGLES      (1ULL << 7)
+#define RGD_MAN_EXIT_ANGLE           (1ULL << 8)
+#define RGD_MAN_LANE_GUIDANCE_RAW    (1ULL << 9)
+#define RGD_MAN_EXIT_INFO_RAW        (1ULL << 10)
+#define RGD_MAN_EXIT_INFO_STR        (1ULL << 11)
+#define RGD_MAN_LANE_GUIDANCE        (1ULL << 12)  /* Parsed lane data in lanes[] */
+#define RGD_MAN_LINKED_LANE_INDEX    (1ULL << 13)  /* Scalar linked lane guidance index */
 
 /* ============================================================
  * Parsing Functions

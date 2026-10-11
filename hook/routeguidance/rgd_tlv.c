@@ -9,6 +9,7 @@
 
 DEFINE_LOG_MODULE(RGD);
 
+#if RGD_TRACE_RAW_FULL
 static void hex_encode_preview(const uint8_t* data, int len, char* out, size_t out_sz) {
     if (!out || out_sz == 0) return;
     out[0] = '\0';
@@ -24,30 +25,42 @@ static void hex_encode_preview(const uint8_t* data, int len, char* out, size_t o
     }
     out[off] = '\0';
 }
+#endif
 
 /* Replace newlines (\r\n or \n) with " / " separator in-place.
  * iOS packs multi-part location info (street + bus stop, etc.) into a single
- * string separated by newlines.  " / " keeps it readable on the HUD. */
+ * string separated by newlines.  " / " keeps it readable on the HUD.  The result is cut
+ * at buf_sz - 1 bytes (at most 256: the string fields' size), so a string that fills the
+ * buffer without a newline is kept whole. */
 static void replace_newlines(char* s, size_t buf_sz) {
-    if (!s || buf_sz == 0) return;
-    const char sep[] = " / ";
-    const size_t sep_len = 3;
     char tmp[256];
     size_t si = 0;
-    for (size_t i = 0; s[i] != '\0' && si < sizeof(tmp) - sep_len - 1; i++) {
-        if (s[i] == '\r' && s[i + 1] == '\n') {
-            memcpy(tmp + si, sep, sep_len); si += sep_len; i++; /* skip \r\n */
-        } else if (s[i] == '\n' || s[i] == '\r') {
-            memcpy(tmp + si, sep, sep_len); si += sep_len;
-        } else {
+    for (size_t i = 0; s[i] != '\0' && si < buf_sz - 1; i++) {
+        if (s[i] != '\r' && s[i] != '\n') {
             tmp[si++] = s[i];
+            continue;
         }
+        if (s[i] == '\r' && s[i + 1] == '\n') i++;
+        for (const char* p = " / "; *p && si < buf_sz - 1; p++) tmp[si++] = *p;
     }
-    tmp[si] = '\0';
-    size_t copy = si < buf_sz - 1 ? si : buf_sz - 1;
-    memcpy(s, tmp, copy);
-    s[copy] = '\0';
+    memcpy(s, tmp, si);
+    s[si] = '\0';
 }
+
+/* A string TLV value into dst: cut to dst_sz - 1 bytes, terminated, newlines replaced when asked. */
+static void tlv_string(char* dst, size_t dst_sz, const uint8_t* val, int val_len, bool newlines) {
+    size_t n = (size_t)val_len < dst_sz - 1 ? (size_t)val_len : dst_sz - 1;
+    memcpy(dst, val, n);
+    dst[n] = '\0';
+    if (newlines) replace_newlines(dst, dst_sz);
+}
+
+/* One TLV into out->field (and its present bit), when the value is wide enough. */
+#define TLV_U8(field, bit)  do { if (val_len >= 1) { out->field = val[0]; out->present |= (bit); } } while (0)
+#define TLV_U16(field, bit) do { if (val_len >= 2) { out->field = read_be16(val); out->present |= (bit); } } while (0)
+#define TLV_U32(field, bit) do { if (val_len >= 4) { out->field = read_be32(val); out->present |= (bit); } } while (0)
+#define TLV_U64(field, bit) do { if (val_len >= 8) { out->field = read_be64(val); out->present |= (bit); } } while (0)
+#define TLV_STR(field, bit) do { tlv_string(out->field, sizeof(out->field), val, val_len, true); out->present |= (bit); } while (0)
 
 static void copy_printable_string_preview(const uint8_t* data, int len, char* out, size_t out_sz) {
     if (!out || out_sz == 0) return;
@@ -221,10 +234,6 @@ static uint8_t rgd_parse_lane_information_value(const uint8_t* val, size_t val_l
             default:
                 LOG_WARN(LOG_MODULE, "Unknown 0x5204 lane-information sub-TLV: id=0x%04X len=%u",
                          sub_id, sub_len);
-                if (sub_val_len > 0) {
-                    LOG_HEXDUMP(LOG_MODULE, "RGD 0x5204 lane-information unknown TLV",
-                                sub_val, (size_t)sub_val_len);
-                }
                 break;
         }
 
@@ -281,106 +290,15 @@ bool rgd_parse_update(const uint8_t* buf, size_t len, rgd_update_t* out) {
                 out->present |= RGD_UPD_COMPONENT_IDS;
                 break;
 
-            case RGD_TLV_ROUTE_GUIDANCE_STATE:
-                if (val_len >= 1) {
-                    out->route_state = val[0];
-                    out->present |= RGD_UPD_ROUTE_STATE;
-                }
-                break;
-
-            case RGD_TLV_MANEUVER_STATE:
-                if (val_len >= 1) {
-                    out->maneuver_state = val[0];
-                    out->present |= RGD_UPD_MANEUVER_STATE;
-                }
-                break;
-
-            case RGD_TLV_CURRENT_ROAD_NAME:
-                if (val_len >= 0) {
-                    int n = val_len < 255 ? val_len : 255;
-                    if (n > 0) memcpy(out->current_road, val, (size_t)n);
-                    out->current_road[n] = '\0';
-                    replace_newlines(out->current_road, sizeof(out->current_road));
-                    out->present |= RGD_UPD_CURRENT_ROAD;
-                }
-                break;
-
-            case RGD_TLV_DESTINATION_NAME:
-                if (val_len >= 0) {
-                    int n = val_len < 255 ? val_len : 255;
-                    if (n > 0) memcpy(out->destination, val, (size_t)n);
-                    out->destination[n] = '\0';
-                    replace_newlines(out->destination, sizeof(out->destination));
-                    out->present |= RGD_UPD_DESTINATION;
-                }
-                break;
-
-            case RGD_TLV_ETA:
-                if (val_len >= 8) {
-                    out->eta = read_be64(val);
-                    out->present |= RGD_UPD_ETA;
-                }
-                break;
-
-            case RGD_TLV_TIME_REMAINING:
-                if (val_len >= 8) {
-                    out->time_remaining = read_be64(val);
-                    out->present |= RGD_UPD_TIME_REMAINING;
-                }
-                break;
-
-            case RGD_TLV_DISTANCE_REMAINING:
-                if (val_len >= 4) {
-                    out->distance_remaining = read_be32(val);
-                    out->present |= RGD_UPD_DISTANCE_REMAINING;
-                }
-                break;
-
-            case RGD_TLV_DISTANCE_STRING:
-                if (val_len >= 0) {
-                    int n = val_len < 63 ? val_len : 63;
-                    if (n > 0) memcpy(out->distance_string, val, (size_t)n);
-                    out->distance_string[n] = '\0';
-                    out->present |= RGD_UPD_DISTANCE_STRING;
-                }
-                break;
-
-            case RGD_TLV_DISTANCE_UNITS:
-                if (val_len >= 1) {
-                    out->distance_units = val[0];
-                    out->present |= RGD_UPD_DISTANCE_UNITS;
-                }
-                break;
-
-            case RGD_TLV_DIST_TO_MANEUVER:
-                if (val_len >= 4) {
-                    out->dist_to_maneuver = read_be32(val);
-                    out->present |= RGD_UPD_DIST_TO_MANEUVER;
-                }
-                break;
-
-            case RGD_TLV_DIST_TO_MANEUVER_STRING:
-                if (val_len >= 0) {
-                    int n = val_len < 63 ? val_len : 63;
-                    if (n > 0) memcpy(out->dist_to_maneuver_string, val, (size_t)n);
-                    out->dist_to_maneuver_string[n] = '\0';
-                    out->present |= RGD_UPD_DIST_TO_MANEUVER_STR;
-                }
-                break;
-
-            case RGD_TLV_DIST_TO_MANEUVER_UNITS:
-                if (val_len >= 1) {
-                    out->dist_to_maneuver_units = val[0];
-                    out->present |= RGD_UPD_DIST_TO_MANEUVER_UNI;
-                }
-                break;
-
-            case RGD_TLV_MANEUVER_COUNT:
-                if (val_len >= 2) {
-                    out->maneuver_count = read_be16(val);
-                    out->present |= RGD_UPD_MANEUVER_COUNT;
-                }
-                break;
+            case RGD_TLV_ROUTE_GUIDANCE_STATE:  TLV_U8(route_state, RGD_UPD_ROUTE_STATE); break;
+            case RGD_TLV_MANEUVER_STATE:        TLV_U8(maneuver_state, RGD_UPD_MANEUVER_STATE); break;
+            case RGD_TLV_CURRENT_ROAD_NAME:     TLV_STR(current_road, RGD_UPD_CURRENT_ROAD); break;
+            case RGD_TLV_DESTINATION_NAME:      TLV_STR(destination, RGD_UPD_DESTINATION); break;
+            case RGD_TLV_ETA:                   TLV_U64(eta, RGD_UPD_ETA); break;
+            case RGD_TLV_TIME_REMAINING:        TLV_U64(time_remaining, RGD_UPD_TIME_REMAINING); break;
+            case RGD_TLV_DISTANCE_REMAINING:    TLV_U32(distance_remaining, RGD_UPD_DISTANCE_REMAINING); break;
+            case RGD_TLV_DIST_TO_MANEUVER:      TLV_U32(dist_to_maneuver, RGD_UPD_DIST_TO_MANEUVER); break;
+            case RGD_TLV_MANEUVER_COUNT:        TLV_U16(maneuver_count, RGD_UPD_MANEUVER_COUNT); break;
 
             case RGD_TLV_MANEUVER_LIST:
                 out->maneuver_list_count = 0;
@@ -390,51 +308,17 @@ bool rgd_parse_update(const uint8_t* buf, size_t len, rgd_update_t* out) {
                 out->present |= RGD_UPD_MANEUVER_LIST;
                 break;
 
-            case RGD_TLV_VISIBLE_IN_APP:
-                if (val_len >= 1) {
-                    out->visible_in_app = val[0];
-                    out->present |= RGD_UPD_VISIBLE_IN_APP;
-                }
-                break;
+            case RGD_TLV_VISIBLE_IN_APP:        TLV_U8(visible_in_app, RGD_UPD_VISIBLE_IN_APP); break;
+            case RGD_TLV_LANE_GUIDANCE_INDEX:   TLV_U16(lane_guidance_index, RGD_UPD_LANE_INDEX); break;
+            case RGD_TLV_LANE_GUIDANCE_SHOWING: TLV_U8(lane_guidance_showing, RGD_UPD_LANE_SHOWING); break;
+            case RGD_TLV_SOURCE_SUPPORTS_RG:    TLV_U8(source_supports_route_guidance, RGD_UPD_SOURCE_SUPPORTS_RG); break;
 
-            case RGD_TLV_LANE_GUIDANCE_INDEX:
-                if (val_len >= 2) {
-                    out->lane_guidance_index = read_be16(val);
-                    out->present |= RGD_UPD_LANE_INDEX;
-                }
-                break;
-
+            case RGD_TLV_DISTANCE_STRING:
+            case RGD_TLV_DISTANCE_UNITS:
+            case RGD_TLV_DIST_TO_MANEUVER_STRING:
+            case RGD_TLV_DIST_TO_MANEUVER_UNITS:
             case RGD_TLV_LANE_GUIDANCE_TOTAL:
-                if (val_len >= 2) {
-                    out->lane_guidance_total = read_be16(val);
-                    out->present |= RGD_UPD_LANE_TOTAL;
-                }
-                break;
-
-            case RGD_TLV_LANE_GUIDANCE_SHOWING:
-                if (val_len >= 1) {
-                    out->lane_guidance_showing = val[0];
-                    out->present |= RGD_UPD_LANE_SHOWING;
-                }
-                break;
-
             case RGD_TLV_SOURCE_NAME:
-                if (val_len >= 0) {
-                    int n = val_len < 63 ? val_len : 63;
-                    if (n > 0) memcpy(out->source_name, val, (size_t)n);
-                    out->source_name[n] = '\0';
-                    replace_newlines(out->source_name, sizeof(out->source_name));
-                    out->present |= RGD_UPD_SOURCE_NAME;
-                }
-                break;
-
-            case RGD_TLV_SOURCE_SUPPORTS_RG:
-                if (val_len >= 1) {
-                    out->source_supports_route_guidance = val[0];
-                    out->present |= RGD_UPD_SOURCE_SUPPORTS_RG;
-                }
-                break;
-
             case 0x0015: /* destinationTimeZoneOffsetMinutes (iOS 17+) */
             case 0x0016: /* stopType (iOS 17+) */
             case 0x0017: /* electricVehicleDestination (iOS 17+) */
@@ -442,7 +326,8 @@ bool rgd_parse_update(const uint8_t* buf, size_t len, rgd_update_t* out) {
             case 0x0019: /* reserved/future iOS extension */
             case 0x001A: /* reserved/future iOS extension */
                 /*
-                 * Known but unconsumed TLVs.  iOS 17+ extends 0x5201 with
+                 * Known but unconsumed TLVs.  The strings, units, lane total and source
+                 * name are not published to the bus.  iOS 17+ extends 0x5201 with
                  * EV / multi-stop / timezone metadata that we do not need
                  * for cluster RG.  Silently skip so logs stay clean.
                  * Mapping verified against
@@ -454,9 +339,6 @@ bool rgd_parse_update(const uint8_t* buf, size_t len, rgd_update_t* out) {
                 break;
             default:
                 LOG_WARN(LOG_MODULE, "Unknown RGD TLV (0x5201): id=0x%04X len=%u", tlv_id, tlv_len);
-                if (val_len > 0) {
-                    LOG_HEXDUMP(LOG_MODULE, "RGD 0x5201 unknown TLV", val, (size_t)val_len);
-                }
                 break;
         }
         off += tlv_len;
@@ -481,83 +363,18 @@ bool rgd_parse_maneuver(const uint8_t* buf, size_t len, rgd_maneuver_t* out) {
 
         switch (tlv_id) {
             case MAN_TLV_COMPONENT_ID:
-                out->component_count = 0;
-                for (int i = 0; i + 1 < val_len && out->component_count < MAX_COMPONENT_LIST; i += 2) {
-                    out->component_ids[out->component_count++] = read_be16(val + i);
-                }
-                out->present |= RGD_MAN_COMPONENT_IDS;
-                break;
-
-            case MAN_TLV_INDEX:
-                if (val_len >= 2) {
-                    out->index = read_be16(val);
-                    out->present |= RGD_MAN_INDEX;
-                }
-                break;
-
-            case MAN_TLV_DESCRIPTION:
-                if (val_len >= 0) {
-                    int n = val_len < 255 ? val_len : 255;
-                    if (n > 0) memcpy(out->description, val, (size_t)n);
-                    out->description[n] = '\0';
-                    replace_newlines(out->description, sizeof(out->description));
-                    out->present |= RGD_MAN_DESCRIPTION;
-                }
-                break;
-
-            case MAN_TLV_TYPE:
-                if (val_len >= 1) {
-                    out->maneuver_type = val[0];
-                    out->present |= RGD_MAN_TYPE;
-                }
-                break;
-
-            case MAN_TLV_AFTER_ROAD_NAME:
-                if (val_len >= 0) {
-                    int n = val_len < 255 ? val_len : 255;
-                    if (n > 0) memcpy(out->after_road_name, val, (size_t)n);
-                    out->after_road_name[n] = '\0';
-                    replace_newlines(out->after_road_name, sizeof(out->after_road_name));
-                    out->present |= RGD_MAN_AFTER_ROAD;
-                }
-                break;
-
-            case MAN_TLV_DISTANCE_BETWEEN:
-                if (val_len >= 4) {
-                    out->distance_between = read_be32(val);
-                    out->present |= RGD_MAN_DISTANCE_BETWEEN;
-                }
-                break;
-
             case MAN_TLV_DISTANCE_STRING:
-                if (val_len >= 0) {
-                    int n = val_len < 63 ? val_len : 63;
-                    if (n > 0) memcpy(out->distance_string, val, (size_t)n);
-                    out->distance_string[n] = '\0';
-                    out->present |= RGD_MAN_DISTANCE_STRING;
-                }
-                break;
-
             case MAN_TLV_DISTANCE_UNITS:
-                if (val_len >= 1) {
-                    out->distance_units = val[0];
-                    out->present |= RGD_MAN_DISTANCE_UNITS;
-                }
+                /* Not published to the bus. */
                 break;
 
-            case MAN_TLV_DRIVING_SIDE:
-                if (val_len >= 1) {
-                    out->driving_side = val[0];
-                    out->present |= RGD_MAN_DRIVING_SIDE;
-                }
-                break;
-
-            case MAN_TLV_JUNCTION_TYPE:
-                if (val_len >= 1) {
-                    out->junction_type = val[0];
-                    out->present |= RGD_MAN_JUNCTION_TYPE;
-                }
-                break;
+            case MAN_TLV_INDEX:            TLV_U16(index, RGD_MAN_INDEX); break;
+            case MAN_TLV_DESCRIPTION:      TLV_STR(description, RGD_MAN_DESCRIPTION); break;
+            case MAN_TLV_TYPE:             TLV_U8(maneuver_type, RGD_MAN_TYPE); break;
+            case MAN_TLV_AFTER_ROAD_NAME:  TLV_STR(after_road_name, RGD_MAN_AFTER_ROAD); break;
+            case MAN_TLV_DISTANCE_BETWEEN: TLV_U32(distance_between, RGD_MAN_DISTANCE_BETWEEN); break;
+            case MAN_TLV_DRIVING_SIDE:     TLV_U8(driving_side, RGD_MAN_DRIVING_SIDE); break;
+            case MAN_TLV_JUNCTION_TYPE:    TLV_U8(junction_type, RGD_MAN_JUNCTION_TYPE); break;
 
             case MAN_TLV_JUNCTION_ANGLES:
                 /* iAP2 sends one angle per repeated TLV - don't reset count
@@ -568,15 +385,9 @@ bool rgd_parse_maneuver(const uint8_t* buf, size_t len, rgd_maneuver_t* out) {
                 out->present |= RGD_MAN_JUNCTION_ANGLES;
                 break;
 
-            case MAN_TLV_EXIT_ANGLE:
-                if (val_len >= 2) {
-                    out->exit_angle = (int16_t)read_be16(val);
-                    out->present |= RGD_MAN_EXIT_ANGLE;
-                }
-                break;
+            case MAN_TLV_EXIT_ANGLE:       TLV_U16(exit_angle, RGD_MAN_EXIT_ANGLE); break;
 
             case MAN_TLV_LINKED_LANE_GUIDANCE:
-                out->lane_guidance_raw_len = (uint16_t)val_len;
 #if RGD_TRACE_RAW_FULL
                 hex_encode_preview(val, val_len, out->lane_guidance_hex, sizeof(out->lane_guidance_hex));
 #endif
@@ -591,7 +402,6 @@ bool rgd_parse_maneuver(const uint8_t* buf, size_t len, rgd_maneuver_t* out) {
                 break;
 
             case MAN_TLV_EXIT_INFO:
-                out->exit_info_raw_len = (uint16_t)val_len;
 #if RGD_TRACE_RAW_FULL
                 hex_encode_preview(val, val_len, out->exit_info_hex, sizeof(out->exit_info_hex));
 #endif
@@ -601,9 +411,6 @@ bool rgd_parse_maneuver(const uint8_t* buf, size_t len, rgd_maneuver_t* out) {
                 break;
             default:
                 LOG_WARN(LOG_MODULE, "Unknown MAN TLV (0x5202): id=0x%04X len=%u", tlv_id, tlv_len);
-                if (val_len > 0) {
-                    LOG_HEXDUMP(LOG_MODULE, "RGD 0x5202 unknown TLV", val, (size_t)val_len);
-                }
                 break;
         }
         off += tlv_len;
@@ -638,15 +445,8 @@ bool rgd_parse_lane_guidance(const uint8_t* buf, size_t len, rgd_lane_guidance_t
 
         switch (tlv_id) {
             case LANE_MSG_TLV_COMPONENT_ID:
-                if (val_len > 0) {
-                    for (int i = 0; i + 1 < val_len && out->component_count < MAX_COMPONENT_LIST; i += 2) {
-                        out->component_ids[out->component_count++] = read_be16(val + i);
-                    }
-                    if ((val_len & 1) && out->component_count < MAX_COMPONENT_LIST) {
-                        out->component_ids[out->component_count++] = val[val_len - 1];
-                    }
-                }
-                out->present |= RGD_LANE_COMPONENT_IDS;
+            case LANE_MSG_TLV_LANE_GUIDANCE_DESC:
+                /* Not published to the bus. */
                 break;
 
             case LANE_MSG_TLV_LANE_GUIDANCE_INDEX:
@@ -661,9 +461,6 @@ bool rgd_parse_lane_guidance(const uint8_t* buf, size_t len, rgd_lane_guidance_t
 
             case LANE_MSG_TLV_LANE_INFORMATIONS:
                 out->present |= RGD_LANE_INFORMATIONS;
-                if (val_len > 0) {
-                    LOG_HEXDUMP(LOG_MODULE, "0x5204 LaneInformations raw", val, (size_t)val_len);
-                }
                 if (val_len > 0 && out->lane_count < MAX_LANE_GUIDANCE) {
                     rgd_lane_t parsed[MAX_LANE_GUIDANCE];
                     uint8_t free_slots = (uint8_t)(MAX_LANE_GUIDANCE - out->lane_count);
@@ -675,22 +472,8 @@ bool rgd_parse_lane_guidance(const uint8_t* buf, size_t len, rgd_lane_guidance_t
                 } else if(val_len>0)out->lane_complete=0;
                 break;
 
-            case LANE_MSG_TLV_LANE_GUIDANCE_DESC:
-                if (val_len >= 0) {
-                    int n = val_len < (int)(sizeof(out->lane_guidance_description) - 1)
-                        ? val_len
-                        : (int)(sizeof(out->lane_guidance_description) - 1);
-                    if (n > 0) memcpy(out->lane_guidance_description, val, (size_t)n);
-                    out->lane_guidance_description[n] = '\0';
-                    out->present |= RGD_LANE_GUIDANCE_DESC;
-                }
-                break;
-
             default:
                 LOG_WARN(LOG_MODULE, "Unknown RGD TLV (0x5204): id=0x%04X len=%u", tlv_id, tlv_len);
-                if (val_len > 0) {
-                    LOG_HEXDUMP(LOG_MODULE, "RGD 0x5204 unknown TLV", val, (size_t)val_len);
-                }
                 break;
         }
 
@@ -699,9 +482,14 @@ bool rgd_parse_lane_guidance(const uint8_t* buf, size_t len, rgd_lane_guidance_t
     return true;
 }
 
-size_t rgd_build_component_tlv(uint8_t* out, size_t max_len, uint16_t component_id) {
-    if (!out) return 0;
+static size_t put_u16_tlv(uint8_t* out, size_t off, uint16_t id, uint16_t value) {
+    write_be16(out + off, 6);
+    write_be16(out + off + 2, id);
+    write_be16(out + off + 4, value);
+    return off + 6;
+}
 
+size_t rgd_build_component_tlv(uint8_t* out, size_t max_len, uint16_t component_id) {
     /*
      * Match MHI3 libesoiap2.so RouteGuidanceDisplayComponent layout (9 TLVs).
      *
@@ -715,83 +503,36 @@ size_t rgd_build_component_tlv(uint8_t* out, size_t max_len, uint16_t component_
      * ID 7: MaxLaneGuidanceDescriptionLength (uint16)
      * ID 8: MaxLaneGuidanceStorageCapacity (uint16)
      *
-     * NOTE: Previously we had a spurious GuidanceDisplayCapability at ID 7
-     * that pushed lane guidance IDs to 8/9 and added non-existent boolean
-     * flags at 0x000A-0x000F.  iOS accepted the identify but silently
-     * refused to send 0x5204 LaneGuidance messages because the lane
-     * capacity TLVs were at the wrong IDs.
+     * NOTE: no GuidanceDisplayCapability at ID 7 and no boolean flags at
+     * 0x000A-0x000F.  With them the lane capacity TLVs move to IDs 8/9:
+     * iOS accepts the identify but silently sends no 0x5204 LaneGuidance.
      */
-    const char* name = "RouteGuidanceDisplayComponent";
-    size_t name_len = strlen(name) + 1;
+    static const char name[] = "RouteGuidanceDisplayComponent";
+    static const struct { uint16_t id, value; } limits[] = {
+        { RGD_COMP_MAX_CURRENT_ROAD_NAME,      0x0100 },
+        { RGD_COMP_MAX_DEST_NAME,              0x0100 },
+        { RGD_COMP_MAX_AFTER_MANEUVER_NAME,    0x0100 },
+        { RGD_COMP_MAX_MANEUVER_DESC,          0x0100 },
+        { RGD_COMP_MAX_MANEUVER_CAPACITY,      0x0006 },
+        { RGD_COMP_MAX_LANE_GUIDANCE_DESC,     0x0100 },
+        { RGD_COMP_MAX_LANE_GUIDANCE_CAPACITY, 0x0006 },
+    };
+    const size_t n_limits = sizeof(limits) / sizeof(limits[0]);
+    size_t name_tlv_len = 4 + sizeof(name);                 /* sizeof includes the NUL */
+    size_t outer_len = 4 + 6 + name_tlv_len + 6 * n_limits;
 
-    /* Calculate inner TLV sizes (each u16 TLV = 6 bytes: len(2)+id(2)+val(2)) */
-    size_t tlv0_len = 6;              /* Identifier */
-    size_t tlv1_len = 4 + name_len;   /* Name (string) */
-    size_t tlv2_len = 6;              /* MaxCurrentRoadNameLength */
-    size_t tlv3_len = 6;              /* MaxDestinationNameLength */
-    size_t tlv4_len = 6;              /* MaxAfterManeuverRoadNameLength */
-    size_t tlv5_len = 6;              /* MaxManeuverDescriptionLength */
-    size_t tlv6_len = 6;              /* MaxGuidanceManeuverStorageCapacity */
-    size_t tlv7_len = 6;              /* MaxLaneGuidanceDescriptionLength */
-    size_t tlv8_len = 6;              /* MaxLaneGuidanceStorageCapacity */
+    if (!out || max_len < outer_len) return 0;
 
-    size_t inner_len = tlv0_len + tlv1_len + tlv2_len + tlv3_len + tlv4_len +
-                       tlv5_len + tlv6_len + tlv7_len + tlv8_len;
-    size_t outer_len = 4 + inner_len;
+    write_be16(out, (uint16_t)outer_len);
+    write_be16(out + 2, IDENT_TLV_ROUTE_GUIDANCE_COMPONENT);
+    size_t off = put_u16_tlv(out, 4, RGD_COMP_COMPONENT_ID, component_id);
 
-    if (max_len < outer_len) return 0;
+    write_be16(out + off, (uint16_t)name_tlv_len);
+    write_be16(out + off + 2, RGD_COMP_NAME);
+    memcpy(out + off + 4, name, sizeof(name));
+    off += name_tlv_len;
 
-    size_t off = 0;
-
-    /* Outer TLV header */
-    write_be16(out + off, (uint16_t)outer_len); off += 2;
-    write_be16(out + off, IDENT_TLV_ROUTE_GUIDANCE_COMPONENT); off += 2;
-
-    /* 0x0000 Identifier */
-    write_be16(out + off, 6); off += 2;
-    write_be16(out + off, RGD_COMP_COMPONENT_ID); off += 2;
-    write_be16(out + off, component_id); off += 2;
-
-    /* 0x0001 Name */
-    write_be16(out + off, (uint16_t)tlv1_len); off += 2;
-    write_be16(out + off, RGD_COMP_NAME); off += 2;
-    memcpy(out + off, name, name_len); off += name_len;
-
-    /* 0x0002 MaxCurrentRoadNameLength */
-    write_be16(out + off, 6); off += 2;
-    write_be16(out + off, RGD_COMP_MAX_CURRENT_ROAD_NAME); off += 2;
-    write_be16(out + off, 0x0100); off += 2;
-
-    /* 0x0003 MaxDestinationNameLength */
-    write_be16(out + off, 6); off += 2;
-    write_be16(out + off, RGD_COMP_MAX_DEST_NAME); off += 2;
-    write_be16(out + off, 0x0100); off += 2;
-
-    /* 0x0004 MaxAfterManeuverRoadNameLength */
-    write_be16(out + off, 6); off += 2;
-    write_be16(out + off, RGD_COMP_MAX_AFTER_MANEUVER_NAME); off += 2;
-    write_be16(out + off, 0x0100); off += 2;
-
-    /* 0x0005 MaxManeuverDescriptionLength */
-    write_be16(out + off, 6); off += 2;
-    write_be16(out + off, RGD_COMP_MAX_MANEUVER_DESC); off += 2;
-    write_be16(out + off, 0x0100); off += 2;
-
-    /* 0x0006 MaxGuidanceManeuverStorageCapacity */
-    write_be16(out + off, 6); off += 2;
-    write_be16(out + off, RGD_COMP_MAX_MANEUVER_CAPACITY); off += 2;
-    write_be16(out + off, 0x0006); off += 2;
-
-    /* 0x0007 MaxLaneGuidanceDescriptionLength */
-    write_be16(out + off, 6); off += 2;
-    write_be16(out + off, RGD_COMP_MAX_LANE_GUIDANCE_DESC); off += 2;
-    write_be16(out + off, 0x0100); off += 2;
-
-    /* 0x0008 MaxLaneGuidanceStorageCapacity */
-    write_be16(out + off, 6); off += 2;
-    write_be16(out + off, RGD_COMP_MAX_LANE_GUIDANCE_CAPACITY); off += 2;
-    write_be16(out + off, 0x0006); off += 2;
-
+    for (size_t i = 0; i < n_limits; i++) off = put_u16_tlv(out, off, limits[i].id, limits[i].value);
     return off;
 }
 

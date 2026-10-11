@@ -7,9 +7,9 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.ServerSocket;
 import java.net.Socket;
+import static testsupport.TestSupport.*;
 
 public final class RendererServerTransportTest {
-    private static void check(boolean value, String why) { if (!value) throw new AssertionError(why); }
     private static Field field(String name) throws Exception {
         Field f = RendererServer.class.getDeclaredField(name); f.setAccessible(true); return f;
     }

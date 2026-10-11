@@ -11,6 +11,7 @@ import de.vw.mib.bap.stream.ByteArrayStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import sun.misc.Unsafe;
+import static testsupport.TestSupport.*;
 
 /** Actual bridge -> MU1316 sender -> UTF-8 wire serializer. Framework only is stubbed. */
 public final class CurrentPositionStockChainTest {
@@ -36,9 +37,6 @@ public final class CurrentPositionStockChainTest {
             return capture;
         }
     }
-    private static void check(boolean value, String why) { RgiDeliveryRecoveryTest.check(value, why); }
-    private static void set(Object obj, String key, Object value) throws Exception { RgiDeliveryRecoveryTest.set(obj, key, value); }
-    private static Object get(Object obj, String key) throws Exception { return RgiDeliveryRecoveryTest.get(obj, key); }
     public static void main(String[] args) throws Exception {
         Log.setLevel(-1);
         Field uf = Unsafe.class.getDeclaredField("theUnsafe"); uf.setAccessible(true);

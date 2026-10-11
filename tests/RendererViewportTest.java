@@ -3,20 +3,20 @@ import com.luka.carplay.core.ScreenModule;
 import com.luka.carplay.cluster.ClusterLayerController;
 import com.luka.carplay.framework.Log;
 import java.lang.reflect.*;
+import static testsupport.TestSupport.*;
 
 /** Real stage source -> bridge -> queued 48-byte command, without iOS updates. */
 public final class RendererViewportTest {
-    static void check(boolean value,String why) { if(!value) throw new AssertionError(why); }
     static int u16(byte[] b,int offset) { return ((b[offset]&255)<<8)|(b[offset+1]&255); }
-    static int count(ManeuverChainAudit a) throws Exception { return ((Integer)a.get(a.renderer,"writeCount")).intValue(); }
+    static int count(ManeuverChainAudit a) throws Exception { return ((Integer)get(a.renderer,"writeCount")).intValue(); }
     static void clear(ManeuverChainAudit a) throws Exception {
         Method m=RendererServer.class.getDeclaredMethod("clearWriteQueue");m.setAccessible(true);m.invoke(a.renderer);
     }
     public static void main(String[] args) throws Exception {
         Log.setLevel(-1);
         ManeuverChainAudit a=new ManeuverChainAudit();
-        a.set(a.renderer,"rendererReady",Boolean.TRUE);
-        a.set(a.renderer,"sock",new java.net.Socket());
+        set(a.renderer,"rendererReady",Boolean.TRUE);
+        set(a.renderer,"sock",new java.net.Socket());
         // target ScreenModule keeps the view area as a boolean (true = SMALLSCREEN)
         Field stage=ScreenModule.class.getDeclaredField("smallScreenViewArea");stage.setAccessible(true);
         boolean saved=stage.getBoolean(null);
@@ -34,24 +34,24 @@ public final class RendererViewportTest {
             check(ClusterLayerController.maneuverViewport()[2]==210,"requested View must not move KDK before VC Fct54");
             ClusterLayerController.onVcPresentation(false);
             RouteGuidance rg=new RouteGuidance();
-            a.set(rg,"running",Boolean.TRUE);a.set(rg,"rgActive",Boolean.TRUE);a.set(rg,"bap",a.bridge);
+            set(rg,"running",Boolean.TRUE);set(rg,"rgActive",Boolean.TRUE);set(rg,"bap",a.bridge);
             Method request=RouteGuidance.class.getDeclaredMethod("requestViewAreaRefresh",Integer.TYPE);
             request.setAccessible(true);request.invoke(rg,Integer.valueOf(1));
-            check(((Boolean)a.get(rg,"rendererViewportRefreshPending")).booleanValue(),"View button schedules crop without iOS delta");
+            check(((Boolean)get(rg,"rendererViewportRefreshPending")).booleanValue(),"View button schedules crop without iOS delta");
             Method drive=RouteGuidance.class.getDeclaredMethod("driveRendererViewport");drive.setAccessible(true);
             check(((Boolean)drive.invoke(rg)).booleanValue(),"serialized viewport worker");
             b=ManeuverParityTest.latest(a);
             check(count(a)==1 && b[0]==8 && u16(b,2)==0 && u16(b,4)==0 && u16(b,6)==328 && u16(b,8)==180,"split-stage replaces pending crop only");
-            a.set(rg,"rendererViewportRefreshPending",Boolean.FALSE);
-            a.set(rg,"infoPresentationRefreshPending",Boolean.FALSE);
-            ClusterLayerController.ViewportListener listener=(ClusterLayerController.ViewportListener)a.get(rg,"viewportListener");
+            set(rg,"rendererViewportRefreshPending",Boolean.FALSE);
+            set(rg,"infoPresentationRefreshPending",Boolean.FALSE);
+            ClusterLayerController.ViewportListener listener=(ClusterLayerController.ViewportListener)get(rg,"viewportListener");
             listener.onManeuverViewportChanged();
-            check(((Boolean)a.get(rg,"rendererViewportRefreshPending")).booleanValue()
-                && !((Boolean)a.get(rg,"infoPresentationRefreshPending")).booleanValue(),"layout-only change updates crop without resetting route info");
+            check(((Boolean)get(rg,"rendererViewportRefreshPending")).booleanValue()
+                && !((Boolean)get(rg,"infoPresentationRefreshPending")).booleanValue(),"layout-only change updates crop without resetting route info");
             for(int i=0;i<40;i++) check(a.renderer.sendProgress(i%17,1,RendererServer.PROGRESS_FILL),"ordinary state enqueue");
-            Object[] q=(Object[])a.get(a.renderer,"writeQueue");
+            Object[] q=(Object[])get(a.renderer,"writeQueue");
             int n=0;
-            for(Object p:q) if(p!=null && ((byte[])a.get(p,"packet"))[0]==8) n++;
+            for(Object p:q) if(p!=null && ((byte[])get(p,"packet"))[0]==8) n++;
             check(n==1,"queue pressure retains the current crop");
             clear(a);
             check(a.bridge.refreshRendererViewport() && count(a)==1,"reconnect/queue reset replays same crop");

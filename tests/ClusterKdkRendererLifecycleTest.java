@@ -2,6 +2,7 @@ import com.luka.carplay.framework.Log;
 import com.luka.carplay.rgd.BAPBridge;
 import com.luka.carplay.rgd.RendererServer;
 import java.lang.reflect.Field;
+import static testsupport.TestSupport.*;
 
 /** Route stop preserves pixels; session shutdown still releases the renderer. */
 public final class ClusterKdkRendererLifecycleTest {
@@ -21,14 +22,14 @@ public final class ClusterKdkRendererLifecycleTest {
         field("customRendererStarted").setBoolean(bridge,true);
         // Absent BAP endpoint also exercises cleanup after a failed BAP teardown.
         bridge.onRouteEnd();
-        ClusterKdkSyncTest.check(renderer.clears==0 && renderer.disposals==0,"route end destroys fading surface");
-        ClusterKdkSyncTest.check(field("rendererClient").get(bridge)==renderer,"route end loses reusable connection");
-        ClusterKdkSyncTest.check(!field("customRendererStarted").getBoolean(bridge),"route end keeps feeding renderer");
+        check(renderer.clears==0 && renderer.disposals==0,"route end destroys fading surface");
+        check(field("rendererClient").get(bridge)==renderer,"route end loses reusable connection");
+        check(!field("customRendererStarted").getBoolean(bridge),"route end keeps feeding renderer");
         bridge.onShutdown();
-        ClusterKdkSyncTest.check(renderer.clears==1 && renderer.disposals==1,"disconnect fails to release preserved renderer");
-        ClusterKdkSyncTest.check(field("rendererClient").get(bridge)==null,"disconnect retains renderer reference");
+        check(renderer.clears==1 && renderer.disposals==1,"disconnect fails to release preserved renderer");
+        check(field("rendererClient").get(bridge)==null,"disconnect retains renderer reference");
         bridge.onShutdown();
-        ClusterKdkSyncTest.check(renderer.disposals==1,"repeated disconnect disposes twice");
+        check(renderer.disposals==1,"repeated disconnect disposes twice");
         System.out.println("ClusterKdkRendererLifecycleTest: route end preserves surface, disconnect releases, BAP failure cleanup PASS");
     }
 }

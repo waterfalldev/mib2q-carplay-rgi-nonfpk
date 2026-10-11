@@ -42,43 +42,38 @@ static int seams_active(void) {
     return hook_framework_module_count() > 0 && hook_process_is_dio_manager();
 }
 
+/* Every seam first resolves stock's entry points, and gives up when its own is missing. */
+#define REQUIRE_REAL(fn, name, ret) \
+    pthread_once(&g_resolve_once, resolve); \
+    if (!(fn)) { LOG_ERROR(LOG_MODULE, name " real symbol UNRESOLVED"); return ret; }
+
+/* Run `cb` of every module that declares it, in table order. */
+#define SEAM_EACH(cb, args) do { \
+    const hook_module_def_t *d_; \
+    size_t i_; \
+    for (i_ = 0; (d_ = hook_framework_module_at(i_)); ++i_) \
+        if (d_->airplay.cb) d_->airplay.cb args; \
+} while (0)
+
 HOOK_EXPORT void *AirPlayCopyServerInfo(void *a0, void *a1, void *a2, void *a3) {
     void *info;
-    size_t i;
-    pthread_once(&g_resolve_once, resolve);
-    if (!g_real_copy_server_info) {
-        LOG_ERROR(LOG_MODULE, "AirPlayCopyServerInfo real symbol UNRESOLVED");
-        return NULL;
-    }
+    REQUIRE_REAL(g_real_copy_server_info, "AirPlayCopyServerInfo", NULL)
     info = g_real_copy_server_info(a0, a1, a2, a3);
     if (!info || !seams_active()) return info;
-    for (i = 0; i < hook_framework_module_count(); ++i) {
-        const hook_module_def_t *def = hook_framework_module_at(i);
-        if (def && def->airplay.on_server_info) def->airplay.on_server_info(a0, &info);
-    }
+    SEAM_EACH(on_server_info, (a0, &info));
     return info;
 }
 
 HOOK_EXPORT int AirPlayReceiverSessionSetup(void *session, void *request, void **response) {
     hook_setup_ctx_t setup;
-    size_t i;
-    int active;
-    pthread_once(&g_resolve_once, resolve);
-    if (!g_real_session_setup) {
-        LOG_ERROR(LOG_MODULE, "AirPlayReceiverSessionSetup real symbol UNRESOLVED");
-        return -6700;                       /* kUnknownErr */
-    }
-    active = seams_active();
-    if (!active) return g_real_session_setup(session, request, response);
+    REQUIRE_REAL(g_real_session_setup, "AirPlayReceiverSessionSetup", -6700 /* kUnknownErr */)
+    if (!seams_active()) return g_real_session_setup(session, request, response);
     setup.session = session;
     setup.request = request;
     setup.response = NULL;
     setup.sequence = __sync_add_and_fetch(&g_setup_sequence, 1);
     setup.result = 0;
-    for (i = 0; i < hook_framework_module_count(); ++i) {
-        const hook_module_def_t *def = hook_framework_module_at(i);
-        if (def && def->airplay.on_setup_request) def->airplay.on_setup_request(&setup);
-    }
+    SEAM_EACH(on_setup_request, (&setup));
     setup.result = g_real_session_setup(session, setup.request, response);
     if (setup.request != request) {
         /* A module's replacement request (a CF object of its own): released once stock is done. */
@@ -88,46 +83,27 @@ HOOK_EXPORT int AirPlayReceiverSessionSetup(void *session, void *request, void *
         setup.request = request;
     }
     setup.response = response ? *response : NULL;
-    for (i = 0; i < hook_framework_module_count(); ++i) {
-        const hook_module_def_t *def = hook_framework_module_at(i);
-        if (def && def->airplay.on_setup_response) def->airplay.on_setup_response(&setup);
-    }
+    SEAM_EACH(on_setup_response, (&setup));
     if (response) *response = setup.response;
     return setup.result;
 }
 
 HOOK_EXPORT int AirPlayReceiverSessionSetSecurityInfo(void *session, const uint8_t *key, const uint8_t *iv) {
     int result;
-    size_t i;
-    pthread_once(&g_resolve_once, resolve);
-    if (!g_real_set_security_info) {
-        LOG_ERROR(LOG_MODULE, "AirPlayReceiverSessionSetSecurityInfo real symbol UNRESOLVED");
-        return -6700;                       /* kUnknownErr */
-    }
+    REQUIRE_REAL(g_real_set_security_info, "AirPlayReceiverSessionSetSecurityInfo", -6700 /* kUnknownErr */)
     result = g_real_set_security_info(session, key, iv);
     if (result != 0 || !key || !iv || !seams_active()) return result;
-    for (i = 0; i < hook_framework_module_count(); ++i) {
-        const hook_module_def_t *def = hook_framework_module_at(i);
-        if (def && def->airplay.on_security_info) def->airplay.on_security_info(session, key, iv);
-    }
+    SEAM_EACH(on_security_info, (session, key, iv));
     return result;
 }
 
 HOOK_EXPORT void AirPlayReceiverSessionTearDown(void *session, void *request, int32_t reason, uint8_t *outDone) {
     uint8_t done = 0;
-    size_t i;
-    pthread_once(&g_resolve_once, resolve);
-    if (!g_real_session_teardown) {
-        LOG_ERROR(LOG_MODULE, "AirPlayReceiverSessionTearDown real symbol UNRESOLVED");
-        return;
-    }
+    REQUIRE_REAL(g_real_session_teardown, "AirPlayReceiverSessionTearDown", )
     /* Stock's own verdict on whether the whole session ended, also when the caller passed no
      * place for it. */
     g_real_session_teardown(session, request, reason, outDone ? outDone : &done);
     if (!session || !seams_active()) return;
     if (outDone) done = *outDone;
-    for (i = 0; i < hook_framework_module_count(); ++i) {
-        const hook_module_def_t *def = hook_framework_module_at(i);
-        if (def && def->airplay.on_session_teardown) def->airplay.on_session_teardown(session, done != 0);
-    }
+    SEAM_EACH(on_session_teardown, (session, done != 0));
 }

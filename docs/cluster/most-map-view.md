@@ -124,15 +124,15 @@ The stream is decoded by the Qualcomm hardware decoder inside `maneuver_render` 
   context and no EGL, so the thread creates, probes and recreates it alone
   (`platform_map_check`). Each decoded picture wakes the thread through a pipe, and the thread
   untiles it into the window's buffer outside the decoder's lock and posts it at once (~1 ms,
-  map27); the decoder keeps that picture until the copy ends. Every 30 s it logs posts, rate,
-  copy and post times and the longest gap.
+  map27; ~3 ms with the colour mapping, map31); the decoder keeps that picture until the copy
+  ends.
   - **Colour**: the encoder's compositor reads an NV12 window as full range. The untiling
     expands a video-range picture to 0-255 (map27 looked dull) and copies one whose SPS
     signals full range as it is: expanded, light mode looked washed out (map28). The decoder
     logs the range the stream signals, and its close line the share of luma outside 16-235.
-    It maps each tile in a cached copy and writes whole rows: byte by byte
-    between the decoder's and the window's buffers a picture took 51 ms, and only about two
-    of every three were shown (map28).
+    It maps each tile in a cached copy and writes whole rows: byte by byte between the
+    decoder's and the window's buffers a picture took 51 ms, and only about two of every
+    three were shown (map28).
   - **Format**: NV12. RGBA, converted by the CPU (~6 ms a picture), was no smoother and tore
     more (map25-map27).
   - **Buffers**: four, and the CPU write has no fence: each picture goes into the buffer

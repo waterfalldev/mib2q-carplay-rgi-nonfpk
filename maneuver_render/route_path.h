@@ -20,6 +20,13 @@
 extern "C" {
 #endif
 
+/* Smoothstep of t clamped to 0..1 (zero slope at both ends). */
+static inline float rpath_smooth01(float t) {
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return t * t * (3.0f - 2.0f * t);
+}
+
 /* Segment types */
 #define RSEG_LINE  0
 #define RSEG_ARC   1

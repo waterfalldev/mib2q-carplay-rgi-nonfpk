@@ -4,6 +4,7 @@ import com.luka.carplay.framework.Log;
 import java.nio.file.*;
 import java.lang.reflect.*;
 import java.util.Arrays;
+import static testsupport.TestSupport.*;
 
 /*
  * Java half of tests/test_rgd_native_contract.py: parses the bus frames written by the
@@ -16,7 +17,7 @@ public class RgdNativeContractProbe {
         Method m=RouteGuidance.class.getDeclaredMethod("parse",CarplayBus.Data.class);m.setAccessible(true);
         m.invoke(rg,CarplayBus.parseText(bytes,bytes.length));
     }
-    static RouteGuidance.State state(RouteGuidance rg) throws Exception {return (RouteGuidance.State)ManeuverChainAudit.get(rg,"state");}
+    static RouteGuidance.State state(RouteGuidance rg) throws Exception {return (RouteGuidance.State)get(rg,"state");}
     static byte[] hud(ManeuverChainAudit audit,RouteGuidance rg) throws Exception {
         audit.sendBap.invoke(audit.bridge,state(rg));return audit.sender.input[0].sideStreets;
     }

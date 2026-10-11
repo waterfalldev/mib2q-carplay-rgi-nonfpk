@@ -26,6 +26,7 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 import sun.misc.Unsafe;
+import static testsupport.TestSupport.*;
 
 /**
  * the MOST cluster's view handshake when CarPlay route guidance starts and ends.
@@ -39,32 +40,6 @@ import sun.misc.Unsafe;
  * stock stayed in COMPASS on kombi context 8/ctx 72 and never answered the cluster's view request.
  */
 public final class MostViewHandshakeTest {
-    private static int checks;
-    private static final Unsafe U = unsafe();
-
-    static void check(boolean ok, String why) {
-        checks++;
-        if (!ok) throw new AssertionError(why);
-    }
-
-    static Unsafe unsafe() {
-        try {
-            Field f = Unsafe.class.getDeclaredField("theUnsafe");
-            f.setAccessible(true);
-            return (Unsafe) f.get(null);
-        } catch (Exception e) { throw new AssertionError(e); }
-    }
-
-    static Field field(Class<?> type, String name) throws Exception {
-        for (Class<?> c = type; c != null; c = c.getSuperclass()) {
-            try { Field f = c.getDeclaredField(name); f.setAccessible(true); return f; }
-            catch (NoSuchFieldException e) { }
-        }
-        throw new NoSuchFieldException(name);
-    }
-
-    static void set(Object target, String name, Object value) throws Exception { field(target.getClass(), name).set(target, value); }
-    static Object get(Object target, String name) throws Exception { return field(target.getClass(), name).get(target); }
 
     static LogChannel silentLog() throws Exception {
         Constructor<?> ctor = Class.forName("com.luka.carplay.rgd.BAPBridge$SilentLogChannel").getDeclaredConstructor();
@@ -177,19 +152,19 @@ public final class MostViewHandshakeTest {
             field(CarPlayApp.class, "fwRef").set(null, ref);
             LogChannel log = silentLog();
 
-            container = (DSIResponseContainer) U.allocateInstance(DSIResponseContainer.class);
-            Env env = (Env) U.allocateInstance(Env.class);
+            container = (DSIResponseContainer) alloc(DSIResponseContainer.class);
+            Env env = (Env) alloc(Env.class);
             env.viewModel = viewModel;
             set(env, "framework", fw);
             set(env, "container", container);
 
-            view = (ClusterViewMode) U.allocateInstance(ClusterViewMode.class);
-            service = (ClusterService) U.allocateInstance(ClusterService.class);
-            listener = (ScreenCombiBAPListener) U.allocateInstance(ScreenCombiBAPListener.class);
-            komo = (CarPlayKOMOService) U.allocateInstance(CarPlayKOMOService.class);
-            map = (Map) U.allocateInstance(Map.class);
+            view = (ClusterViewMode) alloc(ClusterViewMode.class);
+            service = (ClusterService) alloc(ClusterService.class);
+            listener = (ScreenCombiBAPListener) alloc(ScreenCombiBAPListener.class);
+            komo = (CarPlayKOMOService) alloc(CarPlayKOMOService.class);
+            map = (Map) alloc(Map.class);
             map.calls = new ArrayList<String>();
-            komoCaller = (Komo) U.allocateInstance(Komo.class);
+            komoCaller = (Komo) alloc(Komo.class);
             komoCaller.calls = new ArrayList<String>();
             gate = new GatedCombiService((CombiBAPServiceNavi) Proxy.newProxyInstance(
                 MostViewHandshakeTest.class.getClassLoader(), new Class<?>[]{CombiBAPServiceNavi.class}, bap));

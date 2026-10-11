@@ -239,19 +239,7 @@ void maneuver_get_transition_mask_bounds(float *x, float *y) { *x = 2.0f; *y = 2
 
 /* ---------------------------------------------------------------- checks */
 
-static int g_checks, g_failures;
-
-static void check(int ok, const char *fmt, ...) {
-    va_list ap;
-    g_checks++;
-    if (ok) return;
-    g_failures++;
-    printf("FAIL: ");
-    va_start(ap, fmt);
-    vprintf(fmt, ap);
-    va_end(ap);
-    printf("\n");
-}
+#include "check.h"
 
 static int same(float a, float b) { return fabsf(a - b) < 1e-6f; }
 static int px_is(px_t p, px_t e) { return same(p.r, e.r) && same(p.g, e.g) && same(p.b, e.b) && same(p.a, e.a); }
@@ -541,7 +529,7 @@ int main(void) {
     /* win_w <= 0 restores the upstream window-filling pass. */
     render_set_output(0, 0, 0, 0, 0, 0, 0);
     vc_pass2_is_upstream();
-    printf("most_output_render_test: %d checks, %d failures\n", g_checks, g_failures);
+    printf("most_output_render_test: %d checks, %d failures\n", checks, failures);
     free(g_px);
-    return g_failures ? 1 : 0;
+    return failures ? 1 : 0;
 }

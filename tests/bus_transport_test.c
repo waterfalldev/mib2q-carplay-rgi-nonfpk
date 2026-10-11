@@ -3,13 +3,14 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 static void *test_malloc(size_t);
-static ssize_t test_send(int, const void *, size_t, int);
+static ssize_t test_writev(int, const struct iovec *, int);
 #define malloc test_malloc
-#define send test_send
+#define writev test_writev
 #include "../hook/framework/bus.c"
 #undef malloc
-#undef send
+#undef writev
 
 static int fail_alloc_at, alloc_calls;
 static int fail_send_at_byte = -1, sent_bytes, failed_send, sends_after_failure;
@@ -20,9 +21,14 @@ static void *test_malloc(size_t len) {
     return malloc(len);
 }
 
-static ssize_t test_send(int fd, const void *data, size_t len, int flags) {
+/* Writes at most 5 bytes of the first non-empty buffer: every frame goes out in short writes. */
+static ssize_t test_writev(int fd, const struct iovec *iov, int count) {
+    size_t len;
     ++send_calls;
     if (failed_send) ++sends_after_failure;
+    while (count > 0 && iov->iov_len == 0) { ++iov; --count; }
+    if (count == 0) return 0;
+    len = iov->iov_len;
     if (fail_send_at_byte >= 0) {
         if (sent_bytes >= fail_send_at_byte) {
             failed_send = 1;
@@ -32,8 +38,8 @@ static ssize_t test_send(int fd, const void *data, size_t len, int flags) {
         if (len > (size_t)(fail_send_at_byte - sent_bytes))
             len = (size_t)(fail_send_at_byte - sent_bytes);
     }
-    if (len > 5) len = 5; /* every header and payload uses short writes */
-    ssize_t result = send(fd, data, len, flags);
+    if (len > 5) len = 5;
+    ssize_t result = send(fd, iov->iov_base, len, 0);
     if (result > 0) sent_bytes += (int)result;
     return result;
 }

@@ -24,9 +24,7 @@ against stock MU1316) and **re-verified against the current branch**. Each item 
 > [architecture](../architecture.md) - Java patch layer -> cluster HUD + route-info - KOMO gfx gate -> [komo-widget-video](../re/firmware/komo-widget-video.md)
 > - route-info toggle publishes [bap-fctids](../rgd/bap-fctids.md) FctID 22
 
-**Bottom line:** all four cleanup groups are resolved on this branch except two dead-code leftovers:
-the `FrameworkRef` accessors, and `ClusterService.refreshInitializingScreenAfterCarPlay()`, which came
-back with the ported `ClusterService` but has no caller.
+**Bottom line:** all four cleanup groups are resolved on this branch.
 
 ## ✅ [x] route-info phase - live, keep (was: closed)
 
@@ -49,10 +47,8 @@ are therefore reachable and must stay. See [steering-wheel](../input/steering-wh
 ## ✅ [x] fake ClusterService pipeline API - removed (was: to remove)
 
 Confirmed gone: `activateCustomRendererPipeline()` and `deactivateCustomRendererPipeline()` no longer
-exist in `java_patch/`. (!) `refreshInitializingScreenAfterCarPlay()` is back in `ClusterService`
-(ported from mhi2, where it restores the stock INITIALIZING screen after an altScreen takeover) but
-nothing calls it here - remove it or wire it deliberately. The
-`BAPBridge` branch that read the constant "readiness" string is gone too. Real readiness
+exist in `java_patch/`, nor does `refreshInitializingScreenAfterCarPlay()`, which came back with the
+ported `ClusterService` without a caller. The `BAPBridge` branch that read the constant "readiness" string is gone too. Real readiness
 (`RendererServer.isReady()/isFrameReady()` + frame-event gate) remains authoritative. The four live
 `ClusterService` accessors (`getDSIResponseContainer()`, `triggerRefreshRGIValid()`, and the CombiBAP
 getter/setter) are retained as intended.
@@ -68,7 +64,7 @@ does nothing: every data-rate write used to run `ClusterViewMode.setDataRate -> 
 which parked the stock kombi map in its hidden context after a route (frozen map, roller zoom
 swallowed) until the VC re-sent MapViewAndOrientation. See [komo-widget-video](../re/firmware/komo-widget-video.md).
 
-## ⚠️ (!) disabled diagnostics & dead members - PARTIALLY DONE
+## ✅ [x] disabled diagnostics & dead members - removed
 
 **Done (verified gone):**
 
@@ -77,13 +73,8 @@ swallowed) until the VC re-sent MapViewAndOrientation. See [komo-widget-video](.
   (see `docs/reference/PRODUCTION_LOGGING.md`). `Log.i` deliberately kept.
 - `CarPlayApp.fw()`, `CarplayBus.isConnected()` / `Data.bool()` / `Data.strList()`,
   `BAPBridge.isActionBlinkThreadRunning()`, `EXITVIEW_ROW/EXITVIEW_ASIA`,
-  `AltScreenModule.isClusterActive()`, `ROUTE_STATE_ACCEPT_ALL_MANEUVER_IDX` - all removed.
-
-**Still open (dead code, no callers found):**
-
-- `FrameworkRef.context()` / `deviceManager()` / `hmiServiceApp()` (`FrameworkRef.java:36-40`) -
-  no call sites; drop these and their now-unused imports.
-- `ClusterService.refreshInitializingScreenAfterCarPlay()` - see above.
+  `AltScreenModule.isClusterActive()`, `ROUTE_STATE_ACCEPT_ALL_MANEUVER_IDX`, `BAPBridge.hexBytes()`,
+  `FrameworkRef.context()` / `deviceManager()` / `hmiServiceApp()` - all removed.
 
 (`RendererServer.isConnected()` is live again: `BAPBridge` uses it in renderer recovery.)
 
@@ -102,10 +93,8 @@ CarPlay owns it, called from `CombiMapController` and `ClusterService`. Keep it.
   `lastTimeRemainingSampleSeconds`, `currentRemainingSeconds()`, `currentArrivalSeconds()`) - they
   publish the real FctID 22 absolute ETA.
 
-## ✍️ Remaining patch order
+## ✍️ After further Java cleanup
 
-1. Remove the dead `FrameworkRef` accessors (+ unused imports) and decide on
-   `refreshInitializingScreenAfterCarPlay()`.
-2. Rebuild, rerun the stock-ABI/linkage audit (`scripts/audit_java_stock.sh`) and the host suites
-   (`scripts/test_route_info.sh`, `scripts/test_java_transports.sh`), then test on the unit: cold boot,
-   RGI start/stop, View changes, renderer death/reconnect, stock navigation after disconnect, cover art.
+Rebuild, rerun the stock-ABI/linkage audit (`scripts/audit_java_stock.sh`) and the host suites
+(`scripts/test_route_info.sh`, `scripts/test_java_transports.sh`), then test on the unit: cold boot,
+RGI start/stop, View changes, renderer death/reconnect, stock navigation after disconnect, cover art.

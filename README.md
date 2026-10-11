@@ -317,7 +317,8 @@ Hook and Java read the marker at every CarPlay session start, so it takes effect
 connect - no reboot. Remove the marker to return to the quiet default. Logs reset on reboot, so pull
 them before restarting.
 
-For raw route-guidance packet dumps, rebuild the hook with `LOG_RGD_PACKET_RAW=1` (see [Build](#-build)).
+For raw route-guidance packet dumps, rebuild the hook with `LOG_RGD_PACKET_RAW=1` (see [Build](#-build)); the dumps are
+logged at `INFO`, so they also need the marker above.
 
 **No shell? Use M.I.B.** Copy `logging_MoreIncredibleBash/` to the card and run it
 like the installer. Each run saves logs into `<card>/carplay_logs/NNN/` and

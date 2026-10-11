@@ -12,6 +12,7 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import sun.misc.Unsafe;
+import static testsupport.TestSupport.*;
 
 /** Shipping BAPBridge -> stock AppConnectorNavi -> stock serializer, no HU.
  * Unsafe skips only the framework constructors requiring a running BAP service.
@@ -35,14 +36,6 @@ public final class DistanceBargraphChainTest {
         public boolean sendProgress(int level, int mode, int state) {
             this.level=level; this.mode=mode; this.progress=state; return true;
         }
-    }
-    private static void check(boolean ok, String why) { if (!ok) throw new AssertionError(why); }
-    private static void set(Object target, String name, Object value) throws Exception {
-        for (Class<?> c = target.getClass(); c != null; c = c.getSuperclass()) {
-            try { Field f = c.getDeclaredField(name); f.setAccessible(true); f.set(target, value); return; }
-            catch (NoSuchFieldException e) { }
-        }
-        throw new NoSuchFieldException(name);
     }
     public static void main(String[] args) throws Exception {
         Log.setLevel(-1);

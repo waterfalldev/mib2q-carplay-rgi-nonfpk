@@ -1,13 +1,11 @@
 package com.luka.carplay.rgd;
 
 import com.luka.carplay.framework.Log;
+import static testsupport.TestSupport.*;
 
 /** Actual presentation worker: Time is temporary even without incoming RGI. */
 public final class RouteInfoTimeoutTest {
     private static final String NEXT = "International Airport via Washington Boulevard and Main Street";
-    private static void check(boolean ok, String why) { RgiDeliveryRecoveryTest.check(ok, why); }
-    private static Object get(Object obj, String field) throws Exception { return RgiDeliveryRecoveryTest.get(obj, field); }
-    private static void set(Object obj, String field, Object value) throws Exception { RgiDeliveryRecoveryTest.set(obj, field, value); }
     private static void ok(CurrentPositionDeliveryTest.Fixture f) throws Exception {
         RgiDeliveryRecoveryTest.method(RouteGuidance.class, "requestInfoModeToggle").invoke(f.rg);
     }

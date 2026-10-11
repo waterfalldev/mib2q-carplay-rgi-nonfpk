@@ -94,9 +94,9 @@ typedef struct {
  * max is 60=HUD_MAP_VIEW, below the KDK ids 100-102, so still inside the DM's
  * supported id range).  We open a managed screen window with ID_STRING="98" (via
  * screen_manage_window into the DisplayManager group).  98 has no stock owner →
- * no collision war with native nav (the old id-20 takeover / flapping is gone).
+ * no collision war with native nav.
  *
- * Context routing is NO LONGER done here.  The Java patch declares the cluster
+ * Context routing is not done here.  The Java patch declares the cluster
  * context dc[80]={98,101,102,33} (maneuver over KDK backings over the stock native
  * map) in DisplayManagerMIB2High.defineContexts() and calls
  * DisplayManager.switchContext() to point the cluster (LVDS2) at it, driving
@@ -106,11 +106,8 @@ typedef struct {
  * On shutdown screen_destroy_window vacates m_surfaceSources[98]; Java switches
  * the cluster back to the stock context (dc[74]). */
 #define CR_DISPLAYABLE_ID   98  /* our own cluster displayable (managed window, ID_STRING="98") */
-#define CR_CONTEXT_ID       80  /* Java-declared cluster context {98,102,101} (informational) */
-#define CR_DISPLAY_ID       1   /* 0=main (LVDS1), 1=cluster (LVDS2) */
 #define CR_DEFAULT_WIDTH    328
 #define CR_DEFAULT_HEIGHT   181 /* 180px content + 1px ECC annotation row */
-#define CR_TARGET_FPS       30
 
 /* MOST (KOMO video) cluster output.  The MOST encoder streams the leading
  * displayable of the active cluster context as-is (CASIMostEncoder::setActiveDisplayable,

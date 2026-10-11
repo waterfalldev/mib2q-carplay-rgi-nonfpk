@@ -38,7 +38,7 @@ void render_rect(float x, float y, float w, float h,
 void render_triangle(float x0, float y0, float x1, float y1, float x2, float y2,
                      float r, float g, float b, float a);
 
-/* End frame (no-op, swap is done by platform). */
+/* End frame: FXAA and downsample the frame into the output window (the platform swaps). */
 void render_end_frame(void);
 
 /* Cleanup GL resources. */
@@ -81,12 +81,9 @@ void render_circle(float cx, float cy, float radius, float thickness, int segmen
 /* Toggle perspective on/off. enabled=0 -> flat (no perspective). */
 void render_set_perspective(int enabled);
 
-/* Debug grid: colored checkerboard + red popup crop outline. */
+/* Debug grid: colored checkerboard over the content area. */
 void render_set_debug_grid(int on);
 void render_debug_grid(void);
-/* Draw only the exact current visible-area border (no checkerboard). */
-void render_debug_visible_area(void);
-void render_debug_small_area(void);
 
 /* Set camera pan offset in maneuver space (shifts entire scene). */
 void render_set_camera_pan(float x, float y);
@@ -105,12 +102,9 @@ void render_set_frame_step(float frames);
 float render_frame_step(void);
 /* Pure settled projection for scene compilation; does not move the live camera. */
 void render_get_layout_matrix(float out[16]);
-void render_build_layout_matrix(float out[16],float aspect);
-void render_get_camera_pose(float *x,float *y,float *rotation);
 /* Animated camera dolly plus source-pixel lens shift, additive to native travel. */
 void render_set_content_framing(float x,float y,float dolly);
 void render_reset_content_offset(void);
-void render_get_content_framing(float *x,float *y,float *dolly);
 void render_build_framing_matrix(float out[16],float aspect,float dolly);
 
 /* Select the shading preset used by subsequent 3D geometry draws. */
@@ -207,7 +201,6 @@ int render_get_flag_frame_count(void);
  * size = half-extent in maneuver space.
  * frame = animation frame index (0..frame_count-1). */
 void render_sprite_flag(float x, float y, float size, int frame);
-void render_sprite_flag_ex(float x, float y, float size, int frame, int flip_x);
 
 /* ================================================================
  * Vertex buffer -- exposed for route_path.c mesh drawing
@@ -221,11 +214,6 @@ void render_set_route_progress(float fill, float path_weight, float glow);
 /* Preclipped receiver triangles: pos(3), signed edge distance/height gap/onset fade(3). */
 void render_contact_shadow(const float *verts,int count,float alpha,float thickness);
 const cr_route_progress_map_t *render_prepare_route_progress(const cr_route_progress_point_t *points, int count);
-void vb_quad(float x0, float y0, float z0,
-             float x1, float y1, float z1,
-             float x2, float y2, float z2,
-             float x3, float y3, float z3,
-             float nx, float ny, float nz);
 void vb_flush(float r, float g, float b, float a);
 
 #ifdef __cplusplus

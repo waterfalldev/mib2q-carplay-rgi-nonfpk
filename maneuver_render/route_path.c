@@ -29,12 +29,11 @@
 #define JOIN_MIN_ANGLE 0.03f /* ~1.7deg -- skip join for tiny direction changes */
 #define MITER_LIMIT 3.0f    /* max miter length / half-width ratio */
 
-/* Height ramp:
- * - Tail fade: first 0.35 units sink to ground (within pre-extension, invisible).
- * - Entry to head: multiplicative ramp from 1x to 2x height.
+/* Height ramp (lift added to base and top; the lift is the maneuver's elevation, 0 when flat):
+ * - Pre-extension (before HEIGHT_ENTRY_DIST): no lift.
+ * - Entry to head: linear ramp up to the full lift over HEIGHT_RAMP_DIST.
  *   Anchored to ROUTE_EXTEND (maneuver entry) so the ramp is identical on
- *   standalone and combined paths — no visual jump at commit.
- * - Pre-extension (0.35..0.50): flat at 1x nominal height. */
+ *   standalone and combined paths — no visual jump at commit. */
 #define HEIGHT_ENTRY_DIST  RPATH_ANIMATION_EXTENSION   /* maneuver entry = ROUTE_EXTEND from path start */
 #define HEIGHT_RAMP_DIST   1.5f    /* fixed distance over which ramp reaches max */
 /* Per-maneuver elevation lifts (world units added to base+top).
@@ -428,10 +427,7 @@ void rpath_extrude_partial(const route_path_t *p, route_mesh_t *m,
 
                 float blend_start = g_ramp_restart - HEIGHT_ENTRY_DIST;
                 float blend_len = HEIGHT_ENTRY_DIST;
-                float bt = (d - blend_start) / blend_len;
-                if (bt < 0.0f) bt = 0.0f;
-                if (bt > 1.0f) bt = 1.0f;
-                bt = bt * bt * (3.0f - 2.0f * bt);  /* smoothstep */
+                float bt = rpath_smooth01((d - blend_start) / blend_len);
                 lift = first_lift * (1.0f - bt);
             } else {
                 /* First maneuver: ramp from entry */

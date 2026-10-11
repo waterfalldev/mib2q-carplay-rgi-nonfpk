@@ -13,10 +13,6 @@ int main(void)
     FILE *stream;
     int fd = mkstemp(path);
     int found = 0;
-#if ENABLE_ALTSCREEN_PACE_TRACE && !ENABLE_LOGGING && !ENABLE_STATE_TRACE
-    assert(strcmp(config.log_path, "/tmp/carplay_alt_pace.log") == 0);
-#endif
-
     assert(fd >= 0);
     close(fd);
     unlink(path);

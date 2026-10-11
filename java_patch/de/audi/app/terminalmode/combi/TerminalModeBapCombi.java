@@ -103,11 +103,7 @@ public class TerminalModeBapCombi implements ITerminalModeComponent {
 
                 /* ===== CarPlay hook: device activating ===== */
                 if (tmdevice.isCarplayDevice()) {
-                    try {
-                        com.luka.carplay.coverart.CoverArt.getInstance().resetSession();
-                        this.this$0.eventListener.resetCoverMerge();
-                        com.luka.carplay.core.CarPlayApp.onActivate(this.this$0.context);
-                    } catch (Throwable t) { /* never crash the stock flow */ }
+                    this.activateCarPlay();
                 }
             }
 
@@ -117,11 +113,7 @@ public class TerminalModeBapCombi implements ITerminalModeComponent {
             if (tmdevice.connectionState().is(TMDevice.ConnectionState.ACTIVE)
                     && tmdevice.isCarplayDevice()
                     && !com.luka.carplay.core.CarPlayApp.isActive()) {
-                try {
-                    com.luka.carplay.coverart.CoverArt.getInstance().resetSession();
-                    this.this$0.eventListener.resetCoverMerge();
-                    com.luka.carplay.core.CarPlayApp.onActivate(this.this$0.context);
-                } catch (Throwable t) { /* never crash the stock flow */ }
+                this.activateCarPlay();
             }
 
             /* ===== CarPlay hook: device disconnected =====
@@ -139,6 +131,14 @@ public class TerminalModeBapCombi implements ITerminalModeComponent {
                     this.this$0.eventListener.resetCoverMerge();
                 } catch (Throwable t) { /* never crash the stock flow */ }
             }
+        }
+
+        private void activateCarPlay() {
+            try {
+                com.luka.carplay.coverart.CoverArt.getInstance().resetSession();
+                this.this$0.eventListener.resetCoverMerge();
+                com.luka.carplay.core.CarPlayApp.onActivate(this.this$0.context);
+            } catch (Throwable t) { /* never crash the stock flow */ }
         }
 
         private int getBapSourceType(TMDevice tmdevice) {

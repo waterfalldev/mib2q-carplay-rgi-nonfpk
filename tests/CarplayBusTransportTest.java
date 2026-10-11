@@ -12,12 +12,10 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import static testsupport.TestSupport.*;
 
 /** Actual bus on ephemeral localhost ports plus deterministic delayed old reads. */
 public final class CarplayBusTransportTest {
-    private static void check(boolean value, String why) {
-        if (!value) throw new AssertionError(why);
-    }
     private static Field field(String name) throws Exception {
         Field f = CarplayBus.class.getDeclaredField(name); f.setAccessible(true); return f;
     }
@@ -73,7 +71,7 @@ public final class CarplayBusTransportTest {
             for (int i = 0; i < p.length; ++i) peer.getOutputStream().write(p, i, 1);
             await(got, "fragmented frame after restart");
             check(!bus.send(0xffff, 0, null, 0), "out-of-range type");
-            check(!bus.send(CarplayBus.CMD_ALT_ZONE, 0, new byte[1], 2), "out-of-range payload");
+            check(!bus.send(CarplayBus.CMD_ALT_ZOOM, 0, new byte[1], 2), "out-of-range payload");
             check(bus.sendBinary(CarplayBus.CMD_ALT_ZOOM, new byte[] {3}), "send after restart");
             DataInputStream in = new DataInputStream(peer.getInputStream());
             check(in.readInt() == CarplayBus.MAGIC, "outbound magic"); in.readInt();

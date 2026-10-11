@@ -11,7 +11,7 @@
 
 #define CV_KEYFRAME_RETRY_MS 2000
 
-/* Starts the thread (once); cluster_video_stop() asks it to end within ~100 ms. */
+/* Starts the thread (once); cluster_video_stop() ends it and waits, within ~100 ms. */
 void cluster_video_start(void);
 void cluster_video_stop(void);
 

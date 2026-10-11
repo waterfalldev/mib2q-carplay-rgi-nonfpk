@@ -55,10 +55,8 @@
 
 static int timespec_elapsed_at_least(const struct timespec *now,
                                      const struct timespec *last,
-                                     long seconds,
-                                     long nanoseconds) {
+                                     long seconds) {
     long ds;
-    long dns;
 
     if (last->tv_sec == 0) return 1;
 
@@ -66,8 +64,7 @@ static int timespec_elapsed_at_least(const struct timespec *now,
     if (ds > seconds) return 1;
     if (ds < seconds) return 0;
 
-    dns = now->tv_nsec - last->tv_nsec;
-    return dns >= nanoseconds;
+    return now->tv_nsec >= last->tv_nsec;
 }
 
 static int64_t timespec_ns(const struct timespec *t) {
@@ -159,15 +156,13 @@ static float scene_elevation(void *ctx,const maneuver_state_t *m) {
 static void scene_paint(void *ctx,const maneuver_state_t *m,float x,float y,float c,float s) {
     (void)ctx;cr_scene_paint(engine_scene(m),x,y,c,s);
 }
-static void prepare_engine_scene(cr_scene_t *scene,const maneuver_state_t *m) {
+static void prepare_engine_scene(cr_scene_t *scene,const maneuver_state_t *m,const cr_scene_view_t *view) {
     int next=m==&g_engine.next;
     if(!scene)return;
-    cr_scene_input_t in;cr_scene_view_t view;
+    cr_scene_input_t in;
     memset(&in,0,sizeof(in));in.maneuver=*m;
-    /* The canonical small composition paints the entire source in both stages. */
-    view.compact=1;render_get_layout_matrix(view.projection);
     unsigned before=cr_scene_info(scene)->builds;
-    if(!cr_scene_prepare(scene,&in,&view)) {
+    if(!cr_scene_prepare(scene,&in,view)) {
         fprintf(stderr,"scene: invalid input; ordinary maneuver fallback\n");return;
     }
     const cr_scene_info_t *info=cr_scene_info(scene);
@@ -181,8 +176,11 @@ static void prepare_engine_scene(cr_scene_t *scene,const maneuver_state_t *m) {
     }
 }
 static void prepare_engine_scenes(void) {
-    prepare_engine_scene(g_engine.current_scene,&g_engine.current);
-    if(g_engine.has_next)prepare_engine_scene(g_engine.next_scene,&g_engine.next);
+    cr_scene_view_t view;
+    /* The canonical small composition paints the entire source in both stages. */
+    view.compact=1;render_get_layout_matrix(view.projection);
+    prepare_engine_scene(g_engine.current_scene,&g_engine.current,&view);
+    if(g_engine.has_next)prepare_engine_scene(g_engine.next_scene,&g_engine.next,&view);
 }
 
 /* eglSwapBuffers on the old Adreno/WFD stack has no timeout. A wedged process
@@ -198,7 +196,7 @@ typedef enum {
     WATCH_SCENE_DRAW, WATCH_LANE_DRAW, WATCH_END_FRAME,
     WATCH_SCREENSHOT, WATCH_SWAP, WATCH_WINDOW_PROBE,
     WATCH_HEARTBEAT, WATCH_SLEEP, WATCH_IDLE,
-    WATCH_SCENE_PREPARE, WATCH_CAPTURE, WATCH_YIELD, WATCH_FOCUS, WATCH_OUTPUT_CHECK
+    WATCH_SCENE_PREPARE, WATCH_CAPTURE, WATCH_YIELD, WATCH_OUTPUT_CHECK
 } renderer_watch_stage_t;
 static unsigned long g_loop_progress;
 static int g_watch_stage = WATCH_STARTUP;
@@ -234,7 +232,6 @@ static const char *watch_stage_name(int stage) {
     case WATCH_SCENE_PREPARE: return "scene-prepare";
     case WATCH_CAPTURE: return "most-capture";
     case WATCH_YIELD: return "yield";
-    case WATCH_FOCUS: return "focus";
     case WATCH_OUTPUT_CHECK: return "output-check";
     default: return "unknown";
     }
@@ -364,7 +361,6 @@ static void engine_apply_presentation(void) {
     }
 }
 
-/* Advance engine state machine */
 /* Blank the popup without leaving the renderer in an undefined/no-current state.
  * FOLLOW_STREET is always prepared underneath at slide=1, but alpha=0 and the
  * cleared latch prevent it from earning FRAME_READY.  The next CMD_MANEUVER
@@ -391,6 +387,7 @@ static void clear_maneuver(void) {
     g_engine.dirty   = 1;
 }
 
+/* Advance engine state machine */
 static void engine_tick(double now) {
     switch (g_engine.phase) {
     case ENGINE_PUSHING:
@@ -480,7 +477,7 @@ static void capture_most_frame(const struct timespec *now) {
     if (!render_output_is_opaque() || !g_engine.has_current || g_cleared
             || g_engine.current.icon == ICON_NONE || g_engine.phase != ENGINE_IDLE
             || render_is_animating()
-            || !timespec_elapsed_at_least(now, &last, CR_MOST_FRAME_INTERVAL_S, 0))
+            || !timespec_elapsed_at_least(now, &last, CR_MOST_FRAME_INTERVAL_S))
         return;
     /* The same maneuver in the same output window is already on file. */
     output = platform_get_output(&ww, &wh, &x, &y, &w, &h, &opaque);
@@ -500,27 +497,262 @@ static void capture_most_frame(const struct timespec *now) {
     }
 }
 
-static void save_screenshot(int fb_w, int fb_h, const char *label) {
-    unsigned char *pixels = (unsigned char *)malloc(fb_w * fb_h * 4);
-    if (!pixels) return;
-    glReadPixels(0, 0, fb_w, fb_h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-
+static void save_screenshot(const char *label) {
     char path[256];
     snprintf(path, sizeof(path), "snap_%03d_%s.ppm", g_snap_counter++, label);
+    if (render_capture_output(path) == 0) fprintf(stderr, "engine: saved %s\n", path);
+}
 
-    FILE *f = fopen(path, "wb");
-    if (!f) { free(pixels); return; }
-    fprintf(f, "P6\n%d %d\n255\n", fb_w, fb_h);
-    int y, x;
-    for (y = fb_h - 1; y >= 0; y--) {
-        for (x = 0; x < fb_w; x++) {
-            unsigned char *p = pixels + (y * fb_w + x) * 4;
-            fwrite(p, 1, 3, f);
+/* ================================================================
+ * Render loop steps
+ * ================================================================ */
+
+/* What one loop iteration drained from Java: the latest maneuver and progress win. */
+typedef struct {
+    int maneuver, progress, screenshot, shutdown;
+    maneuver_state_t pending;
+    uint8_t flags, perspective;
+    int level, mode, state;
+    char label[17];
+} cr_commands_t;
+
+static int g_announced_first_frame;
+static cr_frame_pacer_t g_pacer;
+
+static void read_commands(cr_commands_t *c) {
+    cr_cmd_t cmd;
+    memset(c, 0, sizeof(*c));
+    c->perspective = 1;
+    c->state = CR_PROGRESS_OFF;
+    while (cr_server_read_cmd(&cmd)) {
+        if (cmd.cmd == CMD_LANES_BEGIN || cmd.cmd == CMD_LANES_LANE || cmd.cmd == CMD_LANES_COMMIT) {
+            if (cr_lane_receive(&g_lane_decoder, &cmd, &g_lane_guidance)) {
+                g_engine.dirty=1;
+                fprintf(stderr, "lanes: event=%d showing=%d count=%d complete=%d\n",
+                    (int)g_lane_guidance.event_index, g_lane_guidance.showing,
+                    g_lane_guidance.count, g_lane_guidance.complete);
+            }
+            continue;
+        }
+        switch (cmd.cmd) {
+        case CMD_MANEUVER: {
+            cr_decode_maneuver(&cmd, &c->pending);
+            c->flags = cr_merge_maneuver_flags(c->maneuver, c->flags, cmd.flags);
+            c->perspective = cmd.payload[43];
+            c->progress=1;
+            c->level=(cmd.flags & MAN_FLAG_PROGRESS) ? cmd.payload[44] : 0;
+            c->mode=(cmd.flags & MAN_FLAG_PROGRESS) ? cmd.payload[45] : 0;
+            c->state=cr_progress_decode(cmd.flags,cmd.payload[42],c->mode);
+            c->maneuver = 1;
+            break;
+        }
+        case CMD_SCREENSHOT: {
+            c->screenshot = 1;
+            memcpy(c->label, cmd.payload, 16);
+            c->label[16] = '\0';
+            break;
+        }
+        case CMD_VISIBLE_AREA:
+            if (render_set_visible_area((cmd.payload[0] << 8) | cmd.payload[1],
+                    (cmd.payload[2] << 8) | cmd.payload[3],
+                    (cmd.payload[4] << 8) | cmd.payload[5],
+                    (cmd.payload[6] << 8) | cmd.payload[7]))
+                g_engine.dirty = 1;
+            break;
+        case CMD_PERSPECTIVE: {
+            int persp = cmd.payload[0] ? 1 : 0;
+            render_set_perspective(persp);
+            fprintf(stderr, "engine: perspective=%s\n", persp ? "ON" : "OFF");
+            g_engine.dirty = 1;
+            break;
+        }
+        case CMD_DEBUG:
+            if (cmd.payload[0] == 2) {
+                static int grid_on = 0;
+                grid_on = !grid_on;
+                render_set_debug_grid(grid_on);
+                fprintf(stderr, "engine: grid=%s\n", grid_on ? "ON" : "OFF");
+            } else if (cmd.payload[0] == 3) {
+                /* 3D offset adjust up */
+                extern float g_3d_offset_adjust;
+                g_3d_offset_adjust -= 0.02f;
+                fprintf(stderr, "engine: 3d_offset=%.3f\n", g_3d_offset_adjust);
+            } else if (cmd.payload[0] == 4) {
+                /* 3D offset adjust down */
+                extern float g_3d_offset_adjust;
+                g_3d_offset_adjust += 0.02f;
+                fprintf(stderr, "engine: 3d_offset=%.3f\n", g_3d_offset_adjust);
+            } else {
+                maneuver_toggle_debug();
+                fprintf(stderr, "engine: debug=%s\n", maneuver_is_debug() ? "ON" : "OFF");
+            }
+            g_engine.dirty = 1;
+            break;
+        case CMD_PROGRESS:
+            c->progress=1;
+            c->level=cmd.payload[0]; c->mode=cmd.payload[1];
+            c->state=cr_progress_decode(cmd.flags,cmd.payload[2],c->mode);
+            break;
+        case CMD_CLEAR:
+            /* CLEAR wins over an earlier MANEUVER drained in this same loop. */
+            c->maneuver = 0;
+            c->progress=0;
+            clear_maneuver();
+            g_announced_first_frame = 0;
+            cr_server_clear_frame_ready();
+            /* This barrier is sent before any later command in the same TCP
+             * drain can draw and earn a new FRAME_READY.  Java therefore can
+             * reject an old in-flight FRAME_READY without a timing guess. */
+            cr_server_mark_frame_cleared();
+            fprintf(stderr, "engine: clear (blank)\n");
+            break;
+        case CMD_SHUTDOWN:
+            fprintf(stderr, "engine: shutdown command received\n");
+            c->shutdown = 1;
+            break;
         }
     }
-    fclose(f);
-    free(pixels);
-    fprintf(stderr, "engine: saved %s\n", path);
+}
+
+/* Applies the latest maneuver (draining to latest) and progress. */
+static void apply_commands(const cr_commands_t *c, double now) {
+    if (c->maneuver) {
+        int reveal_from_clear = g_cleared;
+        if (reveal_from_clear) cr_progress_reset(&g_arrow);
+        if (g_cleared) {
+            g_cleared = 0;
+            g_fade_alpha = 0.0f;
+            g_fade_active = 1;
+            render_set_global_alpha(0.0f);
+        }
+        if (c->flags & MAN_FLAG_SET_PERSP) {
+            g_persp_deferred = 1;
+            g_persp_deferred_value = c->perspective ? 1 : 0;
+            fprintf(stderr, "engine: deferred perspective=%s\n",
+                    g_persp_deferred_value ? "3D" : "2D");
+        }
+        if (reveal_from_clear) {
+            /* The hidden FOLLOW_STREET is only a deterministic backing
+             * state.  Replace it directly: the global alpha is the sole
+             * CLEAR->visible transition, with no duplicate route push. */
+            g_engine.current = c->pending;
+            g_engine.has_current = 1;
+            g_engine.has_next = 0;
+            g_engine.has_pending = 0;
+            g_engine.phase = ENGINE_IDLE;
+            maneuver_set_slide(1.0f);
+            render_invalidate_masks();
+            cr_profile_event(&g_profile, EV_REVEAL);
+            g_engine.dirty = 1;
+            /* This direct reveal deliberately bypasses ENGINE_SLIDING_IN,
+             * whose settle edge normally consumes the deferred presentation
+             * fields.  Apply them here so the first real frame after CLEAR
+             * carries the requested perspective as well. */
+            engine_apply_presentation();
+            fprintf(stderr, "engine: reveal from clear icon=%d\n",
+                    c->pending.icon);
+        } else if (c->flags & MAN_FLAG_REFRESH) {
+            engine_refresh_maneuver(&c->pending,now);
+        } else {
+            engine_apply_maneuver(&c->pending,now);
+        }
+    }
+
+    if(c->progress) {
+        engine_set_progress(c->level,c->state,now);
+        /* TCP order wins, including PROGRESS after MANEUVER in one drain.
+         * Never let the maneuver's deferred snapshot rewind a newer tick. */
+        g_engine.dirty=1;
+    }
+}
+
+/* The loop's periodic duties, timed from the iteration's start. */
+static void housekeeping(const struct timespec *now) {
+    static struct timespec health_last, output_last, heartbeat_last;
+    /* Window health-check + auto-recreate every 5 s.
+     *
+     * Two failure modes covered (see platform_qnx.c::platform_check_and_recover_window
+     * for full RE-derived rationale):
+     *   1. Our screen_window struct invalidated cross-process — the
+     *      probe screen_get_window_property_iv returns ENOENT/EBADF/EINVAL.
+     *   2. displaymanager disowned our managed window (m_surfaceSources[98]
+     *      no longer holds it, e.g. the context switched away) — our
+     *      SCREEN_PROPERTY_MANAGER_STRING no longer matches "All your base
+     *      are belong to us!".  With our own id 98 there is no stock
+     *      collision, so this is rare.
+     *
+     * On either signal, cluster_surface recreates the managed window (id 98,
+     * 100 ms backoff inside) and recreate_output re-binds EGL. */
+    if (timespec_elapsed_at_least(now, &health_last, 5)) {
+        health_last = *now;
+        watch_stage(WATCH_WINDOW_PROBE);
+        platform_check_and_recover_window();
+        watch_stage(WATCH_IDLE);
+    }
+    /* Java requests the MOST stream size at CarPlay connect; check every second
+     * so the window has it before a route can bring the arrows view up. */
+    if (timespec_elapsed_at_least(now, &output_last, 1)) {
+        output_last = *now;
+        watch_stage(WATCH_OUTPUT_CHECK);
+        platform_check_output();
+        apply_output();
+        watch_stage(WATCH_IDLE);
+    }
+    /* Heartbeat: EVT_HEARTBEAT to Java once a second, from the loop itself.  Java's
+     * RendererServer SO_TIMEOUT is 5 s.  send() does not block; the worst seen on the
+     * car is ~5 ms, and a heartbeat thread did not remove the ~245 ms stalls. */
+    if (timespec_elapsed_at_least(now, &heartbeat_last, 1)) {
+        heartbeat_last = *now;
+        watch_stage(WATCH_HEARTBEAT);
+        cr_server_send_heartbeat();
+        watch_stage(WATCH_IDLE);
+    }
+}
+
+/* ACTIVE pacing, every platform: after a rendered frame sleep to the next PACED_FPS
+ * deadline (frame_pacer.h).  eglSwapBuffers alone (QNX interval 2) did not hold the rate
+ * in the car: frames came at up to 53/s and the rate wandered.  QNX 6.5 rounds a sleep
+ * up to the kernel tick, but that does not accumulate: deadlines chain from the
+ * previous deadline, not from the wake-up.
+ *
+ * Adaptive IDLE pacing:
+ * when the loop produced NO frame this iteration (idle: no route / no maneuver) an
+ * always-on renderer would busy-spin 100% CPU.  Throttle idle polling: 30 Hz for the
+ * first second, then 10 Hz (1–5 s), then 3 Hz (>5 s); any activity snaps back to
+ * 30 Hz.  Idle timing needs no precision. */
+static void pace(int rendered, int64_t swap_ns, const struct timespec *start, unsigned masks_at_start) {
+    static int idle_frames = 0;
+    char pacing_line[160];
+    struct timespec t_end;
+    g_anim_prev_rendered = rendered;
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
+    unsigned frame_masks = render_mask_paint_count() - masks_at_start;
+    if (rendered) {
+        idle_frames = 0;
+        int64_t wait_ns = cr_pacer_frame_done(&g_pacer, timespec_ns(start), swap_ns,
+                                              timespec_ns(&t_end));
+        cr_profile_end(&g_profile, 1, frame_masks, wait_ns, timespec_ns(&t_end));
+        if (frame_masks > g_frame_masks_peak) g_frame_masks_peak = frame_masks;
+        if (cr_pacer_report(&g_pacer, timespec_ns(&t_end), pacing_line, sizeof(pacing_line)))
+            log_pacing(pacing_line, timespec_ns(&t_end));
+        if (wait_ns > 0) {
+            watch_stage(WATCH_SLEEP);
+            sleep_ns(wait_ns);
+            watch_stage(WATCH_IDLE);
+        }
+    } else {
+        cr_pacer_idle(&g_pacer);
+        cr_profile_end(&g_profile, 0, frame_masks, 0, timespec_ns(&t_end));
+        if (cr_pacer_report(&g_pacer, timespec_ns(&t_end), pacing_line, sizeof(pacing_line)))
+            log_pacing(pacing_line, timespec_ns(&t_end));
+        if (idle_frames < 10000) idle_frames++;
+        long idle_ns = (idle_frames < TARGET_FPS)     ? FRAME_TIME_NS     /* <1 s: 30 Hz */
+                     : (idle_frames < TARGET_FPS * 5) ? 100L * 1000000L  /* 1–5 s: 10 Hz */
+                     :                                  333L * 1000000L; /* >5 s: 3 Hz  */
+        watch_stage(WATCH_SLEEP);
+        sleep_ns(idle_ns);
+        watch_stage(WATCH_IDLE);
+    }
 }
 
 /* ================================================================
@@ -565,7 +797,7 @@ int main(int argc, char **argv) {
      * iAP2 / dio_manager / Java HMI threads preempt us for ~14-16 vsync
      * cycles at a time, which manifests as 245 ms render stalls every
      * ~530 ms.  At priority 15 we sit in the same league as the cluster
-     * compositor's own workers and are no longer starved.
+     * compositor's own workers and are not starved.
      *
      * Failure (EPERM if not root) is non-fatal — we'll still run, just
      * with stalls. */
@@ -634,49 +866,24 @@ int main(int argc, char **argv) {
 
     int dirty = 1;
     int running = 1;
-    int announced_first_frame = 0;
-    static cr_frame_pacer_t pacer;
-    cr_pacer_init(&pacer, 1000000000LL / PACED_FPS);
+    cr_pacer_init(&g_pacer, 1000000000LL / PACED_FPS);
     fprintf(stderr, "maneuver_render: frames paced at %d fps\n", PACED_FPS);
     cr_profile_init(&g_profile);
     g_render_loop_started = 1;
 
-#ifdef CR_DIAG_FRAME_LOG
-    /* Per-second + per-frame render-loop instrumentation — only compiled
-     * in for diagnostic builds (`-DCR_DIAG_FRAME_LOG`).  Production never
-     * pays the fprintf cost, which on QNX 6.5 with /tmp on slow flash can
-     * add noticeable jitter at 60 lines/sec. */
-    static struct timespec stat_last = {0, 0};
-    static int stat_frames_rendered = 0;
-    static int stat_loop_iters = 0;
-    static long stat_render_total_us = 0;
-    static long stat_render_max_us = 0;
-    static int stat_cmds_received = 0;
-#endif
-
     while (running && !platform_should_close()) {
         struct timespec t_start;
+        cr_commands_t commands;
         watch_stage(WATCH_POLL);
         __sync_fetch_and_add(&g_loop_progress, 1);
         clock_gettime(CLOCK_MONOTONIC, &t_start);
         cr_profile_begin(&g_profile, WATCH_POLL, timespec_ns(&t_start));
         unsigned masks_at_start = render_mask_paint_count();
-#ifdef CR_DIAG_FRAME_LOG
-        stat_loop_iters++;
-#endif
 
         platform_poll();
-#ifdef CR_DIAG_FRAME_LOG
-        struct timespec t_after_pp;
-        clock_gettime(CLOCK_MONOTONIC, &t_after_pp);
-#endif
 
         watch_stage(WATCH_POLL);
         cr_server_poll();
-#ifdef CR_DIAG_FRAME_LOG
-        struct timespec t_after_sp;
-        clock_gettime(CLOCK_MONOTONIC, &t_after_sp);
-#endif
 
         /* Java closed the bus socket (route/CarPlay off).  We are an always-on framework
          * service — do NOT exit.  Blank the popup so no stale frame lingers, clear the
@@ -684,19 +891,11 @@ int main(int argc, char **argv) {
         if (cr_server_peer_closed()) {
             fprintf(stderr, "engine: peer closed — clearing, staying alive for reconnect\n");
             clear_maneuver();
-            announced_first_frame = 0;
+            g_announced_first_frame = 0;
             cr_server_clear_frame_ready();
             cr_server_clear_peer_closed();
         }
 
-        /* Drain all pending commands, keep only the last CMD_MANEUVER */
-        cr_cmd_t cmd;
-        int got_maneuver = 0;
-        maneuver_state_t pending_maneuver;
-        uint8_t pending_flags = 0;
-        uint8_t pending_perspective = 1;
-        int got_progress=0, progress_level=0, progress_mode=0;
-        int progress_state=CR_PROGRESS_OFF;
         double progress_now=(double)t_start.tv_sec+t_start.tv_nsec*1e-9;
         /* Animations advance by elapsed time, not by frames: at 20 fps a per-frame step
          * made every slide 1.5x slower.  Iterations that render are paced (frame_pacer.h), so
@@ -713,158 +912,16 @@ int main(int argc, char **argv) {
             anim_prev = progress_now;
             render_set_frame_step(step);
         }
-        int got_screenshot = 0;
-        char screenshot_label[17];
 
+        /* Drain all pending commands, keep only the last CMD_MANEUVER */
         watch_stage(WATCH_COMMANDS);
-        while (cr_server_read_cmd(&cmd)) {
-#ifdef CR_DIAG_FRAME_LOG
-            stat_cmds_received++;
-#endif
-            if (cmd.cmd == CMD_LANES_BEGIN || cmd.cmd == CMD_LANES_LANE || cmd.cmd == CMD_LANES_COMMIT) {
-                if (cr_lane_receive(&g_lane_decoder, &cmd, &g_lane_guidance)) {
-                    g_engine.dirty=1;
-                    fprintf(stderr, "lanes: event=%d showing=%d count=%d complete=%d\n",
-                        (int)g_lane_guidance.event_index, g_lane_guidance.showing,
-                        g_lane_guidance.count, g_lane_guidance.complete);
-                }
-                continue;
-            }
-            switch (cmd.cmd) {
-            case CMD_MANEUVER: {
-                cr_decode_maneuver(&cmd, &pending_maneuver);
-                pending_flags = cr_merge_maneuver_flags(got_maneuver, pending_flags, cmd.flags);
-                pending_perspective = cmd.payload[43];
-                got_progress=1;
-                progress_level=(cmd.flags & MAN_FLAG_PROGRESS) ? cmd.payload[44] : 0;
-                progress_mode=(cmd.flags & MAN_FLAG_PROGRESS) ? cmd.payload[45] : 0;
-                progress_state=cr_progress_decode(cmd.flags,cmd.payload[42],progress_mode);
-                got_maneuver = 1;
-                break;
-            }
-            case CMD_SCREENSHOT: {
-                got_screenshot = 1;
-                memcpy(screenshot_label, cmd.payload, 16);
-                screenshot_label[16] = '\0';
-                break;
-            }
-            case CMD_VISIBLE_AREA:
-                if (render_set_visible_area((cmd.payload[0] << 8) | cmd.payload[1],
-                        (cmd.payload[2] << 8) | cmd.payload[3],
-                        (cmd.payload[4] << 8) | cmd.payload[5],
-                        (cmd.payload[6] << 8) | cmd.payload[7]))
-                    g_engine.dirty = 1;
-                break;
-            case CMD_PERSPECTIVE: {
-                int persp = cmd.payload[0] ? 1 : 0;
-                render_set_perspective(persp);
-                fprintf(stderr, "engine: perspective=%s\n", persp ? "ON" : "OFF");
-                g_engine.dirty = 1;
-                break;
-            }
-            case CMD_DEBUG:
-                if (cmd.payload[0] == 2) {
-                    static int grid_on = 0;
-                    grid_on = !grid_on;
-                    render_set_debug_grid(grid_on);
-                    fprintf(stderr, "engine: grid=%s\n", grid_on ? "ON" : "OFF");
-                } else if (cmd.payload[0] == 3) {
-                    /* 3D offset adjust up */
-                    extern float g_3d_offset_adjust;
-                    g_3d_offset_adjust -= 0.02f;
-                    fprintf(stderr, "engine: 3d_offset=%.3f\n", g_3d_offset_adjust);
-                } else if (cmd.payload[0] == 4) {
-                    /* 3D offset adjust down */
-                    extern float g_3d_offset_adjust;
-                    g_3d_offset_adjust += 0.02f;
-                    fprintf(stderr, "engine: 3d_offset=%.3f\n", g_3d_offset_adjust);
-                } else {
-                    maneuver_toggle_debug();
-                    fprintf(stderr, "engine: debug=%s\n", maneuver_is_debug() ? "ON" : "OFF");
-                }
-                g_engine.dirty = 1;
-                break;
-            case CMD_PROGRESS:
-                got_progress=1;
-                progress_level=cmd.payload[0]; progress_mode=cmd.payload[1];
-                progress_state=cr_progress_decode(cmd.flags,cmd.payload[2],progress_mode);
-                break;
-            case CMD_CLEAR:
-                /* CLEAR wins over an earlier MANEUVER drained in this same loop. */
-                got_maneuver = 0;
-                got_progress=0;
-                clear_maneuver();
-                announced_first_frame = 0;
-                cr_server_clear_frame_ready();
-                /* This barrier is sent before any later command in the same TCP
-                 * drain can draw and earn a new FRAME_READY.  Java therefore can
-                 * reject an old in-flight FRAME_READY without a timing guess. */
-                cr_server_mark_frame_cleared();
-                fprintf(stderr, "engine: clear (blank)\n");
-                break;
-            case CMD_SHUTDOWN:
-                fprintf(stderr, "engine: shutdown command received\n");
-                running = 0;
-                break;
-            }
-        }
-
-        /* Apply the latest maneuver (draining to latest) */
+        read_commands(&commands);
+        if (commands.shutdown) running = 0;
         watch_stage(WATCH_ENGINE);
-        if (got_maneuver) {
-            int reveal_from_clear = g_cleared;
-            if (reveal_from_clear) cr_progress_reset(&g_arrow);
-            if (g_cleared) {
-                g_cleared = 0;
-                g_fade_alpha = 0.0f;
-                g_fade_active = 1;
-                render_set_global_alpha(0.0f);
-            }
-            if (pending_flags & MAN_FLAG_SET_PERSP) {
-                g_persp_deferred = 1;
-                g_persp_deferred_value = pending_perspective ? 1 : 0;
-                fprintf(stderr, "engine: deferred perspective=%s\n",
-                        g_persp_deferred_value ? "3D" : "2D");
-            }
-            if (reveal_from_clear) {
-                /* The hidden FOLLOW_STREET is only a deterministic backing
-                 * state.  Replace it directly: the global alpha is the sole
-                 * CLEAR->visible transition, with no duplicate route push. */
-                g_engine.current = pending_maneuver;
-                g_engine.has_current = 1;
-                g_engine.has_next = 0;
-                g_engine.has_pending = 0;
-                g_engine.phase = ENGINE_IDLE;
-                maneuver_set_slide(1.0f);
-                render_invalidate_masks();
-                cr_profile_event(&g_profile, EV_REVEAL);
-                g_engine.dirty = 1;
-                /* This direct reveal deliberately bypasses ENGINE_SLIDING_IN,
-                 * whose settle edge normally consumes the deferred presentation
-                 * fields.  Apply them here so the first real frame after CLEAR
-                 * carries the requested perspective as well. */
-                engine_apply_presentation();
-                fprintf(stderr, "engine: reveal from clear icon=%d\n",
-                        pending_maneuver.icon);
-            } else if (pending_flags & MAN_FLAG_REFRESH) {
-                engine_refresh_maneuver(&pending_maneuver,progress_now);
-            } else {
-                engine_apply_maneuver(&pending_maneuver,progress_now);
-            }
-        }
-
-        if(got_progress) {
-            engine_set_progress(progress_level,progress_state,progress_now);
-            /* TCP order wins, including PROGRESS after MANEUVER in one drain.
-             * Never let the maneuver's deferred snapshot rewind a newer tick. */
-            g_engine.dirty=1;
-        }
+        apply_commands(&commands, progress_now);
         if(cr_progress_tick(&g_arrow,progress_now)) g_engine.dirty=1;
 
-        /* Tick engine state machine */
-        watch_stage(WATCH_SCENE_PREPARE);
-        prepare_engine_scenes();
-        watch_stage(WATCH_ENGINE);
+        /* Tick engine state machine; prepare the scenes it leaves current and next */
         engine_tick(progress_now);
         watch_stage(WATCH_SCENE_PREPARE);
         prepare_engine_scenes();
@@ -903,7 +960,7 @@ int main(int argc, char **argv) {
                              g_engine.has_next?g_engine.next_scene:NULL,content_frame);
         render_set_content_framing(content_frame[0],content_frame[1],content_frame[2]);
         watch_stage(WATCH_IDLE);
-        if (g_engine.dirty || render_is_animating() || maneuver_needs_redraw() || got_screenshot
+        if (g_engine.dirty || render_is_animating() || maneuver_needs_redraw() || commands.screenshot
             || cr_lane_panel_animating(g_lane_panel,progress_now)
 #ifdef CR_DEBUG_GRID
             || 1  /* always render when grid is compiled in */
@@ -916,18 +973,10 @@ int main(int argc, char **argv) {
         int64_t swap_ns = 0;
         if (dirty) {
             rendered_this_frame = 1;
-#ifdef CR_DIAG_FRAME_LOG
-            struct timespec rt_start;
-            clock_gettime(CLOCK_MONOTONIC, &rt_start);
-#endif
 
             maneuver_state_t *next_ptr = g_engine.has_next ? &g_engine.next : NULL;
             watch_stage(WATCH_PREPARE);
             maneuver_prepare_frame(&g_engine.current, next_ptr);
-#ifdef CR_DIAG_FRAME_LOG
-            struct timespec t_after_prep;
-            clock_gettime(CLOCK_MONOTONIC, &t_after_prep);
-#endif
 
             render_set_route_progress(g_arrow.fill,g_arrow.path_weight,g_arrow.glow);
             watch_stage(WATCH_BEGIN_FRAME);
@@ -943,14 +992,10 @@ int main(int argc, char **argv) {
             watch_stage(WATCH_END_FRAME);
             render_end_frame();
             watch_stage(WATCH_IDLE);
-#ifdef CR_DIAG_FRAME_LOG
-            struct timespec t_after_draw;
-            clock_gettime(CLOCK_MONOTONIC, &t_after_draw);
-#endif
 
             watch_stage(WATCH_SCREENSHOT);
-            if (got_screenshot)
-                save_screenshot(fb_w, fb_h, screenshot_label);
+            if (commands.screenshot)
+                save_screenshot(commands.label);
             watch_stage(WATCH_CAPTURE);
             capture_most_frame(&t_start);
 
@@ -972,8 +1017,8 @@ int main(int argc, char **argv) {
             /* A transparent post-CLEAR FOLLOW_STREET frame is deliberately not
              * presentation-ready.  Only a later real command may re-arm Java's
              * ctx80 gate. */
-            if (swap_ok && !announced_first_frame && g_engine.has_current && !g_cleared) {
-                announced_first_frame = 1;
+            if (swap_ok && !g_announced_first_frame && g_engine.has_current && !g_cleared) {
+                g_announced_first_frame = 1;
                 cr_server_mark_frame_ready();
                 fprintf(stderr, "engine: first frame ready\n");
             }
@@ -988,205 +1033,13 @@ int main(int argc, char **argv) {
             sched_yield();
             watch_stage(WATCH_IDLE);
 
-#ifdef CR_DIAG_FRAME_LOG
-            struct timespec rt_end;
-            clock_gettime(CLOCK_MONOTONIC, &rt_end);
-            long rt_us = (rt_end.tv_sec - rt_start.tv_sec) * 1000000L
-                       + (rt_end.tv_nsec - rt_start.tv_nsec) / 1000L;
-            long prep_us = (t_after_prep.tv_sec - rt_start.tv_sec) * 1000000L
-                         + (t_after_prep.tv_nsec - rt_start.tv_nsec) / 1000L;
-            long draw_us = (t_after_draw.tv_sec - t_after_prep.tv_sec) * 1000000L
-                         + (t_after_draw.tv_nsec - t_after_prep.tv_nsec) / 1000L;
-            long swap_us = (rt_end.tv_sec - t_after_draw.tv_sec) * 1000000L
-                         + (rt_end.tv_nsec - t_after_draw.tv_nsec) / 1000L;
-            stat_frames_rendered++;
-            stat_render_total_us += rt_us;
-            if (rt_us > stat_render_max_us) stat_render_max_us = rt_us;
-
-            static struct timespec last_frame_end = {0, 0};
-            long delta_us = 0;
-            if (last_frame_end.tv_sec > 0) {
-                delta_us = (rt_start.tv_sec - last_frame_end.tv_sec) * 1000000L
-                         + (rt_start.tv_nsec - last_frame_end.tv_nsec) / 1000L;
-            }
-            fprintf(stderr,
-                    "frame: gap=%ldus render=%ldus prep=%ldus draw=%ldus swap=%ldus icon=%d\n",
-                    delta_us, rt_us, prep_us, draw_us, swap_us,
-                    g_engine.has_current ? g_engine.current.icon : -1);
-            if (delta_us > 100000L) {
-                long pp_us = (t_after_pp.tv_sec - last_frame_end.tv_sec) * 1000000L
-                           + (t_after_pp.tv_nsec - last_frame_end.tv_nsec) / 1000L;
-                long sp_us = (t_after_sp.tv_sec - last_frame_end.tv_sec) * 1000000L
-                           + (t_after_sp.tv_nsec - last_frame_end.tv_nsec) / 1000L;
-                long top_us = (t_start.tv_sec - last_frame_end.tv_sec) * 1000000L
-                            + (t_start.tv_nsec - last_frame_end.tv_nsec) / 1000L;
-                fprintf(stderr,
-                        "STALL breakdown: post_swap_to_top=%ldus top_to_pp=%ldus pp_to_sp=%ldus sp_to_render=%ldus\n",
-                        top_us,
-                        pp_us - top_us,
-                        sp_us - pp_us,
-                        delta_us - sp_us);
-            }
-            last_frame_end = rt_end;
-#endif /* CR_DIAG_FRAME_LOG */
-
             dirty = render_is_animating() || maneuver_needs_redraw() || g_fade_active
                  || cr_lane_panel_animating(g_lane_panel,progress_now)
                  || g_arrow.active || g_arrow.tint_active;
         }
 
-        /* dmdt focus watchdog: spawn one-shot detached thread to run
-         * the popen("dmdt gs") + optional sc on a worker.  The render
-         * loop never blocks on the ~150 ms popen cost.
-         * Trigger only when idle + not animating to avoid any chance of
-         * the detached thread perturbing a frame in flight. */
-        {
-            static struct timespec focus_last = {0, 0};
-            if (g_engine.phase == ENGINE_IDLE
-                    && !render_is_animating()
-                    && timespec_elapsed_at_least(&t_start, &focus_last, 30, 0)) {
-                focus_last = t_start;
-                watch_stage(WATCH_FOCUS);
-                platform_ensure_focus();
-                watch_stage(WATCH_IDLE);
-            }
-        }
-
-        /* Window health-check + auto-recreate every 5 s.
-         *
-         * Two failure modes covered (see platform_qnx.c::platform_check_and_recover_window
-         * for full RE-derived rationale):
-         *   1. Our screen_window struct invalidated cross-process — the
-         *      probe screen_get_window_property_iv returns ENOENT/EBADF/EINVAL.
-         *   2. displaymanager disowned our managed window (m_surfaceSources[98]
-         *      no longer holds it, e.g. the context switched away) — our
-         *      SCREEN_PROPERTY_MANAGER_STRING no longer matches "All your base
-         *      are belong to us!".  With our own id 98 there is no stock
-         *      collision, so this is rare.
-         *
-         * On either signal, cluster_surface recreates the managed window (id 98,
-         * 100 ms backoff inside) and recreate_output re-binds EGL. */
-        {
-            static struct timespec health_last = {0, 0};
-            if (timespec_elapsed_at_least(&t_start, &health_last, 5, 0)) {
-                health_last = t_start;
-                watch_stage(WATCH_WINDOW_PROBE);
-                platform_check_and_recover_window();
-                watch_stage(WATCH_IDLE);
-            }
-        }
-
-        /* Java requests the MOST stream size at CarPlay connect; check every second
-         * so the window has it before a route can bring the arrows view up. */
-        {
-            static struct timespec output_last = {0, 0};
-            if (timespec_elapsed_at_least(&t_start, &output_last, 1, 0)) {
-                output_last = t_start;
-                watch_stage(WATCH_OUTPUT_CHECK);
-                platform_check_output();
-                apply_output();
-                watch_stage(WATCH_IDLE);
-            }
-        }
-
-        /* Heartbeat — single-thread design: send EVT_HEARTBEAT to Java
-         * once per second, dispatched right here on the main loop tick.
-         * Java's RendererServer SO_TIMEOUT=5s; one beat per second
-         * keeps it happy with ample margin.
-         *
-         * NOTE: an earlier iteration moved this to a dedicated pthread
-         * (commit c1aa2fd) on the theory that send() over QNX 6.5
-         * loopback could occasionally take a few ms and disturb frame
-         * pacing.  Diagnostics on hardware showed the periodic ~245 ms
-         * stalls persisted even with the heartbeat thread fully
-         * disabled, so the thread wasn't actually buying us anything.
-         * Rolling it back restores single-thread renderer.  send() is
-         * non-blocking; if the kernel ever returns a multi-ms latency
-         * here, the next 1 s tick still has ample margin before Java's
-         * 5 s SO_TIMEOUT.  Worst case observed: ~5 ms per send. */
-        {
-            static struct timespec hb_last = {0, 0};
-            if (timespec_elapsed_at_least(&t_start, &hb_last, 1, 0)) {
-                hb_last = t_start;
-                watch_stage(WATCH_HEARTBEAT);
-                cr_server_send_heartbeat();
-                watch_stage(WATCH_IDLE);
-            }
-        }
-
-        /* ACTIVE pacing, every platform: after a rendered frame sleep to the next PACED_FPS
-         * deadline (frame_pacer.h).  It used to ride eglSwapBuffers alone (QNX interval 2),
-         * which the car did not hold: frames came at up to 53/s and the rate wandered.  The
-         * QNX 6.5 nanosleep tick rounding that once ruled out a sleep does not accumulate,
-         * because deadlines chain from the previous deadline, not from the wake-up.
-         *
-         * Adaptive IDLE pacing (proven approach from the c_render history, commit e26cce5):
-         * when the loop produced NO frame this iteration (idle: no route / no maneuver) an
-         * always-on renderer would busy-spin 100% CPU.  Throttle idle polling: 30 Hz for the
-         * first second, then 10 Hz (1–5 s), then 3 Hz (>5 s); any activity snaps back to
-         * 30 Hz.  Idle timing needs no precision. */
-        static int idle_frames = 0;
-        g_anim_prev_rendered = rendered_this_frame;
-        char pacing_line[160];
-        struct timespec t_end;
-        clock_gettime(CLOCK_MONOTONIC, &t_end);
-        unsigned frame_masks = render_mask_paint_count() - masks_at_start;
-        if (rendered_this_frame) {
-            idle_frames = 0;
-            int64_t wait_ns = cr_pacer_frame_done(&pacer, timespec_ns(&t_start), swap_ns,
-                                                  timespec_ns(&t_end));
-            cr_profile_end(&g_profile, 1, frame_masks, wait_ns, timespec_ns(&t_end));
-            if (frame_masks > g_frame_masks_peak) g_frame_masks_peak = frame_masks;
-            if (cr_pacer_report(&pacer, timespec_ns(&t_end), pacing_line, sizeof(pacing_line)))
-                log_pacing(pacing_line, timespec_ns(&t_end));
-            if (wait_ns > 0) {
-                watch_stage(WATCH_SLEEP);
-                sleep_ns(wait_ns);
-                watch_stage(WATCH_IDLE);
-            }
-        } else {
-            cr_pacer_idle(&pacer);
-            cr_profile_end(&g_profile, 0, frame_masks, 0, timespec_ns(&t_end));
-            if (cr_pacer_report(&pacer, timespec_ns(&t_end), pacing_line, sizeof(pacing_line)))
-                log_pacing(pacing_line, timespec_ns(&t_end));
-            if (idle_frames < 10000) idle_frames++;
-            long idle_ns = (idle_frames < TARGET_FPS)     ? FRAME_TIME_NS     /* <1 s: 30 Hz */
-                         : (idle_frames < TARGET_FPS * 5) ? 100L * 1000000L  /* 1–5 s: 10 Hz */
-                         :                                  333L * 1000000L; /* >5 s: 3 Hz  */
-            watch_stage(WATCH_SLEEP);
-            sleep_ns(idle_ns);
-            watch_stage(WATCH_IDLE);
-        }
-
-#ifdef CR_DIAG_FRAME_LOG
-        /* 1 Hz render-loop stats.  Steady state should report
-         * iters≈30 frames≈30 (ARRIVED flag keeps maneuver_needs_redraw
-         * true).  Anything else means the loop is being throttled. */
-        {
-            struct timespec stat_now;
-            clock_gettime(CLOCK_MONOTONIC, &stat_now);
-            if (stat_last.tv_sec == 0) stat_last = stat_now;
-            long el_ms = (stat_now.tv_sec - stat_last.tv_sec) * 1000L
-                       + (stat_now.tv_nsec - stat_last.tv_nsec) / 1000000L;
-            if (el_ms >= 1000) {
-                long avg_us = stat_frames_rendered > 0
-                            ? stat_render_total_us / stat_frames_rendered : 0;
-                int icon = g_engine.has_current ? g_engine.current.icon : -1;
-                fprintf(stderr,
-                        "stats: iters=%d frames=%d cmds=%d render_us=%ld/%ld(avg/max) icon=%d redraw=%d anim=%d\n",
-                        stat_loop_iters, stat_frames_rendered, stat_cmds_received,
-                        avg_us, stat_render_max_us, icon,
-                        maneuver_needs_redraw() ? 1 : 0,
-                        render_is_animating() ? 1 : 0);
-                stat_loop_iters = 0;
-                stat_frames_rendered = 0;
-                stat_cmds_received = 0;
-                stat_render_total_us = 0;
-                stat_render_max_us = 0;
-                stat_last = stat_now;
-            }
-        }
-#endif /* CR_DIAG_FRAME_LOG */
+        housekeeping(&t_start);
+        pace(rendered_this_frame, swap_ns, &t_start, masks_at_start);
         watch_stage(WATCH_IDLE);
     }
 

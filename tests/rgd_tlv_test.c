@@ -26,6 +26,22 @@ int main(void) {
     rgd_parse_update(buf, 15, &u); assert((u.present & RGD_UPD_MANEUVER_LIST) && !u.maneuver_list_count);
     header(buf, 16, 0x5201); buf[15] = 0xAA;
     rgd_parse_update(buf, 16, &u); assert(u.present == 0);
+    /* A string filling its 255-byte field survives whole, newline replacement included. */
+    {
+        uint8_t big[300];
+        for (size_t len = 252; len <= 258; ++len) {
+            size_t n = len < 255 ? len : 255;
+            memset(big, 'a', sizeof(big));
+            header(big, 6 + 4 + len, 0x5201);
+            write_be16(big + 6, (uint16_t)(4 + len)); write_be16(big + 8, RGD_TLV_CURRENT_ROAD_NAME);
+            assert(rgd_parse_update(big, 6 + 4 + len, &u));
+            assert(strlen(u.current_road) == n && u.current_road[n - 1] == 'a');
+        }
+        header(big, 6 + 4 + 6, 0x5201);
+        write_be16(big + 6, 10); write_be16(big + 8, RGD_TLV_DESTINATION_NAME);
+        memcpy(big + 10, "x\r\ny\nz", 6);
+        assert(rgd_parse_update(big, 16, &u) && !strcmp(u.destination, "x / y / z"));
+    }
     /* A valid maneuver index plus truncated following TLV must not replace that slot. */
     header(buf, 16, 0x5202); write_be16(buf + 6, 6); write_be16(buf + 8, MAN_TLV_INDEX); write_be16(buf + 10, 17);
     write_be16(buf + 12, 5); write_be16(buf + 14, MAN_TLV_TYPE);
@@ -92,7 +108,7 @@ int main(void) {
             }
         }
         rgd_parse_update(buf, n, &u); rgd_parse_maneuver(buf, n, &m); rgd_parse_lane_guidance(buf, n, &l);
-        assert(u.component_count <= MAX_COMPONENT_LIST && m.component_count <= MAX_COMPONENT_LIST);
+        assert(u.component_count <= MAX_COMPONENT_LIST);
         assert(l.lane_count <= MAX_LANE_GUIDANCE);
         for (size_t j = 0; j < l.lane_count; ++j) assert(l.lanes[j].angle_count <= MAX_LANE_ANGLES);
     }

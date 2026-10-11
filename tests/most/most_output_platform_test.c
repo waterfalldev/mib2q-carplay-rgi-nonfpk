@@ -20,7 +20,6 @@ static int test_unlink(const char *path);
 #undef unlink
 #include "cluster_surface.c"       /* -I <renderer tree>/common */
 
-#include <stdarg.h>
 
 /* ---------------------------------------------------------------- fake screen */
 
@@ -260,19 +259,7 @@ void glFinish(void) { }
 
 /* ---------------------------------------------------------------- checks */
 
-static int g_checks, g_failures;
-
-static void check(int ok, const char *fmt, ...) {
-    va_list ap;
-    g_checks++;
-    if (ok) return;
-    g_failures++;
-    fprintf(stdout, "FAIL: ");
-    va_start(ap, fmt);
-    vfprintf(stdout, fmt, ap);
-    va_end(ap);
-    fprintf(stdout, "\n");
-}
+#include "check.h"
 
 static struct fake_window *live_window(void) {
     return g_arrows.cs ? fw(cluster_surface_window(g_arrows.cs)) : NULL;
@@ -894,6 +881,6 @@ int main(void) {
     stale_map_report_withdrawn();
     map_nv12_window();
     reset_platform();
-    printf("most_output_platform_test: %d checks, %d failures\n", g_checks, g_failures);
-    return g_failures ? 1 : 0;
+    printf("most_output_platform_test: %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
 }

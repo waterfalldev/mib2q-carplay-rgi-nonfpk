@@ -6,7 +6,6 @@
  * - Per-module tagging
  * - File output with rotation support
  * - Thread-safe operation
- * - Optional syslog integration
  *
  * Define ENABLE_LOGGING=1 to enable logging, or ENABLE_LOGGING=0 to disable.
  * When disabled, all logging macros become no-ops with zero overhead.
@@ -31,17 +30,13 @@
 #ifndef ENABLE_STATE_TRACE
 #define ENABLE_STATE_TRACE 0
 #endif
-#ifndef ENABLE_ALTSCREEN_PACE_TRACE
-#define ENABLE_ALTSCREEN_PACE_TRACE 0
-#endif
 
 /* Log levels */
 typedef enum {
     LOG_LEVEL_DEBUG = 0,
     LOG_LEVEL_INFO = 1,
     LOG_LEVEL_WARN = 2,
-    LOG_LEVEL_ERROR = 3,
-    LOG_LEVEL_NONE = 4
+    LOG_LEVEL_ERROR = 3
 } log_level_t;
 
 /* Log configuration */
@@ -50,10 +45,6 @@ typedef struct {
     log_level_t min_level;      /* Minimum level to log */
     size_t max_size;            /* Max file size before rotation (0 = no limit) */
     int max_files;              /* Max number of rotated files to keep */
-    bool include_timestamp;     /* Include timestamp in output */
-    bool include_level;         /* Include log level in output */
-    bool include_module;        /* Include module name in output */
-    bool flush_immediate;       /* Flush after each write */
 } log_config_t;
 
 /* Default configuration.
@@ -61,8 +52,6 @@ typedef struct {
  * without a rebuild by `touch /mnt/app/carplay_verbose` - see log_init() in logging.c. */
 #if ENABLE_STATE_TRACE && !ENABLE_LOGGING
 #define LOG_DEFAULT_PATH "/tmp/carplay_state_trace.log"
-#elif ENABLE_ALTSCREEN_PACE_TRACE && !ENABLE_LOGGING
-#define LOG_DEFAULT_PATH "/tmp/carplay_alt_pace.log"
 #else
 #define LOG_DEFAULT_PATH "/tmp/carplay_hook.log"
 #endif
@@ -71,15 +60,10 @@ typedef struct {
     .log_path = LOG_DEFAULT_PATH, \
     .min_level = LOG_LEVEL_WARN, \
     .max_size = 1024 * 1024, \
-    .max_files = 3, \
-    .include_timestamp = true, \
-    .include_level = true, \
-    .include_module = true, \
-    /* do_write() is unbuffered already; fsync per line only stalls QNX /dev/shmem */ \
-    .flush_immediate = false \
+    .max_files = 3 \
 }
 
-#if ENABLE_LOGGING || ENABLE_STATE_TRACE || ENABLE_ALTSCREEN_PACE_TRACE
+#if ENABLE_LOGGING || ENABLE_STATE_TRACE
 
 /* Initialize logging system */
 hook_result_t log_init(const log_config_t* config);
@@ -87,19 +71,9 @@ hook_result_t log_init(const log_config_t* config);
 /* Shutdown logging system */
 void log_shutdown(void);
 
-/* Set minimum log level at runtime */
-void log_set_level(log_level_t level);
-
-/* Get current log level */
-log_level_t log_get_level(void);
-
 /* Core logging function */
 void log_write(log_level_t level, const char* module, const char* fmt, ...)
     __attribute__((format(printf, 3, 4)));
-
-/* Log with hex dump */
-void log_hexdump(log_level_t level, const char* module, const char* prefix,
-                 const uint8_t* data, size_t len, size_t max_bytes);
 
 #else /* All logging and scoped traces disabled. */
 
@@ -108,14 +82,8 @@ static inline hook_result_t log_init(const log_config_t* config) {
     (void)config; return HOOK_OK;
 }
 static inline void log_shutdown(void) {}
-static inline void log_set_level(log_level_t level) { (void)level; }
-static inline log_level_t log_get_level(void) { return LOG_LEVEL_NONE; }
 static inline void log_write(log_level_t level, const char* module, const char* fmt, ...) {
     (void)level; (void)module; (void)fmt;
-}
-static inline void log_hexdump(log_level_t level, const char* module, const char* prefix,
-                               const uint8_t* data, size_t len, size_t max_bytes) {
-    (void)level; (void)module; (void)prefix; (void)data; (void)len; (void)max_bytes;
 }
 
 #endif /* Logging or scoped trace writer. */
@@ -123,9 +91,6 @@ static inline void log_hexdump(log_level_t level, const char* module, const char
 #if ENABLE_LOGGING
 
 /* Convenience macros for logging */
-#define LOG_DEBUG(module, fmt, ...) \
-    log_write(LOG_LEVEL_DEBUG, module, fmt, ##__VA_ARGS__)
-
 #define LOG_INFO(module, fmt, ...) \
     log_write(LOG_LEVEL_INFO, module, fmt, ##__VA_ARGS__)
 
@@ -139,43 +104,19 @@ static inline void log_hexdump(log_level_t level, const char* module, const char
 #define DEFINE_LOG_MODULE(name) \
     static const char* LOG_MODULE = #name
 
-/* Hex dump convenience */
-#define LOG_HEXDUMP(module, prefix, data, len) \
-    log_hexdump(LOG_LEVEL_DEBUG, module, prefix, data, len, 32)
-
-#define LOG_HEXDUMP_FULL(module, prefix, data, len) \
-    log_hexdump(LOG_LEVEL_DEBUG, module, prefix, data, len, 0)
-
 /* True when /mnt/app/carplay_verbose or /tmp/carplay_verbose existed at the first call
  * (checked once per process, i.e. per dio_manager session).  It lifts the log to INFO.
  * Without it the hook logs WARN/ERROR only. */
 bool log_verbose(void);
 
-/* Dump binary data to file (for debugging) */
-hook_result_t log_dump_file(const char* path, const uint8_t* data, size_t len);
-
-/* Dump binary data to file only once (tracks by path) */
-hook_result_t log_dump_file_once(const char* path, const uint8_t* data, size_t len);
-
 #else /* ENABLE_LOGGING == 0 */
 
 /* No-op versions when logging is disabled */
 static inline bool log_verbose(void) { return false; }
-#define LOG_DEBUG(module, fmt, ...)      ((void)0)
 #define LOG_INFO(module, fmt, ...)       ((void)0)
 #define LOG_WARN(module, fmt, ...)       ((void)0)
 #define LOG_ERROR(module, fmt, ...)      ((void)0)
 #define DEFINE_LOG_MODULE(name)          /* empty */
-#define LOG_HEXDUMP(module, prefix, data, len)       ((void)0)
-#define LOG_HEXDUMP_FULL(module, prefix, data, len)  ((void)0)
-
-/* No-op dump functions */
-static inline hook_result_t log_dump_file(const char* path, const uint8_t* data, size_t len) {
-    (void)path; (void)data; (void)len; return HOOK_OK;
-}
-static inline hook_result_t log_dump_file_once(const char* path, const uint8_t* data, size_t len) {
-    (void)path; (void)data; (void)len; return HOOK_OK;
-}
 
 #endif /* ENABLE_LOGGING */
 

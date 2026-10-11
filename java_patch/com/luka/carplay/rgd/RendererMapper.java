@@ -10,8 +10,7 @@ public final class RendererMapper {
     public static final int ICON_APPROACH = 1;
     public static final int ICON_TURN = 2;
     public static final int ICON_UTURN = 3;
-    public static final int ICON_MERGE = 4; // legacy wire icon; no automatic iOS mapping
-    public static final int ICON_EXIT = 5;
+    /* Wire icons 4 (merge) and 5 (exit) are drawn by the renderer but never sent. */
     public static final int ICON_ROUNDABOUT = 6;
     public static final int ICON_ARRIVED = 7;
     public static final int ICON_LANE_CHANGE = 8;
@@ -52,12 +51,6 @@ public final class RendererMapper {
                 out.icon = ICON_UTURN;
                 out.direction = direction == ManeuverMapper.DIR_LEFT ? -1 : 1;
                 out.exitAngle = out.direction * 360;
-                break;
-            case ManeuverMapper.EXIT_LEFT:
-            case ManeuverMapper.EXIT_RIGHT:
-                out.icon = ICON_EXIT;
-                out.direction = main == ManeuverMapper.EXIT_LEFT ? -1 : 1;
-                out.exitAngle = 0;
                 break;
             case ManeuverMapper.CHANGE_LANE:
                 out.icon = ICON_LANE_CHANGE;
@@ -119,9 +112,9 @@ public final class RendererMapper {
         }
         if (out.icon == ICON_APPROACH || out.icon == ICON_TURN || out.icon == ICON_ROUNDABOUT)
             out.junctionAngles = rawRoads(roads);
-        // EXIT used to supply the continuing main road through its geometry.
-        // A single-bend TURN needs that road explicitly, just as the HUD's
-        // fixed OFF_RAMP side street 0. Keep the richer CarPlay roads as well.
+        // A single-bend TURN has no continuing main road in its geometry (EXIT
+        // has): it needs that road explicitly, just as the HUD's fixed OFF_RAMP
+        // side street 0. Keep the richer CarPlay roads as well.
         if (out.icon == ICON_TURN && (mt == ManeuverMapper.MT_OFF_RAMP
                 || mt == ManeuverMapper.MT_HIGHWAY_OFF_RAMP_LEFT
                 || mt == ManeuverMapper.MT_HIGHWAY_OFF_RAMP_RIGHT))

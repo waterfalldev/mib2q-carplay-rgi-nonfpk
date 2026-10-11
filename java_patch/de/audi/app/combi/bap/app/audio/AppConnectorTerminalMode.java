@@ -12,15 +12,14 @@ import de.vw.mib.bap.generated.audiosd.serializer.PlayPosition_Status;
 import org.dsi.ifc.global.ResourceLocator;
 
 public class AppConnectorTerminalMode extends AbstractAppConnectorAudio implements CombiBAPServiceTerminalMode {
-    /* CarPlay cover art (ported from the working old impl; the stock class delivers no CarPlay
-     * artwork): register an IPictureProvider for cluster re-requests + push the artwork to the VC
-     * on each station update. */
+    /* CarPlay cover art (the stock class delivers no CarPlay artwork): register an
+     * IPictureProvider for cluster re-requests + push the artwork to the VC on each station update. */
     private static final int SOURCE_TYPE_VC = 21;
     private final AppConnectorTerminalMode$CoverArtProvider pictureProvider;
 
     protected AppConnectorTerminalMode(CombiModuleAudio combimoduleaudio) {
         super(combimoduleaudio);
-        this.pictureProvider = new AppConnectorTerminalMode$CoverArtProvider(this);
+        this.pictureProvider = new AppConnectorTerminalMode$CoverArtProvider(combimoduleaudio.getPictureManager());
         /* AppConnectorMedia has already registered stock cover-art provider type 0.  Replacing
          * that Map entry breaks later Media re-requests, so preserve it and route CarPlay IDs
          * through a small mux instead.  Direct push below remains the fallback if a variant hides
@@ -29,11 +28,6 @@ public class AppConnectorTerminalMode extends AbstractAppConnectorAudio implemen
             this.logChannel.log(100000, "[AppConnectorTerminalMode] cover-art mux unavailable; direct push only");
         }
         combimoduleaudio.getPictureManager().setNotification(0);
-    }
-
-    /* Package-private accessor for CoverArtProvider (mirrors the synthetic access$000). */
-    AbstractCombiModule getCombiModule() {
-        return (AbstractCombiModule) this.moduleFsg;
     }
 
     protected int getAudioApplication() {

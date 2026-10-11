@@ -83,7 +83,7 @@ flowchart LR
 ## 🔄 Threading (highlights)
 
 - **hook**: iAP2 thread (recv/read hooks) - cover-art worker - bus connector/writer - 1 Hz timer -
-  `altscreen` cluster-stream receiver and its short-lived command threads
+  `altscreen` cluster-stream receiver and its command worker
   ([most-map-view](cluster/most-map-view.md)).
 - **Java**: HMI EDT - `carplay-bus` (bus server IO, + `carplay-bus-writer`/`carplay-bus-reader`) -
   `carplay-cluster-switch` (single DM writer, [display-contexts](cluster/display-contexts.md)) - `carplay-rgi-presentation`

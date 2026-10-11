@@ -11,6 +11,11 @@
  */
 package com.luka.carplay.rgd;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+
 final class SideStreets {
 
     private SideStreets() {}
@@ -48,32 +53,27 @@ final class SideStreets {
     private static final int SIDE_FIXED_RIGHT = 64;
     private static final int SIDE_FIXED_ZERO = 0;
 
-    static byte[] calcSideStreetsBytes(int maneuverType, int junctionType, int drivingSide, int[] junctionAngles, int exitAngle) {
-        int[] dirs = calcSideStreetDirections(maneuverType, junctionType, drivingSide, junctionAngles, exitAngle);
-        return toByteArray(dirs);
-    }
-
     /**
-     * Returns direction codes (0..240 step 16) to be packed into sideStreets.
-     * If there is nothing to show, returns an empty array.
+     * Returns the direction codes (0..240 step 16) to be packed into sideStreets, one byte per
+     * entry. If there is nothing to show, returns an empty array.
      */
-    static int[] calcSideStreetDirections(int maneuverType, int junctionType, int drivingSide, int[] junctionAngles, int exitAngle) {
+    static byte[] calcSideStreetsBytes(int maneuverType, int junctionType, int drivingSide, int[] junctionAngles, int exitAngle) {
         /*
          * Fixed sidestreet patterns (from MHI3 sub_2B9C90).
          */
         if (maneuverType == ManeuverMapper.MT_EXIT_ROUNDABOUT) {
             /* always empty (no sub_2B97D0 call in native) */
-            return new int[0];
+            return new byte[0];
         }
         if (maneuverType == ManeuverMapper.MT_ENTER_ROUNDABOUT) {
             /* fixed 1-entry table depending on driving side */
-            return new int[]{(drivingSide == ManeuverMapper.DRIVING_SIDE_LEFT) ? SIDE_FIXED_LEFT : SIDE_FIXED_RIGHT};
+            return toByteArray(new int[]{(drivingSide == ManeuverMapper.DRIVING_SIDE_LEFT) ? SIDE_FIXED_LEFT : SIDE_FIXED_RIGHT});
         }
         if (maneuverType == ManeuverMapper.MT_OFF_RAMP
                 || maneuverType == ManeuverMapper.MT_HIGHWAY_OFF_RAMP_LEFT
                 || maneuverType == ManeuverMapper.MT_HIGHWAY_OFF_RAMP_RIGHT) {
             /* OFF_RAMP / HWY_OFF_RAMP: fixed table containing 0 */
-            return new int[]{SIDE_FIXED_ZERO};
+            return toByteArray(new int[]{SIDE_FIXED_ZERO});
         }
 
         /*
@@ -81,10 +81,10 @@ final class SideStreets {
          * All other types get empty sidestreets (e.g. ON_RAMP=9, UTurn=4/18/26,
          * ExitRoundaboutTo=24/25, NoTurn=0, Arrive=10/12/27, Ferry=15/17, etc.).
          */
-        if (!computesSidestreets(maneuverType, junctionType)) return new int[0];
+        if (!computesSidestreets(maneuverType, junctionType)) return new byte[0];
 
-        if (junctionAngles == null || junctionAngles.length == 0) return new int[0];
-        if (exitAngle == EXIT_ANGLE_MISSING || exitAngle == -EXIT_ANGLE_MISSING) return new int[0];
+        if (junctionAngles == null || junctionAngles.length == 0) return new byte[0];
+        if (exitAngle == EXIT_ANGLE_MISSING || exitAngle == -EXIT_ANGLE_MISSING) return new byte[0];
 
         /* Sentinels are not roads. Zero and a real -1 degree junction remain valid. */
         int valid = 0;
@@ -102,12 +102,12 @@ final class SideStreets {
         }
 
         /* Unknown junction types: native treats as "no info" and does not compute side streets. */
-        if (junctionType != 0 && junctionType != 1) return new int[0];
+        if (junctionType != 0 && junctionType != 1) return new byte[0];
 
         if (junctionType == 1) {
-            return occupiedSidestreetsRoundabout(drivingSide, junctionAngles, exitAngle);
+            return toByteArray(occupiedSidestreetsRoundabout(drivingSide, junctionAngles, exitAngle));
         }
-        return occupiedSidestreetsIntersection(junctionAngles, exitAngle);
+        return toByteArray(occupiedSidestreetsIntersection(junctionAngles, exitAngle));
     }
 
     /* ============================
@@ -141,7 +141,7 @@ final class SideStreets {
             return new int[0];
         }
 
-        EntryList entries = new EntryList(16);
+        List entries = new ArrayList();
         appendEntries(entries, above, exitsForAbove);
         appendEntries(entries, below, exitsForBelow);
         return emitUniqueDirectionCodes(entries);
@@ -180,13 +180,13 @@ final class SideStreets {
              * Native special-case: uses the full 15-bin list as a single partition (always "before"),
              * independent of driving side. "After" remains empty.
              */
-            exitsBefore = copyFloats(EXITS_15);
+            exitsBefore = EXITS_15;
             exitsAfter = new float[0];
         } else {
             int idx = indexOf(EXITS_15, exitMatch);
             if (idx < 0) {
                 /* Should not happen (exitMatch is 22.5deg quantized); be conservative. */
-                exitsBefore = copyFloats(EXITS_15);
+                exitsBefore = EXITS_15;
                 exitsAfter = new float[0];
             } else {
                 float[] exitsAbove = reverseSlice(EXITS_15, idx + 1, EXITS_15.length);
@@ -200,7 +200,7 @@ final class SideStreets {
             return new int[0];
         }
 
-        EntryList entries = new EntryList(24);
+        List entries = new ArrayList();
         appendEntries(entries, sidBefore, exitsBefore);
 
         /* Too many sidestreets after exit -> omit after (native logs + keeps before) */
@@ -221,43 +221,18 @@ final class SideStreets {
 
         Entry(float minDiff, float[] pairs) {
             this.minDiff = minDiff;
-            this.pairs = (pairs != null) ? pairs : new float[0];
+            this.pairs = pairs;
         }
     }
 
-    private static final class EntryList {
-        private Entry[] a;
-        private int n;
-
-        EntryList(int cap) {
-            if (cap < 0) cap = 0;
-            a = new Entry[cap];
-            n = 0;
+    /* Stable sort key: best-match diff ascending. */
+    private static final Comparator BY_MIN_DIFF = new Comparator() {
+        public int compare(Object a, Object b) {
+            return Float.compare(((Entry) a).minDiff, ((Entry) b).minDiff);
         }
+    };
 
-        void add(Entry e) {
-            if (e == null) return;
-            if (n >= a.length) {
-                int newCap = (a.length == 0) ? 8 : (a.length * 2);
-                Entry[] na = new Entry[newCap];
-                for (int i = 0; i < n; i++) na[i] = a[i];
-                a = na;
-            }
-            a[n++] = e;
-        }
-
-        int size() { return n; }
-
-        Entry get(int i) { return a[i]; }
-
-        void set(int i, Entry e) { a[i] = e; }
-    }
-
-    private static void appendEntries(EntryList out, int[] sidestreets, float[] exits) {
-        if (out == null) return;
-        if (sidestreets == null || sidestreets.length == 0) return;
-        if (exits == null || exits.length == 0) return;
-
+    private static void appendEntries(List out, int[] sidestreets, float[] exits) {
         int matchCount = sidestreets.length;
         for (int i = 0; i < sidestreets.length; i++) {
             float[] pairs = bestMatchingExitPairs(sidestreets[i], matchCount, exits);
@@ -266,21 +241,17 @@ final class SideStreets {
         }
     }
 
-    private static int[] emitUniqueDirectionCodes(EntryList entries) {
-        if (entries == null || entries.size() == 0) return new int[0];
-
+    private static int[] emitUniqueDirectionCodes(List entries) {
         /*
          * Mirrors tbt_renderer sub_2B71C0:
          * - sort mapping entries by their best-match diff (ascending)
          * - then emit unique direction codes in that order
          */
-        sortEntriesByMinDiff(entries);
+        Collections.sort(entries, BY_MIN_DIFF);
 
         IntList out = new IntList(16);
         for (int i = 0; i < entries.size(); i++) {
-            Entry e = entries.get(i);
-            if (e == null || e.pairs == null) continue;
-            float[] p = e.pairs;
+            float[] p = ((Entry) entries.get(i)).pairs;
             for (int j = 1; j < p.length; j += 2) {
                 int code = angleToDirectionCode(p[j]);
                 if (!out.contains(code)) {
@@ -290,23 +261,6 @@ final class SideStreets {
             }
         }
         return out.toArray();
-    }
-
-    private static void sortEntriesByMinDiff(EntryList entries) {
-        /* Insertion sort (small lists, stable). */
-        for (int i = 1; i < entries.size(); i++) {
-            Entry key = entries.get(i);
-            float kd = (key != null) ? key.minDiff : Float.MAX_VALUE;
-            int j = i - 1;
-            while (j >= 0) {
-                Entry cur = entries.get(j);
-                float cd = (cur != null) ? cur.minDiff : Float.MAX_VALUE;
-                if (cd <= kd) break;
-                entries.set(j + 1, cur);
-                j--;
-            }
-            entries.set(j + 1, key);
-        }
     }
 
     /*
@@ -354,7 +308,6 @@ final class SideStreets {
     }
 
     private static float closestExit(float angle, float[] exits) {
-        if (exits == null || exits.length == 0) return 0.0f;
         float best = exits[0];
         float bestDiff = abs(best - angle);
         for (int i = 1; i < exits.length; i++) {
@@ -372,7 +325,6 @@ final class SideStreets {
     }
 
     private static int indexOf(float[] a, float v) {
-        if (a == null) return -1;
         for (int i = 0; i < a.length; i++) {
             if (a[i] == v) return i;
         }
@@ -380,10 +332,6 @@ final class SideStreets {
     }
 
     private static float[] slice(float[] a, int from, int to) {
-        if (a == null) return new float[0];
-        if (from < 0) from = 0;
-        if (to > a.length) to = a.length;
-        if (to <= from) return new float[0];
         float[] out = new float[to - from];
         for (int i = 0; i < out.length; i++) out[i] = a[from + i];
         return out;
@@ -399,19 +347,12 @@ final class SideStreets {
         return s;
     }
 
-    private static float[] copyFloats(float[] a) {
-        if (a == null) return new float[0];
-        float[] out = new float[a.length];
-        for (int i = 0; i < a.length; i++) out[i] = a[i];
-        return out;
-    }
-
     private static final class SplitAngles {
         final int[] below;
         final int[] above;
         SplitAngles(int[] below, int[] above) {
-            this.below = (below != null) ? below : new int[0];
-            this.above = (above != null) ? above : new int[0];
+            this.below = below;
+            this.above = above;
         }
     }
 
@@ -425,8 +366,6 @@ final class SideStreets {
      * Native does not require ordering; preserve input order within each partition.
      */
     private static SplitAngles splitAnglesNative(int[] angles, int exitAngle) {
-        if (angles == null || angles.length == 0) return new SplitAngles(new int[0], new int[0]);
-
         IntList below = new IntList(angles.length);
         IntList above = new IntList(angles.length);
         for (int i = 0; i < angles.length; i++) {
@@ -481,7 +420,6 @@ final class SideStreets {
     }
 
     private static byte[] toByteArray(int[] v) {
-        if (v == null || v.length == 0) return new byte[0];
         byte[] out = new byte[v.length];
         for (int i = 0; i < v.length; i++) out[i] = (byte) (v[i] & 0xFF);
         return out;

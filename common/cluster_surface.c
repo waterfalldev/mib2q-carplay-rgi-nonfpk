@@ -120,7 +120,6 @@ cluster_surface_t *cluster_surface_create(const cluster_surface_cfg *cfg) {
 }
 
 screen_window_t  cluster_surface_window(cluster_surface_t *s)  { return s ? s->win : NULL; }
-screen_context_t cluster_surface_context(cluster_surface_t *s) { return s ? s->ctx : NULL; }
 
 int cluster_surface_lost(cluster_surface_t *s) {
     int visible = -1;

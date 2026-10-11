@@ -16,52 +16,13 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 import sun.misc.Unsafe;
+import static testsupport.TestSupport.*;
 
 /**
  * core seams.  Host-only; runs the shipping carplay_hook.jar classes
  * against the supplied stock JAR.  Every scenario names the on-car failure it guards against.
  */
 public final class ClusterCoreTest {
-    private static int checks;
-    private static final Unsafe U = unsafe();
-
-    static void check(boolean ok, String why) {
-        checks++;
-        if (!ok) throw new AssertionError(why);
-    }
-
-    static Unsafe unsafe() {
-        try {
-            Field f = Unsafe.class.getDeclaredField("theUnsafe");
-            f.setAccessible(true);
-            return (Unsafe) f.get(null);
-        } catch (Exception e) { throw new AssertionError(e); }
-    }
-
-    static Object alloc(Class<?> type) {
-        try { return U.allocateInstance(type); }
-        catch (InstantiationException e) { throw new AssertionError(e); }
-    }
-
-    static Field field(Class<?> type, String name) throws Exception {
-        for (Class<?> c = type; c != null; c = c.getSuperclass()) {
-            try { Field f = c.getDeclaredField(name); f.setAccessible(true); return f; }
-            catch (NoSuchFieldException e) { }
-        }
-        throw new NoSuchFieldException(name);
-    }
-
-    static void setStatic(Class<?> type, String name, Object value) throws Exception {
-        field(type, name).set(null, value);
-    }
-
-    static Object getStatic(Class<?> type, String name) throws Exception {
-        return field(type, name).get(null);
-    }
-
-    static void set(Object target, String name, Object value) throws Exception {
-        field(target.getClass(), name).set(target, value);
-    }
 
     /** Framework coded for the given KOMBI_MAP_MODE; counts HMI-service lookups. */
     static final class Fw implements InvocationHandler {

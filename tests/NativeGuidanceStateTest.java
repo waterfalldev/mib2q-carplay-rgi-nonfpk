@@ -18,6 +18,7 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 import sun.misc.Unsafe;
+import static testsupport.TestSupport.*;
 
 /**
  * Guidance restoration. Uses the supplied stock ClusterService,
@@ -25,41 +26,6 @@ import sun.misc.Unsafe;
  * constructors) with the shipping BAPBridge and ClusterLayerController.
  */
 public final class NativeGuidanceStateTest {
-    private static int checks;
-    private static final Unsafe U = unsafe();
-
-    static void check(boolean ok, String why) {
-        checks++;
-        if (!ok) throw new AssertionError(why);
-    }
-
-    static Unsafe unsafe() {
-        try {
-            Field f = Unsafe.class.getDeclaredField("theUnsafe");
-            f.setAccessible(true);
-            return (Unsafe) f.get(null);
-        } catch (Exception e) { throw new AssertionError(e); }
-    }
-
-    static Field field(Class<?> type, String name) throws Exception {
-        for (Class<?> c = type; c != null; c = c.getSuperclass()) {
-            try { Field f = c.getDeclaredField(name); f.setAccessible(true); return f; }
-            catch (NoSuchFieldException e) { }
-        }
-        throw new NoSuchFieldException(name);
-    }
-
-    static void set(Object target, String name, Object value) throws Exception {
-        field(target.getClass(), name).set(target, value);
-    }
-
-    static Object get(Object target, String name) throws Exception {
-        return field(target.getClass(), name).get(target);
-    }
-
-    static void setStatic(Class<?> type, String name, Object value) throws Exception {
-        field(type, name).set(null, value);
-    }
 
     static IFrameworkAccess framework(final int kombiMapMode) {
         return (IFrameworkAccess) Proxy.newProxyInstance(NativeGuidanceStateTest.class.getClassLoader(),
@@ -115,12 +81,12 @@ public final class NativeGuidanceStateTest {
         Rig(int kombiMapMode) throws Exception {
             IFrameworkAccess fw = framework(kombiMapMode);
             installCarPlayFramework(fw);
-            container = (DSIResponseContainer) U.allocateInstance(DSIResponseContainer.class);
-            NavigationEnv env = (NavigationEnv) U.allocateInstance(NavigationEnv.class);
+            container = (DSIResponseContainer) alloc(DSIResponseContainer.class);
+            NavigationEnv env = (NavigationEnv) alloc(NavigationEnv.class);
             set(env, "framework", fw);
             set(env, "container", container);
-            view = (View) U.allocateInstance(View.class);
-            service = (ClusterService) U.allocateInstance(ClusterService.class);
+            view = (View) alloc(View.class);
+            service = (ClusterService) alloc(ClusterService.class);
             set(service, "env", env);
             set(service, "clusterViewMode", view);
             set(service, "logChannel", silentLogChannel());

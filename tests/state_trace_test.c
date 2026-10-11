@@ -56,31 +56,11 @@ static int substring_count(const char *haystack, const char *needle)
 
 int main(void)
 {
-    static const uint16_t expected_media[] = {
-        0x00, 0x01, 0x04, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0c,
-        0x10, 0x12, 0x15, 0x16, 0x17, 0x18, 0x1a, 0x1b
-    };
-    unsigned char now_playing[144];
     unsigned char media[16], playback[8], payload[40];
     unsigned char ack_packet[9] = {
         0xff, 0x5a, 0x00, 0x09, 0x80, 0x22, 0x12, 0x07, 0x00
     };
-    size_t media_len = 0, playback_len = 0, payload_len = 0, i;
-
-    assert(iap2_build_now_playing_start(now_playing,
-                                                 sizeof(now_playing) - 1u) == 0);
-    assert(iap2_build_now_playing_start(now_playing,
-                                                 sizeof(now_playing)) ==
-           sizeof(now_playing));
-    assert(read_be16(now_playing) == 72u && read_be16(now_playing + 2u) == 0u);
-    assert(read_be16(now_playing + 72u) == 72u &&
-           read_be16(now_playing + 74u) == 1u);
-    for (i = 0; i < 17u; i++) {
-        assert(read_be16(now_playing + 4u + i * 4u) == 4u);
-        assert(read_be16(now_playing + 6u + i * 4u) == expected_media[i]);
-        assert(read_be16(now_playing + 76u + i * 4u) == 4u);
-        assert(read_be16(now_playing + 78u + i * 4u) == i);
-    }
+    size_t media_len = 0, playback_len = 0, payload_len = 0;
 
     assert(state_trace_begin_generation() == 1u);
     assert(strstr(captured, "name=IAP_IDENTIFY_START") != NULL);

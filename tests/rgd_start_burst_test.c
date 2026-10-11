@@ -93,8 +93,7 @@ static void send_msg(void) {
     memset(&frame, 0, sizeof(frame));
     frame.msgid = read_be16(g_msg + 4);
     frame.frame_len = (uint16_t)g_len;
-    g_ctx.raw_buf = g_msg;
-    g_ctx.raw_len = g_len;
+    frame.data = g_msg;
     rgd_module_def.on_message(&g_ctx, &frame);
 }
 

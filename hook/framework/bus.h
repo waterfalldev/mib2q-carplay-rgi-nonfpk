@@ -5,8 +5,9 @@
  * and the Java lsd process.  See bus_protocol.h for wire format.
  *
  * Threading model:
- *   - bus_init()  spawns a listener thread (accepts clients on 19810)
- *                 and a writer thread (drains the send queue).
+ *   - bus_init()  spawns a connector thread (connects to Java on
+ *                 127.0.0.1:19810 and reads from it), a writer thread
+ *                 (drains the send queue) and a 1 Hz timer thread.
  *   - bus_send()  is thread-safe: enqueues a frame and wakes the writer.
  *                 Never blocks on network I/O.  Safe from iAP2/OMX hook
  *                 threads.
@@ -27,16 +28,6 @@
 #include "bus_protocol.h"
 
 /* ============================================================
- * Send policies
- *   Affect only enqueue behaviour when the send queue is full.
- * ============================================================ */
-typedef enum {
-    BUS_POLICY_RELIABLE  = 0,  /* drop-newest; log warning             */
-    BUS_POLICY_LOSSY     = 1,  /* overwrite last frame of same type    */
-    BUS_POLICY_DROP_OLD  = 2   /* evict oldest to make room            */
-} bus_policy_t;
-
-/* ============================================================
  * Inbound dispatch
  * ============================================================ */
 typedef void (*bus_handler_t)(uint16_t type, uint8_t flags,
@@ -48,14 +39,6 @@ typedef void (*bus_handler_t)(uint16_t type, uint8_t flags,
  * ============================================================ */
 hook_result_t bus_init(void);
 void bus_shutdown(void);
-bool bus_is_connected(void);
-
-/* ============================================================
- * Per-type configuration
- *   Must be called before first bus_send of that type for effect.
- * ============================================================ */
-void bus_set_sticky(uint16_t type, bool sticky);
-void bus_set_policy(uint16_t type, bus_policy_t policy);
 
 /* ============================================================
  * Inbound handlers
@@ -104,9 +87,8 @@ void bus_set_periodic_tick(bus_tick_cb_t cb);
  *   bus_send_text(EVT_RGD_UPDATE, BUS_FLAG_STICKY, &b);
  *
  *   Builder is stack-allocated with a fixed buffer.  For route guidance
- *   (~10 KB worst case) use BUS_TEXT_BUILDER_LARGE.
+ *   (~10 KB worst case) use BUS_TEXT_BUILDER_LARGE_CAP.
  * ============================================================ */
-#define BUS_TEXT_BUILDER_DEFAULT_CAP  4096
 #define BUS_TEXT_BUILDER_LARGE_CAP    (64 * 1024)
 
 typedef struct {
@@ -121,20 +103,14 @@ typedef struct {
 void bus_text_begin_with(bus_text_builder_t* b, const char* object_name,
                          uint8_t* buf, uint32_t cap);
 
-/* Begin with an internally-allocated buffer (freed by bus_send_text / bus_text_free). */
+/* Begin with an internally-allocated buffer (freed by bus_send_text). */
 hook_result_t bus_text_begin_heap(bus_text_builder_t* b, const char* object_name, uint32_t cap);
-
-/* Release any internally-allocated buffer.  Safe to call on stack builders. */
-void bus_text_free(bus_text_builder_t* b);
 
 /* Appenders.  All fail silently if overflow bit set. */
 void bus_text_str (bus_text_builder_t* b, const char* key, const char* value);
 void bus_text_int (bus_text_builder_t* b, const char* key, int64_t  value);
 void bus_text_uint(bus_text_builder_t* b, const char* key, uint64_t value);
 void bus_text_bool(bus_text_builder_t* b, const char* key, bool     value);
-void bus_text_fmt (bus_text_builder_t* b, const char* key, char type,
-                   const char* fmt, ...) __attribute__((format(printf, 4, 5)));
-void bus_text_raw (bus_text_builder_t* b, const char* line);
 
 /* Send the assembled text as a frame.  Always frees heap buffer on return. */
 hook_result_t bus_send_text(uint16_t type, uint8_t flags, bus_text_builder_t* b);

@@ -1,8 +1,8 @@
 package com.luka.carplay.rgd;
 import java.io.FileOutputStream;
 import java.lang.reflect.Method;
+import static testsupport.TestSupport.*;
 public class LaneGuidanceTransportTest {
-    static void check(boolean b,String message) {if(!b)throw new AssertionError(message);}
     static int shortAt(byte[] p,int i) {return (short)(((p[i]&255)<<8)|(p[i+1]&255));}
     public static void main(String[] args) throws Exception {
         RouteGuidance.State state=new RouteGuidance.State();

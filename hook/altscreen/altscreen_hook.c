@@ -252,13 +252,13 @@ static uint32_t take_end(const char **why) {
  * setNightMode is stock's own command (AirPlayReceiverSessionSetNightMode, nightMode a
  * boolean), which stock sends without a uuid and the cluster map does not follow (map23) -
  * with the cluster's uuid it changes that display's theme (yuedizhibo/MHI2Q-CarPlay-AltScreen
- * issue 25).  Each batch runs on its own thread with its own session reference. */
+ * issue 25).  One worker sends the batches in order; each holds its own session reference. */
 
 typedef void (*command_done_fn)(int status, cf_ref_t response, void *context);
 typedef int (*send_command_fn)(void *session, cf_ref_t command, command_done_fn done, void *context);
 /* `zoom`: signed wheel steps, positive out.  `night`: setNightMode's value, -1 none; a showUI
  * batch sends the MMI's at the time instead. */
-typedef struct { void *session; int show_ui, keyframe, zoom, night; } alt_commands_t;
+typedef struct alt_commands { void *session; int show_ui, keyframe, zoom, night; struct alt_commands *next; } alt_commands_t;
 
 /* The MMI's night mode as Java last reported it (CMD_ALT_APPEARANCE), -1 until then. */
 static int g_night = -1;
@@ -292,16 +292,12 @@ static void send_command(const cflite_t *cf, send_command_fn send, void *session
     cf_release(cf, command);
 }
 
-static void *commands_thread(void *arg) {
-    alt_commands_t *c = (alt_commands_t *)arg;
-    const cflite_t *cf = cflite();
-    send_command_fn send;
+static void run_commands(const cflite_t *cf, send_command_fn send, const alt_commands_t *c) {
     int i, night = c->night;
     if (c->show_ui) {
         struct timespec delay = { ALT_SHOW_UI_DELAY_MS / 1000, (ALT_SHOW_UI_DELAY_MS % 1000) * 1000000L };
         while (nanosleep(&delay, &delay) != 0 && errno == EINTR) { }
     }
-    *(void **)&send = dlsym(RTLD_DEFAULT, "AirPlayReceiverSessionSendCommand");
     if (!send) {
         LOG_WARN(LOG_MODULE, "cluster display commands not sent: AirPlayReceiverSessionSendCommand unresolved");
     } else {
@@ -322,28 +318,64 @@ static void *commands_thread(void *arg) {
         for (i = 0; i < (c->zoom < 0 ? -c->zoom : c->zoom); ++i)
             send_command(cf, send, c->session, "changeMapZoomLevel", NULL, c->zoom > 0, -1);
     }
-    cf->release(c->session);
-    free(c);
+}
+
+/* One worker sends every batch, in the order asked for, so quick wheel steps never overtake
+ * each other.  It starts with the first batch and then waits for the next, for good. */
+static pthread_mutex_t g_commands_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_commands_cond = PTHREAD_COND_INITIALIZER;
+static alt_commands_t *g_commands_head, *g_commands_tail;
+static int g_commands_worker;
+
+static void *commands_thread(void *unused) {
+    send_command_fn send = NULL;
+    (void)unused;
+    for (;;) {
+        alt_commands_t *c;
+        const cflite_t *cf;
+        pthread_mutex_lock(&g_commands_lock);
+        while (!g_commands_head) pthread_cond_wait(&g_commands_cond, &g_commands_lock);
+        c = g_commands_head;
+        g_commands_head = c->next;
+        if (!g_commands_head) g_commands_tail = NULL;
+        pthread_mutex_unlock(&g_commands_lock);
+        cf = cflite();
+        if (!send) *(void **)&send = dlsym(RTLD_DEFAULT, "AirPlayReceiverSessionSendCommand");
+        run_commands(cf, send, c);
+        cf->release(c->session);
+        free(c);
+    }
     return NULL;
 }
 
 /* Takes over a session reference the caller holds. */
 static void send_commands_soon(const cflite_t *cf, void *session, int show_ui, int keyframe, int zoom, int night) {
-    alt_commands_t *c = (alt_commands_t *)malloc(sizeof(*c));
+    alt_commands_t *c = (alt_commands_t *)calloc(1, sizeof(*c));
     pthread_t thread;
+    int failed = ENOMEM, queued = 0;
     if (c) {
         c->session = session;
         c->show_ui = show_ui;
         c->keyframe = keyframe;
         c->zoom = zoom;
         c->night = night;
-        if (pthread_create(&thread, NULL, commands_thread, c) == 0) {
+        pthread_mutex_lock(&g_commands_lock);
+        if (!g_commands_worker && (failed = pthread_create(&thread, NULL, commands_thread, NULL)) == 0) {
             pthread_detach(thread);
-            return;
+            g_commands_worker = 1;
         }
+        if (g_commands_worker) {
+            if (g_commands_tail) g_commands_tail->next = c;
+            else g_commands_head = c;
+            g_commands_tail = c;
+            pthread_cond_signal(&g_commands_cond);
+            queued = 1;
+        }
+        pthread_mutex_unlock(&g_commands_lock);
+        if (queued) return;
         free(c);
     }
-    LOG_WARN(LOG_MODULE, "cluster display command thread failed errno=%d", errno);
+    LOG_WARN(LOG_MODULE, "cluster display command worker failed (%d)", failed);
     cf->release(session);
 }
 
@@ -809,7 +841,6 @@ static void altscreen_on_setup_response(hook_setup_ctx_t *setup) {
 
 const hook_module_def_t altscreen_module_def = {
     .name = "altscreen",
-    .priority = HOOK_PRIORITY_NORMAL,
     .on_state = altscreen_on_state,
     .on_init = altscreen_init,
     .on_shutdown = altscreen_shutdown,

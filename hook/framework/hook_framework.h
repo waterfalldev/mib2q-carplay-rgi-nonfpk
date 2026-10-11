@@ -12,7 +12,6 @@
 #include "bus.h"
 #include "iap2_protocol.h"
 
-typedef struct hook_module hook_module_t;
 typedef struct hook_context hook_context_t;
 
 /* Callback Types */
@@ -30,7 +29,7 @@ typedef void (*hook_transport_callback_t)(hook_context_t* ctx, uint16_t msgid);
  * interposing on another's behalf.  Their dictionaries are CF property lists
  * (framework/cflite.h).
  *
- * Callbacks run in module priority order, in dio_manager only.  A request
+ * Callbacks run in hook_module_table order, in dio_manager only.  A request
  * callback may replace `request` with its own CF object, which the seam
  * releases once stock has returned (response callbacks see the original);
  * `result` starts as stock's return value, `response` as stock's reply, and a
@@ -68,13 +67,9 @@ typedef struct {
 } hook_airplay_seams_t;
 
 /* State Events */
-#define HOOK_EVENT_INIT             1
 #define HOOK_EVENT_SHUTDOWN         2
-#define HOOK_EVENT_DISCONNECT       3
 #define HOOK_EVENT_IDENTIFY_START   5
-#define HOOK_EVENT_IDENTIFY_OK      6
 #define HOOK_EVENT_IDENTIFY_END     7
-#define HOOK_EVENT_AUTH_DONE        8
 
 /* Hook Module Definition.
  *
@@ -83,7 +78,6 @@ typedef struct {
  * the raw transport taps and the AirPlay seams all come from this one table. */
 typedef struct {
     const char* name;
-    hook_priority_t priority;
     const uint16_t* msg_filter;
     size_t msg_filter_count;
     hook_msg_handler_t on_message;
@@ -145,11 +139,6 @@ static inline void inject_unlink(injection_ctx_t* inj) {
 
 /* Hook Context */
 struct hook_context {
-    msg_direction_t direction;
-    uint16_t msgid;
-    const uint8_t* raw_buf;
-    size_t raw_len;
-
     /* Session state */
     bool identify_patched;
     bool identify_accepted;
@@ -162,14 +151,10 @@ struct hook_context {
 #endif
 
     /* Component info */
-    uint16_t rgd_component_id;
     bool rgd_component_valid;
 
     /* Extra-message injection state. */
     injection_ctx_t inject;
-
-    /* Module being called */
-    hook_module_t* current_module;
 
     void* _priv;
 };
@@ -177,27 +162,21 @@ struct hook_context {
 /* Framework API */
 hook_result_t hook_framework_init(void);
 void hook_framework_shutdown(void);
-hook_result_t hook_framework_register_module(const hook_module_def_t* def);
-hook_result_t hook_framework_unregister_module(const char* name);
 hook_context_t* hook_framework_get_context(void);
 
-/* Registered modules in priority order, for the framework-owned seam files.
- * The list is built once under pthread_once before any seam can fire, so these
+/* Live modules in hook_module_table order, for the framework-owned seam files.
+ * The count grows once under pthread_once before any seam can fire, so these
  * are read without the framework lock — same rule the message dispatcher and
- * state notifier already follow.  Returns NULL past the end or for a module
- * that has been deactivated. */
+ * state notifier already follow.  Returns NULL past the end. */
 size_t hook_framework_module_count(void);
 const hook_module_def_t* hook_framework_module_at(size_t index);
 
-/* Injection API - queues an additional semantic frame for the dedicated
+/* Injection API - queues an additional semantic message for the dedicated
  * ICinemoIAP::SendIAP2 worker; it never replaces a stock semantic message,
  * copies FF5A state, or blocks the caller in stock transport code. */
-hook_result_t hook_inject_frame(const uint8_t* frame, size_t len);
 hook_result_t hook_inject_message(uint16_t msgid, const uint8_t* payload, size_t payload_len);
 
 /* State Query */
 bool hook_is_ready(void);
-bool hook_is_active(void);
-uint16_t hook_get_component_id(void);
 
 #endif /* CARPLAY_HOOK_FRAMEWORK_H */

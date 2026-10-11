@@ -51,7 +51,7 @@ flowchart LR
 ## 📊 0x5201 RouteGuidanceUpdate - our IDs match Apple exactly
 
 Every ID matches `+[ACCNavigationRouteGuidanceUpdateInfo keyForType:]` (accessoryd 23G71).
-`0x01-0x14` we **parse**; `0x15-0x1A` Apple emits but we **do not parse** (see gaps).
+`0x01-0x14` we know (the display strings, units, `0x11` total and `0x13` source name are skipped, not published); `0x15-0x1A` Apple emits but we **skip** (see gaps).
 
 | ID | Apple field (ACCNav_RGUpdate_*) | our field | parsed |
 |---:|---|---|:--:|
@@ -62,16 +62,16 @@ Every ID matches `+[ACCNavigationRouteGuidanceUpdateInfo keyForType:]` (accessor
 | 0x05 | EstimatedTimeOfArrival | `etaSeconds` | [x] |
 | 0x06 | TimeRemainingToDestination | `timeRemaining` | [x] |
 | 0x07 | DistanceRemaining | `distDestM` | [x] |
-| 0x08-0x09 | DistanceRemaining DisplayString / Units | - | [x] (num used) |
+| 0x08-0x09 | DistanceRemaining DisplayString / Units | - | skipped (the number is used) |
 | 0x0A | DistanceRemainingToNextManeuver | `distManeuverM` | [x] |
-| 0x0B-0x0C | ...ToNextManeuver DisplayString / Units | - | [x] (num used) |
+| 0x0B-0x0C | ...ToNextManeuver DisplayString / Units | - | skipped (the number is used) |
 | 0x0D | RouteGuidanceManeuverCurrentList | `maneuverOrder[]` | [x] |
 | 0x0E | RouteGuidanceManeuverCount | `maneuverCount` | [x] |
 | 0x0F | **RouteGuidanceBeingShownInApp** | `visible_in_app` | [x] -> [rgd-activation](rgd-activation.md) |
 | 0x10 | LaneGuidanceCurrentIndex | `laneGuidanceIndex` | [x] |
-| 0x11 | LaneGuidanceTotalCount | `laneGuidanceTotal` | [x] |
+| 0x11 | LaneGuidanceTotalCount | - | skipped |
 | 0x12 | LaneGuidanceShowing | `laneGuidanceShowing` | [x] |
-| 0x13 | SourceName | (from 0x5200) | [x] |
+| 0x13 | SourceName | - | skipped |
 | 0x14 | SourceSupportsRouteGuidance | `sourceSupportsRg` | [x] |
 | 0x15 | DestinationTimeZoneOffsetMinutes | - | [ ] |
 | 0x16 | StopType | - | [ ] |
@@ -86,7 +86,7 @@ Every ID matches `+[ACCNavigationRouteGuidanceUpdateInfo keyForType:]` (accessor
 | 0x02 | Description | InstructionText (parsed, not surfaced) |
 | 0x03 | Type | EManeuverType 0-53 -> [maneuver-mapping](maneuver-mapping.md) |
 | 0x04 | AfterRoadName | turn-to street |
-| 0x05-0x07 | DistanceBetween / String / Units | |
+| 0x05-0x07 | DistanceBetween / String / Units | only the distance is published |
 | 0x08 | DrivingSide | L/R, mirrors icons |
 | 0x09 | JunctionType | roundabout / interchange gate |
 | 0x0A | **JunctionElementAngle** | side-street angles |

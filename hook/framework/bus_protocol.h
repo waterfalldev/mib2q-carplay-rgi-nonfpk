@@ -74,11 +74,9 @@
 #define EVT_HELLO               0x0001  /* server greet on connect, payload: text version info */
 #define EVT_SYNC_BEGIN          0x0002  /* snapshot replay starts            */
 #define EVT_SYNC_END            0x0003  /* snapshot replay finished          */
-#define EVT_PONG                0x0004  /* reply to CMD_PING                 */
 
 #define EVT_COVERART            0x0010  /* text: crc:n:<u32> path:s:<path>   */
 #define EVT_RGD_UPDATE          0x0020  /* text: route_state + all fields    */
-#define EVT_DEVICE_STATE        0x0030  /* reserved                          */
 #define EVT_CLUSTER_VIDEO       0x0040  /* text: live:b stream:n - the phone's */
                                         /* cluster stream reaches the renderer */
 
@@ -88,36 +86,14 @@
  *   0x0200 ..        : reserved
  * ============================================================ */
 #define CMD_SYNC_REQ            0x0100  /* request sticky-state snapshot     */
-#define CMD_PING                0x0101  /* echo test                         */
 
 /* AltScreen commands — Java→hook (bidirectional bus).  BINARY payloads.       */
 #define CMD_ALT_ZOOM            0x0110  /* binary [int8 signed MapScale step]  */
                                         /* hook emits UUID-addressed           */
                                         /* changeMapZoomLevel (0=in, 1=out)    */
-#define CMD_ALT_ZONE            0x0111  /* [u8 0=full/1=sport/2=classic][u16 LE durationMs] */
-                                        /* hook maps each mode to the matching */
-                                        /* primary+adjacent viewAreas          */
-#define CMD_ALT_ZONE_ACK        0x0112  /* hook→Java confirmation for a switch */
-                                        /* binary [u8 mode][i32 LE status]     */
-                                        /* status 0 = phone applied it, else   */
-                                        /* OSStatus/send error                 */
-/* More MHI3-ported session commands (Java→hook), all via AirPlayReceiverSessionSendCommand. */
-/* 0x0113 remains reserved (zoom uses the deployed 0x0110 ABI). */
 #define CMD_ALT_APPEARANCE      0x0114  /* binary [u8 night 0/1] - the MMI's   */
                                         /* night mode; hook sends the cluster  */
                                         /* display setNightMode                */
-#define CMD_ALT_UICTX           0x0115  /* payload = UTF-8 url string — deep-  */
-                                        /* link cluster UI context             */
-#define CMD_ALT_RGI             0x0116  /* binary [u8 0=off 1=on] — Java's     */
-                                        /* confirmed RGI presentation; hook    */
-                                        /* picks the Maps cluster URL (showUI) */
-/* NOTE: dispatchable inbound types must be < MAX_TYPES in bus.c (grown to      */
-/* cover this 0x11x block).                                                     */
-
-/* ============================================================
- * Classification helpers (header range checks, optional)
- * ============================================================ */
-#define BUS_TYPE_IS_EVENT(t)    (((t) & 0xFF00u) == 0x0000)
-#define BUS_TYPE_IS_COMMAND(t)  (((t) & 0xF000u) == 0x0000 && ((t) & 0xFF00u) >= 0x0100)
+/* Dispatchable inbound types must be < MAX_TYPES in bus.c.                    */
 
 #endif /* CARPLAY_BUS_PROTOCOL_H */

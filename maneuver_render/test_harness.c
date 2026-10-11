@@ -1,9 +1,8 @@
 /*
  * Test harness for maneuver_render — standalone GLFW binary (macOS only).
  *
- * Acts as the **TCP SERVER** on 127.0.0.1:CR_TCP_PORT.  After the
- * 2026-04 topology flip the renderer is the TCP client, so the harness
- * matches what Java BAPBridge does in production.
+ * Acts as the **TCP SERVER** on 127.0.0.1:CR_TCP_PORT: the renderer is the
+ * TCP client, so the harness plays Java BAPBridge's part.
  *
  * Left/right cycle maneuver presets; up/down change remaining progress level.
  * B cycles explicit off/fill/blink-low/blink-high states (no local blink clock).

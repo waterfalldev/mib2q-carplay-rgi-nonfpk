@@ -4,12 +4,12 @@ import com.luka.carplay.framework.Log;
 import de.audi.tghu.fwhmi.IDisplayManagerKombiControl;
 import java.lang.reflect.*;
 import java.util.*;
+import static testsupport.TestSupport.*;
 
 /** Exercise real layer writes/context decisions with the VC's recovered event sequence. */
 public final class ClusterKdkSyncTest implements InvocationHandler {
     final Map opacity = new HashMap();
     int cropWidth;
-    static void check(boolean b, String message) { if (!b) throw new AssertionError(message); }
     static void field(String name, Object value) throws Exception {
         Field f=ScreenModule.class.getDeclaredField(name); f.setAccessible(true);f.set(null,value);
     }

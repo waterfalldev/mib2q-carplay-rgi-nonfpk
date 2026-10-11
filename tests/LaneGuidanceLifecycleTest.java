@@ -7,6 +7,7 @@ import de.audi.atip.interapp.combi.bap.navi.data.CombiBAPNaviLaneGuidanceData;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import sun.misc.Unsafe;
+import static testsupport.TestSupport.*;
 
 /** Real bus-delta parser and BAPBridge.update; captures only the two output
  * boundaries, without starting native HU services or changing maneuvers. */
@@ -22,10 +23,6 @@ public final class LaneGuidanceLifecycleTest {
     public static final class Renderer extends RendererServer {
         LaneGuidanceSnapshot lanes; int writes;
         boolean sendLaneGuidance(LaneGuidanceSnapshot value) { lanes=value; writes++; return true; }
-    }
-    static void check(boolean b,String message) { if(!b)throw new AssertionError(message); }
-    static void set(Object o,String name,Object value) throws Exception {
-        Field f=o.getClass().getDeclaredField(name);f.setAccessible(true);f.set(o,value);
     }
     static int code(int raw) {
         int bucket=raw>=0?(raw+22)/45:-((-raw+22)/45);

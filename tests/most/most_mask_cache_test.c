@@ -15,7 +15,6 @@
 #include "render.c"                 /* -I <renderer tree>/maneuver_render */
 #include "maneuver.h"
 
-#include <stdarg.h>
 
 /* ---------------------------------------------------------------- GL model */
 
@@ -148,19 +147,7 @@ void glVertexAttribPointer(GLuint i, GLint s, GLenum t, GLboolean n, GLsizei st,
 
 /* ---------------------------------------------------------------- checks */
 
-static int g_checks, g_failures;
-
-static void check(int ok, const char *fmt, ...) {
-    va_list ap;
-    g_checks++;
-    if (ok) return;
-    g_failures++;
-    printf("FAIL: ");
-    va_start(ap, fmt);
-    vprintf(fmt, ap);
-    va_end(ap);
-    printf("\n");
-}
+#include "check.h"
 
 /* One loop iteration as main.c renders it. */
 static void frame(const maneuver_state_t *cur, const maneuver_state_t *next) {
@@ -491,6 +478,6 @@ int main(void) {
     next_without_route_uses_current_route();
     unfinished_painting_does_not_hide_overlays();
     render_shutdown();
-    printf("most_mask_cache_test: %d checks, %d failures\n", g_checks, g_failures);
-    return g_failures ? 1 : 0;
+    printf("most_mask_cache_test: %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
 }

@@ -18,7 +18,6 @@
 
 DEFINE_LOG_MODULE(HOOK);
 
-#define MAX_MODULES 16
 #define INJECT_QUEUE_CAPACITY 8
 #define INJECT_FRAME_CAPACITY 512
 #define INJECT_SHUTDOWN_WAIT_MS 500
@@ -30,26 +29,24 @@ DEFINE_LOG_MODULE(HOOK);
  * connection are silently dropped.  Gate the bus to dio_manager only.  Fail-open if /proc is
  * unreadable (unchanged behaviour). */
 int hook_process_is_dio_manager(void) {
+    static volatile int cached = -1;    /* benign race: every caller stores the same value */
     char buf[256];
-    int fd = open("/proc/self/cmdline", O_RDONLY);
+    int fd;
     int n;
+    if (cached >= 0) return cached;
+    fd = open("/proc/self/cmdline", O_RDONLY);
     if (fd < 0) return 1;
     n = (int)read(fd, buf, sizeof(buf) - 1);
     close(fd);
     if (n <= 0) return 1;
     buf[n] = 0;
-    return strstr(buf, "dio_manager") != NULL;
+    cached = strstr(buf, "dio_manager") != NULL;
+    return cached;
 }
-
-struct hook_module {
-    hook_module_def_t def;
-    bool active;
-};
 
 /* Framework state */
 static struct {
-    hook_module_t modules[MAX_MODULES];
-    int module_count;
+    int module_count;           /* hook_module_table entries live so far */
     hook_context_t ctx;
     pthread_mutex_t lock;
     bool initialized;
@@ -64,10 +61,9 @@ static struct {
     void* cinemo_iap;
     int cinemo_iap_owner_pid;
 
-    /* Function pointers (only the Cinemo NME seams we actually act on).
-     * write/writev/MsgSend/MsgSendv were interposed but did nothing except
-     * pass through — pure liability (a dlsym miss made them return -1 and fail
-     * a real write mid-handshake). Removed. */
+    /* Function pointers: only the Cinemo NME seams the hook acts on.  A pass-through
+     * interposer (write, writev, MsgSend) would only add a failure mode: a dlsym miss
+     * returns -1 and fails a real write mid-handshake. */
     int (*real_decode)(void*, const uint8_t*, int);
     int (*real_encode)(const void*, void*);
     int (*real_transport_send)(void*, const uint8_t*, unsigned int, unsigned int*);
@@ -79,16 +75,13 @@ static struct {
     int (*real_iap_release)(void*);
     int (*real_iap_send_iap2)(void*, int, const void*, int);
 } g_fw = {
-    .initialized = false,
-    .shutting_down = false,
-    .bus_started = false,
-    .bus_disabled = false
+    .lock = PTHREAD_MUTEX_INITIALIZER
 };
 
 /* ICinemoIAP::SendIAP2 is a synchronous stock call with no timeout.  It must
  * never run on NmeTransport's thread, the 1 Hz bus timer, or an ELF destructor:
- * a stuck Cinemo call on any of those paths used to make bus_shutdown() join a
- * non-returning thread and SI eventually reported TIMEOUT_WATCHDOG.  A single
+ * a stuck Cinemo call there would make bus_shutdown() join a non-returning
+ * thread until SI reports TIMEOUT_WATCHDOG.  A single
  * process-lifetime worker contains that risk.  The queue stores only immutable
  * frame bytes plus the captured session generation; the worker acquires its own
  * transient COM ref immediately before the stock call. */
@@ -110,16 +103,7 @@ static bool g_inject_created;
 static bool g_inject_shutdown;
 static bool g_inject_exited;
 
-static pthread_once_t g_fw_lock_once = PTHREAD_ONCE_INIT;
 static pthread_once_t g_modules_once = PTHREAD_ONCE_INIT;
-
-static void init_fw_lock_once(void) {
-    pthread_mutex_init(&g_fw.lock, NULL);
-}
-
-static void ensure_fw_lock_init(void) {
-    pthread_once(&g_fw_lock_once, init_fw_lock_once);
-}
 
 /* Nothing here may run from an ELF constructor.  On QNX 6.5 the old module
  * constructors reached LOG_INFO, whose lazy logger created a pthread while
@@ -129,8 +113,8 @@ static void init_modules_once(void) {
     size_t i;
     for (i = 0; i < hook_module_table_count; i++) {
         const hook_module_def_t* def = hook_module_table[i];
-        if (!def) continue;
-        hook_framework_register_module(def);
+        g_fw.module_count = (int)i + 1;
+        LOG_INFO(LOG_MODULE, "Registered module '%s'", def->name);
         if (def->on_init) def->on_init();
     }
 }
@@ -143,16 +127,6 @@ static void shutdown_modules(void) {
     for (i = hook_module_table_count; i-- > 0;) {
         const hook_module_def_t* def = hook_module_table[i];
         if (def && def->on_shutdown) def->on_shutdown();
-    }
-}
-
-static void inject_deadline_after_ms(struct timespec* deadline, long ms) {
-    clock_gettime(CLOCK_REALTIME, deadline);
-    deadline->tv_sec += ms / 1000L;
-    deadline->tv_nsec += (ms % 1000L) * 1000000L;
-    if (deadline->tv_nsec >= 1000000000L) {
-        deadline->tv_sec++;
-        deadline->tv_nsec -= 1000000000L;
     }
 }
 
@@ -180,7 +154,6 @@ static void* inject_worker_main(void* arg) {
 
         /* Revalidate immediately before sending.  A queued frame from an old
          * phone generation is simply discarded after Identify/reconnect. */
-        ensure_fw_lock_init();
         pthread_mutex_lock(&g_fw.lock);
         if (!g_fw.shutting_down && g_fw.initialized &&
             g_fw.ctx.inject.valid &&
@@ -271,8 +244,6 @@ static void inject_worker_shutdown(void) {
     pthread_t tid;
     bool join_worker = false;
     bool exited = false;
-    struct timespec deadline;
-    int wait_rc = 0;
 
     pthread_mutex_lock(&g_inject_lock);
     g_inject_shutdown = true;
@@ -280,10 +251,7 @@ static void inject_worker_shutdown(void) {
     pthread_cond_broadcast(&g_inject_cond);
     if (g_inject_created) {
         tid = g_inject_tid;
-        inject_deadline_after_ms(&deadline, INJECT_SHUTDOWN_WAIT_MS);
-        while (!g_inject_exited && wait_rc != ETIMEDOUT)
-            wait_rc = pthread_cond_timedwait(&g_inject_cond, &g_inject_lock,
-                                             &deadline);
+        COND_WAIT_MS(&g_inject_cond, &g_inject_lock, INJECT_SHUTDOWN_WAIT_MS, g_inject_exited);
         exited = g_inject_exited;
         join_worker = exited;
         if (exited) g_inject_created = false;
@@ -299,23 +267,18 @@ static void inject_worker_shutdown(void) {
     }
 }
 
+#define RESOLVE(field, sym) \
+    do { if (!g_fw.field) g_fw.field = (__typeof__(g_fw.field))dlsym(RTLD_NEXT, sym); } while (0)
+
 static void resolve_functions(void) {
-    if (!g_fw.real_decode)
-        g_fw.real_decode = (int(*)(void*, const uint8_t*, int))dlsym(RTLD_NEXT, "_ZN14NmeIAP2Message6DecodeEPKhi");
-    if (!g_fw.real_encode)
-        g_fw.real_encode = (int(*)(const void*, void*))dlsym(RTLD_NEXT, "_ZNK14NmeIAP2Message6EncodeER8NmeArrayIhE");
-    if (!g_fw.real_transport_send)
-        g_fw.real_transport_send = (int(*)(void*, const uint8_t*, unsigned int, unsigned int*))dlsym(RTLD_NEXT, "_ZN12NmeTransport4SendEPKhjPj");
-    if (!g_fw.real_transport_recv)
-        g_fw.real_transport_recv = (int(*)(void*, void*))dlsym(RTLD_NEXT, "_ZN12NmeTransport4RecvER8NmeArrayIhE");
-    if (!g_fw.real_cinemo_create_iap)
-        g_fw.real_cinemo_create_iap = (int(*)(void*))dlsym(RTLD_NEXT, "CinemoCreateIAP");
-    if (!g_fw.real_iap_addref)
-        g_fw.real_iap_addref = (int(*)(void*))dlsym(RTLD_NEXT, "ICinemoIAP_AddRef");
-    if (!g_fw.real_iap_release)
-        g_fw.real_iap_release = (int(*)(void*))dlsym(RTLD_NEXT, "ICinemoIAP_Release");
-    if (!g_fw.real_iap_send_iap2)
-        g_fw.real_iap_send_iap2 = (int(*)(void*, int, const void*, int))dlsym(RTLD_NEXT, "ICinemoIAP_SendIAP2");
+    RESOLVE(real_decode, "_ZN14NmeIAP2Message6DecodeEPKhi");
+    RESOLVE(real_encode, "_ZNK14NmeIAP2Message6EncodeER8NmeArrayIhE");
+    RESOLVE(real_transport_send, "_ZN12NmeTransport4SendEPKhjPj");
+    RESOLVE(real_transport_recv, "_ZN12NmeTransport4RecvER8NmeArrayIhE");
+    RESOLVE(real_cinemo_create_iap, "CinemoCreateIAP");
+    RESOLVE(real_iap_addref, "ICinemoIAP_AddRef");
+    RESOLVE(real_iap_release, "ICinemoIAP_Release");
+    RESOLVE(real_iap_send_iap2, "ICinemoIAP_SendIAP2");
 }
 
 /* Raw link bytes from NmeTransport::Recv, to every module that asked for them.
@@ -324,17 +287,15 @@ static void resolve_functions(void) {
  * callbacks under its runtime mutex), which is why there is no unregister. */
 static void notify_transport_recv(const uint8_t* data, unsigned int len) {
     for (int i = 0; i < g_fw.module_count; i++) {
-        hook_module_t* mod = &g_fw.modules[i];
-        if (mod->active && mod->def.on_transport_recv)
-            mod->def.on_transport_recv(data, len);
+        if (hook_module_table[i]->on_transport_recv)
+            hook_module_table[i]->on_transport_recv(data, len);
     }
 }
 
 static void notify_transport_recv_reset(void) {
     for (int i = 0; i < g_fw.module_count; i++) {
-        hook_module_t* mod = &g_fw.modules[i];
-        if (mod->active && mod->def.on_transport_recv_reset)
-            mod->def.on_transport_recv_reset();
+        if (hook_module_table[i]->on_transport_recv_reset)
+            hook_module_table[i]->on_transport_recv_reset();
     }
 }
 
@@ -358,7 +319,6 @@ static void log_unknown_52xx_msg(const uint8_t* buf, size_t len, uint16_t msgid,
 
     const char* dir_str = (dir == MSG_DIR_INCOMING) ? "IN" : "OUT";
     LOG_WARN(LOG_MODULE, "Unknown 0x52xx msgid=0x%04X dir=%s len=%zu", msgid, dir_str, len);
-    LOG_HEXDUMP(LOG_MODULE, "IAP2 0x52xx raw", buf, len);
 }
 
 /* Capture only the active iAP2 link-session id.  We intentionally do NOT copy
@@ -373,7 +333,6 @@ static void store_injection_context(const uint8_t* buf, size_t len,
     if (buf && frame_offset >= 9 && frame_offset <= len)
         have_link = iap2_parse_link_header(buf, frame_offset, &hdr);
 
-    ensure_fw_lock_init();
     pthread_mutex_lock(&g_fw.lock);
     if (have_link) {
         inject_note_link(inj, hdr.session);
@@ -385,7 +344,6 @@ static void store_injection_context(const uint8_t* buf, size_t len,
 
 static void clear_injection_context(void) {
     injection_ctx_t* inj = &g_fw.ctx.inject;
-    ensure_fw_lock_init();
     pthread_mutex_lock(&g_fw.lock);
     inject_unlink(inj);
     pthread_mutex_unlock(&g_fw.lock);
@@ -394,31 +352,23 @@ static void clear_injection_context(void) {
 /* Notify modules of state change */
 static void notify_state(int event, void* event_data) {
     for (int i = 0; i < g_fw.module_count; i++) {
-        hook_module_t* mod = &g_fw.modules[i];
-        if (mod->active && mod->def.on_state) {
-            g_fw.ctx.current_module = mod;
-            mod->def.on_state(&g_fw.ctx, event, event_data);
-        }
+        if (hook_module_table[i]->on_state)
+            hook_module_table[i]->on_state(&g_fw.ctx, event, event_data);
     }
-    g_fw.ctx.current_module = NULL;
 }
 
 /* Notify modules of transport send */
 static void notify_transport_send(uint16_t msgid) {
     for (int i = 0; i < g_fw.module_count; i++) {
-        hook_module_t* mod = &g_fw.modules[i];
-        if (mod->active && mod->def.on_transport_send) {
-            g_fw.ctx.current_module = mod;
-            mod->def.on_transport_send(&g_fw.ctx, msgid);
-        }
+        if (hook_module_table[i]->on_transport_send)
+            hook_module_table[i]->on_transport_send(&g_fw.ctx, msgid);
     }
-    g_fw.ctx.current_module = NULL;
 }
 
-static bool module_wants_message(hook_module_t* mod, uint16_t msgid) {
-    if (!mod->def.msg_filter || mod->def.msg_filter_count == 0) return true;
-    for (size_t i = 0; i < mod->def.msg_filter_count; i++) {
-        if (mod->def.msg_filter[i] == msgid) return true;
+static bool module_wants_message(const hook_module_def_t* def, uint16_t msgid) {
+    if (!def->msg_filter || def->msg_filter_count == 0) return true;
+    for (size_t i = 0; i < def->msg_filter_count; i++) {
+        if (def->msg_filter[i] == msgid) return true;
     }
     return false;
 }
@@ -426,14 +376,10 @@ static bool module_wants_message(hook_module_t* mod, uint16_t msgid) {
 static bool dispatch_message(const iap2_frame_t* frame) {
     bool consumed = false;
     for (int i = 0; i < g_fw.module_count && !consumed; i++) {
-        hook_module_t* mod = &g_fw.modules[i];
-        if (!mod->active || !mod->def.on_message) continue;
-        if (!module_wants_message(mod, frame->msgid)) continue;
-        g_fw.ctx.current_module = mod;
-        g_fw.ctx.msgid = frame->msgid;
-        consumed = mod->def.on_message(&g_fw.ctx, frame);
+        const hook_module_def_t* def = hook_module_table[i];
+        if (!def->on_message || !module_wants_message(def, frame->msgid)) continue;
+        consumed = def->on_message(&g_fw.ctx, frame);
     }
-    g_fw.ctx.current_module = NULL;
     return consumed;
 }
 
@@ -461,7 +407,6 @@ static void handle_state_messages(uint16_t msgid) {
             g_fw.ctx.identify_accepted = true;
             LOG_INFO(LOG_MODULE, "Identify accepted (0x1D02)");
             STATE_TRACE("IAP_IDENTIFY_ACCEPTED", "msg=0x1d02");
-            notify_state(HOOK_EVENT_IDENTIFY_OK, NULL);
             break;
         case IAP2_MSG_IDENTIFY_END:
             STATE_TRACE("IAP_IDENTIFY_END", "msg=0x1d03 session_active=%d",
@@ -474,25 +419,9 @@ static void handle_state_messages(uint16_t msgid) {
             g_fw.ctx.auth_done = true;
             LOG_INFO(LOG_MODULE, "Auth complete (0xAA05)");
             STATE_TRACE("IAP_AUTH_COMPLETE", "msg=0xaa05");
-            notify_state(HOOK_EVENT_AUTH_DONE, NULL);
             break;
         case IAP2_MSG_STOP_LOCATION:
-            /*
-             * IAP2_MSG_STOP_LOCATION (0xFFFC) tells the accessory to stop
-             * dispatching location updates — it is NOT a session-end signal.
-             * iOS sends it for many transient reasons:
-             *   - Maps app suspends (CarPlay user opens Music etc).
-             *   - iOS detects external nav already active on the cluster
-             *     and decides to pause its own RG stream.
-             *   - Internal restart of the iOS location subsystem.
-             * Real session end / RG end is signalled via 0x5201
-             * route_state=0 + source_supports_rg=0 (already debounced
-             * downstream in rgd_hook).  Treating STOP_LOCATION as
-             * HOOK_EVENT_DISCONNECT caused tight cycle ping-pong
-             * (Java teardown → iOS sends new 0x5201 → Java reactivates →
-             * STOP_LOCATION fires again → ...), which made native nav
-             * BAP cancel commands get blocked during our active windows.
-             */
+            /* 0xFFFC only pauses the location stream; a route ends via 0x5201 route_state=0 (rgd_hook). */
             LOG_INFO(LOG_MODULE,
                      "iAP2 STOP_LOCATION received (location stream paused — "
                      "not a disconnect, ignoring)");
@@ -513,15 +442,14 @@ static uint64_t framework_now_ms(void) {
     return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
 }
 
-/* bus_init() used to be fire-and-forget.  A single pthread/socket failure then
- * permanently disabled Java/RGI for the lifetime of dio_manager because the
- * framework was already marked initialized.  Elect one retry owner under the
- * framework lock and retry at most once per second from later real hook calls. */
+/* One pthread/socket failure in bus_init() must not disable Java/RGI for the
+ * lifetime of dio_manager once the framework is marked initialized.  Elect one
+ * retry owner under the framework lock and retry at most once per second from
+ * later real hook calls. */
 static void framework_try_start_bus(void) {
     uint64_t now;
     hook_result_t rc;
 
-    ensure_fw_lock_init();
     pthread_mutex_lock(&g_fw.lock);
     if (g_fw.shutting_down || g_fw.bus_started || g_fw.bus_disabled) {
         pthread_mutex_unlock(&g_fw.lock);
@@ -536,7 +464,6 @@ static void framework_try_start_bus(void) {
     }
 
     now = framework_now_ms();
-    ensure_fw_lock_init();
     pthread_mutex_lock(&g_fw.lock);
     if (g_fw.shutting_down || g_fw.bus_started || g_fw.bus_disabled || g_fw.bus_starting ||
         (now != 0 && g_fw.bus_retry_after_ms != 0 &&
@@ -571,7 +498,6 @@ hook_result_t hook_framework_init(void) {
     bool already_initialized;
 
     pthread_once(&g_modules_once, init_modules_once);
-    ensure_fw_lock_init();
     pthread_mutex_lock(&g_fw.lock);
     if (g_fw.shutting_down) {
         pthread_mutex_unlock(&g_fw.lock);
@@ -585,7 +511,6 @@ hook_result_t hook_framework_init(void) {
         resolve_functions();
 
         memset(&g_fw.ctx, 0, sizeof(g_fw.ctx));
-        g_fw.ctx.rgd_component_id = 0x0010;
 
         g_fw.initialized = true;
     }
@@ -615,7 +540,6 @@ void hook_framework_shutdown(void) {
     int iap_owner_pid = 0;
     bool was_initialized;
 
-    ensure_fw_lock_init();
     pthread_mutex_lock(&g_fw.lock);
     was_initialized = g_fw.initialized;
     if (!was_initialized) {
@@ -641,9 +565,9 @@ void hook_framework_shutdown(void) {
     notify_state(HOOK_EVENT_SHUTDOWN, NULL);
     STATE_TRACE("HOOK_SHUTDOWN", "pid=%d", (int)getpid());
 
-    /* Module destructors used to run in unspecified ELF order, including when
-     * framework initialisation had never happened.  Keep teardown ordered and
-     * reachable only from the framework destructor.  Each module's own path is
+    /* No module has an ELF destructor, which would run in unspecified order and even
+     * when the framework never initialised: teardown is ordered and reachable only
+     * from the framework destructor.  Each module's own path is
      * independently bounded; the bus is still alive here so a module may
      * publish a final message. */
     shutdown_modules();
@@ -656,9 +580,6 @@ void hook_framework_shutdown(void) {
     bus_shutdown();
 
     pthread_mutex_lock(&g_fw.lock);
-    for (int i = 0; i < g_fw.module_count; i++) {
-        g_fw.modules[i].active = false;
-    }
     g_fw.module_count = 0;
     g_fw.bus_started = false;
     g_fw.bus_starting = false;
@@ -675,63 +596,6 @@ void hook_framework_shutdown(void) {
     log_shutdown();
 }
 
-hook_result_t hook_framework_register_module(const hook_module_def_t* def) {
-    if (!def || !def->name) return HOOK_ERR_PARAM;
-
-    ensure_fw_lock_init();
-    pthread_mutex_lock(&g_fw.lock);
-
-    if (g_fw.module_count >= MAX_MODULES) {
-        pthread_mutex_unlock(&g_fw.lock);
-        return HOOK_ERR_BUSY;
-    }
-
-    /* Check duplicate */
-    for (int i = 0; i < g_fw.module_count; i++) {
-        if (strcmp(g_fw.modules[i].def.name, def->name) == 0) {
-            pthread_mutex_unlock(&g_fw.lock);
-            return HOOK_OK;
-        }
-    }
-
-    /* Insert sorted by priority */
-    int insert_idx = g_fw.module_count;
-    for (int i = 0; i < g_fw.module_count; i++) {
-        if (def->priority < g_fw.modules[i].def.priority) {
-            insert_idx = i;
-            break;
-        }
-    }
-
-    for (int i = g_fw.module_count; i > insert_idx; i--) {
-        g_fw.modules[i] = g_fw.modules[i - 1];
-    }
-
-    g_fw.modules[insert_idx].def = *def;
-    g_fw.modules[insert_idx].active = true;
-    g_fw.module_count++;
-
-    pthread_mutex_unlock(&g_fw.lock);
-    LOG_INFO(LOG_MODULE, "Registered module '%s'", def->name);
-    return HOOK_OK;
-}
-
-hook_result_t hook_framework_unregister_module(const char* name) {
-    if (!name) return HOOK_ERR_PARAM;
-
-    ensure_fw_lock_init();
-    pthread_mutex_lock(&g_fw.lock);
-    for (int i = 0; i < g_fw.module_count; i++) {
-        if (strcmp(g_fw.modules[i].def.name, name) == 0) {
-            g_fw.modules[i].active = false;
-            pthread_mutex_unlock(&g_fw.lock);
-            return HOOK_OK;
-        }
-    }
-    pthread_mutex_unlock(&g_fw.lock);
-    return HOOK_ERR_NOT_FOUND;
-}
-
 hook_context_t* hook_framework_get_context(void) {
     return &g_fw.ctx;
 }
@@ -742,17 +606,16 @@ size_t hook_framework_module_count(void) {
 
 const hook_module_def_t* hook_framework_module_at(size_t index) {
     if (index >= (size_t)g_fw.module_count) return NULL;
-    if (!g_fw.modules[index].active) return NULL;
-    return &g_fw.modules[index].def;
+    return hook_module_table[index];
 }
 
 /* Send an additional iAP2 frame without consuming the stock carrier. */
-hook_result_t hook_inject_frame(const uint8_t* frame, size_t frame_len) {
+static hook_result_t hook_inject_frame(const uint8_t* frame, size_t frame_len) {
     uint8_t link_session;
     uint32_t generation;
     hook_result_t queued;
 
-    if (!frame || frame_len < 6 || frame_len > 512 ||
+    if (!frame || frame_len < 6 || frame_len > INJECT_FRAME_CAPACITY ||
         !iap2_validate_frame(frame, frame_len) ||
         read_be16(frame + 2) != frame_len)
         return HOOK_ERR_PARAM;
@@ -764,7 +627,6 @@ hook_result_t hook_inject_frame(const uint8_t* frame, size_t frame_len) {
 
     /* Snapshot only immutable routing state.  The injection worker revalidates
      * it and acquires the transient COM reference immediately before sending. */
-    ensure_fw_lock_init();
     pthread_mutex_lock(&g_fw.lock);
     if (g_fw.shutting_down || !g_fw.initialized ||
         !g_fw.ctx.inject.valid || !g_fw.cinemo_iap ||
@@ -788,7 +650,7 @@ hook_result_t hook_inject_frame(const uint8_t* frame, size_t frame_len) {
 }
 
 hook_result_t hook_inject_message(uint16_t msgid, const uint8_t* payload, size_t payload_len) {
-    uint8_t frame[512];
+    uint8_t frame[INJECT_FRAME_CAPACITY];
     size_t frame_len = iap2_build_frame(frame, sizeof(frame), msgid, payload, payload_len);
     if (frame_len == 0) return HOOK_ERR_PARAM;
     return hook_inject_frame(frame, frame_len);
@@ -799,14 +661,6 @@ bool hook_is_ready(void) {
            g_fw.ctx.identify_accepted &&
            g_fw.ctx.auth_done &&
            g_fw.ctx.rgd_component_valid;
-}
-
-bool hook_is_active(void) {
-    return g_fw.ctx.session_active;
-}
-
-uint16_t hook_get_component_id(void) {
-    return g_fw.ctx.rgd_component_id;
 }
 
 /* Hooked Functions */
@@ -822,7 +676,6 @@ HOOK_EXPORT int CinemoCreateIAP(void* args) {
     int old_owner_pid = 0;
     int ret;
 
-    ensure_fw_lock_init();
     resolve_functions();
     if (!g_fw.real_cinemo_create_iap) {
         LOG_ERROR(LOG_MODULE, "CinemoCreateIAP real symbol UNRESOLVED");
@@ -875,10 +728,6 @@ HOOK_EXPORT int _ZN14NmeIAP2Message6DecodeEPKhi(void* self, const uint8_t* buf, 
 
     uint16_t msgid = read_be16(buf + 4);
 
-    g_fw.ctx.direction = MSG_DIR_INCOMING;
-    g_fw.ctx.raw_buf = buf;
-    g_fw.ctx.raw_len = (size_t)len;
-
     {
         size_t dump_len = (frame_len <= (uint16_t)len) ? (size_t)frame_len : (size_t)len;
         log_unknown_52xx_msg(buf, dump_len, msgid, MSG_DIR_INCOMING);
@@ -888,6 +737,7 @@ HOOK_EXPORT int _ZN14NmeIAP2Message6DecodeEPKhi(void* self, const uint8_t* buf, 
 
     iap2_frame_t frame = {
         .offset = 0,
+        .data = buf,
         .frame_len = frame_len,
         .msgid = msgid,
         .payload = (frame_len > 6) ? (buf + 6) : NULL,
@@ -922,12 +772,11 @@ HOOK_EXPORT int _ZNK14NmeIAP2Message6EncodeER8NmeArrayIhE(const void* self, void
         g_fw.ctx._priv = out_array;
 
         for (int i = 0; i < g_fw.module_count; i++) {
-            hook_module_t* mod = &g_fw.modules[i];
-            if (!mod->active || !mod->def.on_identify) continue;
+            const hook_module_def_t* def = hook_module_table[i];
+            if (!def->on_identify) continue;
 
-            g_fw.ctx.current_module = mod;
             unsigned int cap = *(unsigned int*)((char*)out_array + 8);
-            size_t new_len = mod->def.on_identify(&g_fw.ctx, data, len, cap);
+            size_t new_len = def->on_identify(&g_fw.ctx, data, len, cap);
 
             if (new_len != len) {
                 *(unsigned int*)((char*)out_array + 4) = (unsigned int)new_len;
@@ -939,7 +788,6 @@ HOOK_EXPORT int _ZNK14NmeIAP2Message6EncodeER8NmeArrayIhE(const void* self, void
             }
         }
 
-        g_fw.ctx.current_module = NULL;
         g_fw.ctx._priv = NULL;
         if (patched) {
             g_fw.ctx.identify_patched = true;
@@ -948,15 +796,12 @@ HOOK_EXPORT int _ZNK14NmeIAP2Message6EncodeER8NmeArrayIhE(const void* self, void
 
     iap2_frame_t frame = {
         .offset = 0,
+        .data = data,
         .frame_len = read_be16(data + 2),
         .msgid = (uint16_t)msgid,
         .payload = (len > 6) ? (data + 6) : NULL,
         .payload_len = (len > 6) ? (len - 6) : 0
     };
-
-    g_fw.ctx.direction = MSG_DIR_OUTGOING;
-    g_fw.ctx.raw_buf = data;
-    g_fw.ctx.raw_len = len;
 
     {
         size_t dump_len = (frame.frame_len <= len) ? frame.frame_len : len;
@@ -1058,10 +903,6 @@ HOOK_EXPORT int _ZN12NmeTransport4RecvER8NmeArrayIhE(void* self, void* out_array
     }
     return ret;
 }
-
-/* write/writev/MsgSend/MsgSendv are intentionally NOT interposed anymore:
- * they carried no hook logic, only added a dlsym-miss -> return -1 failure
- * mode onto every process write. Left to libc directly. */
 
 /* No LD_PRELOAD constructor.  hook_framework_init() — and therefore module registration,
  * logging, bus_init() and its process-wide fault handlers — must NOT run during

@@ -23,10 +23,10 @@ SANITIZE = os.environ.get('RGD_CONTRACT_SANITIZE') or 'address,undefined'
 BUILD.mkdir(parents=True, exist_ok=True)
 hook = (ROOT / 'hook/routeguidance/rgd_hook.c').read_text()
 bus = (ROOT / 'hook/framework/bus.c').read_text()
-slot_start = hook.index('static void write_slot_data_keys(bus_text_builder_t* b, unsigned idx, const rgd_maneuver_t* man) {')
+slot_start = hook.index('/* ---- Slot keys:')
 slot_writer = hook[slot_start:hook.index('\nstatic void write_lane_data_keys(', slot_start)]
 text_writer = bus[bus.index('static void bt_append(bus_text_builder_t* b,'):bus.index('\nvoid bus_text_bool(')]
-native_state = hook[hook.index('static struct {'):hook.index('/* Forward declarations */')]
+native_state = hook[hook.index('/* The route content a reset frame flushes'):hook.index('/* Forward declarations */')]
 reset_start = hook.index('static void rgd_maneuver_map_reset(void) {')
 reset = hook[reset_start:hook.index('static const uint64_t RGD_UPD_WRITE_MASK', reset_start)]
 c = r'''
@@ -60,18 +60,18 @@ static void sample(const char *path,int which) {
     rgd_maneuver_t m;assert(rgd_parse_maneuver(raw,n,&m));
     if(which==1)assert(m.exit_angle==1000 && (m.present&RGD_MAN_EXIT_ANGLE));
     uint8_t text[8192];bus_text_builder_t b={text,sizeof(text),0,false,false};
-    bus_text_uint(&b,"route_generation",g_rgd.route_generation);bus_text_int(&b,"route_state",1);bus_text_int(&b,"maneuver_count",1);bus_text_str(&b,"maneuver_list","0");
-    g_rgd.slot_ver[0]=(which==0 || which==3)?1:34;write_slot_data_keys(&b,0,&m);assert(!b.overflow);
+    bus_text_uint(&b,"route_generation",g_rgd.route.route_generation);bus_text_int(&b,"route_state",1);bus_text_int(&b,"maneuver_count",1);bus_text_str(&b,"maneuver_list","0");
+    g_rgd.route.slot_ver[0]=(which==0 || which==3)?1:34;write_slot_data_keys(&b,0,&m);assert(!b.overflow);
     FILE *f=fopen(path,"wb");assert(f);assert(fwrite(text,1,b.len,f)==b.len);fclose(f);
 }
 int main(int argc,char **argv) {
     assert(argc==5);
-    rgd_maneuver_map_reset();assert(g_rgd.route_generation==100);
+    rgd_maneuver_map_reset();assert(g_rgd.route.route_generation==100);
     for(int i=0;i<3;i++)sample(argv[i+1],i);
-    g_rgd.ver_counter=34;g_rgd.lane_cache[3].present=1;
+    g_rgd.route.ver_counter=34;g_rgd.route.lane_cache[3].present=1;
     rgd_maneuver_map_reset();
-    assert(g_rgd.route_generation==101 && g_rgd.ver_counter==0);
-    assert(g_rgd.slot_cache[0].present==0 && g_rgd.lane_cache[3].present==0);
+    assert(g_rgd.route.route_generation==101 && g_rgd.route.ver_counter==0);
+    assert(g_rgd.route.slot_cache[0].present==0 && g_rgd.route.lane_cache[3].present==0);
     // Same clock, slot and version as the first route; only generation differs.
     sample(argv[4],3);
     return 0;

@@ -39,6 +39,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import org.dsi.ifc.displaymanagement.DSIDisplayManagement;
 import sun.misc.Unsafe;
+import static testsupport.TestSupport.*;
 
 /**
  * CarPlay route guidance on a MOST cluster.
@@ -53,39 +54,6 @@ import sun.misc.Unsafe;
  *  - BAPBridge claim / publish / release.
  */
 public final class MostArrowsTest {
-    private static int checks;
-    private static final Unsafe U = unsafe();
-
-    static void check(boolean ok, String why) {
-        checks++;
-        if (!ok) throw new AssertionError(why);
-    }
-
-    static Unsafe unsafe() {
-        try {
-            Field f = Unsafe.class.getDeclaredField("theUnsafe");
-            f.setAccessible(true);
-            return (Unsafe) f.get(null);
-        } catch (Exception e) { throw new AssertionError(e); }
-    }
-
-    static Object alloc(Class<?> type) throws Exception { return U.allocateInstance(type); }
-
-    static Field field(Class<?> type, String name) throws Exception {
-        for (Class<?> c = type; c != null; c = c.getSuperclass()) {
-            try { Field f = c.getDeclaredField(name); f.setAccessible(true); return f; }
-            catch (NoSuchFieldException e) { }
-        }
-        throw new NoSuchFieldException(name);
-    }
-
-    static void set(Object target, String name, Object value) throws Exception {
-        field(target.getClass(), name).set(target, value);
-    }
-
-    static void setStatic(Class<?> type, String name, Object value) throws Exception {
-        field(type, name).set(null, value);
-    }
 
     /* MostPresentation keeps each view's state in a View (ARROWS, MAP). */
     static Object view(String name) throws Exception { return field(MostPresentation.class, name).get(null); }

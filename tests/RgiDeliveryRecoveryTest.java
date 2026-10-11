@@ -5,19 +5,11 @@ import com.luka.carplay.framework.Log;
 import de.audi.atip.interapp.combi.bap.navi.CombiBAPServiceNavi;
 import de.audi.atip.interapp.combi.bap.navi.data.CombiBAPNaviManeuverDescriptor;
 import java.lang.reflect.*;
+import static testsupport.TestSupport.*;
 
 /** Actual parser, onFrame, cached replay and bridge; only the two output
  * endpoints and native presentation readiness are controlled on the host. */
 public final class RgiDeliveryRecoveryTest {
-    static void check(boolean value,String why){if(!value)throw new AssertionError(why);}
-    static Field field(Object o,String name)throws Exception {
-        for(Class c=o.getClass();c!=null;c=c.getSuperclass())try {
-            Field f=c.getDeclaredField(name);f.setAccessible(true);return f;
-        }catch(NoSuchFieldException e){}
-        throw new NoSuchFieldException(name);
-    }
-    static Object get(Object o,String name)throws Exception{return field(o,name).get(o);}
-    static void set(Object o,String name,Object v)throws Exception{field(o,name).set(o,v);}
     static Method method(Class c,String name,Class... args)throws Exception {
         Method m=c.getDeclaredMethod(name,args);m.setAccessible(true);return m;
     }
