@@ -13,15 +13,21 @@ tools/loader_preview/loader_preview
 # Phone-side captures: sysdiagnose tarballs and log archives are hundreds of MB
 # and contain the owner's device logs. Keep them local.
 /logs/
+/Logs/
+/Firmware/
+/Packages/
+/Dependencies/
+/Work/
+/MIB-SD-Card/
+**/Firmware.psd1
+**/lsd.jar
+*.jxe
+*.core
+*.log
+**/carplay-rgi-runtime-logs/
 
 # Obsidian MCP transaction journal + per-user workspace state
 .obsidian-mcp/
 **/.obsidian/
 __pycache__/
 output/
-
-# M.I.B. release payload is staged by hand from build/ and deploy/ (see docs/deploy/install.md)
-install_MoreIncredibleBash/mod/carplay/*
-!install_MoreIncredibleBash/mod/carplay/.gitkeep
-/install_MoreIncredibleBash/mod/last-carplay-*.log
-/uninstall_MoreIncredibleBash/mod/last-carplay-*.log

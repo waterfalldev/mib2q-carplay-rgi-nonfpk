@@ -63,5 +63,6 @@ case "$mode" in
         [ "$JAVA_SKIP_BUILD" = 1 ] || bash /src/scripts/java/build.sh
         exec bash /src/scripts/java/test.sh "$@"
         ' -- "$@" ;;
+    javap) exec docker "${args[@]}" "$image" bash -c 'exec javap -classpath "$STOCK_JAR" -c -p "$@"' -- "$@" ;;
     *) echo "Unknown Java action: $mode" >&2; exit 2 ;;
 esac

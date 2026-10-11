@@ -85,15 +85,17 @@ flowchart TB
   class hooks,jars,si_json,dio_json neutral
 ```
 
-**Compatibility.** The patch is not limited to US, EU or CN units, nor to one MU train: it is
-meant for any MHI2Q MU firmware (developed on MU1316). What matters is:
+**Compatibility.** Build the patch JAR against the stock library matching the unit's
+firmware. The original presentation targets Virtual Cockpit (sysConst 541=2).
+This fork also supports the stock arrows view on a map-over-MOST analogue cluster
+(541=1), tested on one MU1329 unit; other variants remain untested. The RGI-only
+path (541=0) leaves the stock cluster state alone and is untested. See
+[MOST validation limits](../cluster/most-cluster.md) and the root README.
 
-- a fully digital instrument cluster (Audi virtual cockpit); cars with an analog cluster are not
-  supported;
-- preferably, the latest firmware available for the unit, flashed before installing the patch.
-
-With both in place it should almost certainly work, as long as nothing went wrong during the
-install itself.
+This guide covers the upstream `.carplay-stock` installation format. Companion
+tooling packages use managed ownership/state and their own rollback action.
+Remove an existing installation with its matching installer before switching
+formats. Do not apply this uninstaller to a companion-tooling installation.
 
 ## 💾 Install with M.I.B. (recommended)
 

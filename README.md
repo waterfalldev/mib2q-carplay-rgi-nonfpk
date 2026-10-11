@@ -62,6 +62,11 @@ features below follow it automatically.
   app that sends CarPlay route guidance: Apple Maps and Google Maps do, AMap does with its CarPlay
   guidance setting on, Waze does not
   ([details](docs/rgd/rgd-activation.md#-which-navigation-apps-send-route-guidance)).
+- **Turn-by-turn on MOST clusters.** On an analogue cluster with a colour centre display coded
+  for map-over-MOST, CarPlay's maneuver appears in the stock arrows view, rendered at the view's
+  native size. The map view keeps the Audi map with CarPlay's distance, street and arrival text.
+  Stock view selection stays in charge, and Audi guidance returns on disconnect
+  ([details](docs/cluster/most-cluster.md)).
 - **Route text in the Virtual Cockpit.** A text line names the exit sign or the next road (the
   current road when there is nothing else); long names scroll. Press **OK** (the left steering-wheel
   roller) to switch it to arrival time and time left, and press again to go back; it returns by itself
@@ -83,7 +88,7 @@ features below follow it automatically.
 | `maneuver_render/` | GLES maneuver overlay renderer (C, plus the C++11 `scene/` engine) |
 | `common/` | Shared renderer code: QNX Screen surface, GL program-binary cache, log timestamps |
 | `deploy/smartphone_integrator/` | Runtime scripts and child-process configuration for the HU |
-| `install_MoreIncredibleBash/`, `uninstall_MoreIncredibleBash/`, `logging_MoreIncredibleBash/` | M.I.B. custom scripts that install / remove a staged release / collect logs |
+| `install_MoreIncredibleBash/`, `uninstall_MoreIncredibleBash/`, `logging_MoreIncredibleBash/` | M.I.B. installation, removal and diagnostic scripts |
 | `scripts/` | Docker build entry points (Java / hook / renderer) and host test runners |
 | `tests/` | Host tests (C, Java, Python) for the hook, Java bridge and renderer |
 | `toolchain/qnx65-abi/` | QNX Screen ABI headers used only for cross-compilation |
@@ -104,77 +109,78 @@ cd qnx65-armv7-toolchain
 ./host-scripts/qnx-run.sh build        # qnx65-armv7-toolchain:latest (GCC 8.5)
 ```
 
-Then run from this repository's root:
+Java compilation and tests use `eclipse-temurin:8-jdk-jammy` through Docker;
+no host JDK is required. The shell commands and companion package builder share
+the compiler and test procedures in `scripts/java/`. Compilation targets Java
+1.4 against the car's own Java library when one is supplied (otherwise against
+JDK 8's classes), and includes and checks the JAR resources.
+
+For the maintainer's existing macOS/Linux layout, the component command stays:
 
 ```sh
-./scripts/build_java.sh        # → build/carplay_hook.jar
-./scripts/build_hook.sh        # → build/libcarplay_hook.so
-./scripts/build_renderers.sh   # → build/maneuver_render
+./scripts/build_java.sh             # build/carplay_hook.jar
 ```
 
-All three build in Docker - no host JDK is required. The Java patch compiles in
-`eclipse-temurin:8-jdk-jammy` against the stock JAR and OSGi libraries. The default
-layout remains `../../Tools/jxe2jar`; set `CARPLAY_TOOLS_DIR` to relocate it, or
-set `STOCK_JAR` and `CARPLAY_DEPENDENCIES` for explicit external inputs. Separate
-bootstrap/runtime libraries can be supplied with `STOCK_BOOT_JAR` and
-`STOCK_RUNTIME_JAR`. The car's class library (`libs/jcl/.../jcl.jar` in the default
-layout) is optional for the build: when present, the patch compiles against it, which
-catches APIs the unit lacks; otherwise it compiles against JDK 8, as before. The stock
-linkage audit requires it. `ASM_JAR` and `ASM_TREE_JAR` override linkage-audit inputs;
-`JAVA_OUTPUT` selects the output directory. No script editing is necessary.
-`CARPLAY_JAVA_IMAGE` and `QNX_TOOLCHAIN_IMAGE` accept immutable image IDs; the
-Java launcher records the resolved ID in `java-image-id.txt`. Java compilation
-and tests share `scripts/java/`, including resource/version checks and stable
-JAR ordering/timestamps. Windows uses Git Bash path conversion; POSIX hosts
-retain their user identity for Java output. The two
-native builds use the `qnx65-armv7-toolchain` image and synthesize their import stubs, so the resulting
-ELF binds the unit's real Screen/EGL/GLES libraries at runtime. The renderer's C++ scene engine is
-built with that image's `g++` and must not pull in the C++ runtime; the hook build rejects any dynamic
-export beyond its five interposers. There are no Java variants.
+It uses `../../Tools/jxe2jar`: `out/MU1316-final.jar`, OSGi JARs in `libs/`, and
+the existing car library at `libs/jcl/MHI2Q_US_AUG22_P5087_MU1316/jcl.jar`. The
+car library is optional for the build but required by the stock linkage audit.
+Tests use `out/MU1316-combined.jar` where executable stock bytecode is required;
+the linkage audit uses ASM from `tools/uninline/lib/`. No PowerShell is needed
+for these component commands. Set `CARPLAY_TOOLS_DIR` to relocate that layout.
 
-There is one hook image: logging is always compiled in, WARN/ERROR by default, INFO with the
-`carplay_verbose` marker (see [Logging](#-logging)). The only build-time switch is for debugging:
+For other firmware, set `STOCK_JAR` and `CARPLAY_DEPENDENCIES` to external paths.
+`STOCK_BOOT_JAR` supplies a separate car Java library when it is not embedded in
+the stock JAR; `STOCK_RUNTIME_JAR` supplies a separate executable stock JAR for
+tests. With an explicit `STOCK_JAR`, both default to that JAR. `ASM_JAR` and
+`ASM_TREE_JAR` can override the audit dependencies. `CARPLAY_BUILD_ID` overrides
+the Git-derived build ID; `JAVA_OUTPUT` overrides `build/`.
+`CARPLAY_JAVA_IMAGE` can select an immutable Java image ID or digest; each run
+records its resolved ID in `java-image-id.txt` in the output directory.
 
-```sh
-./scripts/build_hook.sh                        # production image
-LOG_RGD_PACKET_RAW=1 ./scripts/build_hook.sh   # + raw RGD packet hex dumps
-```
+Optional checked SD-package preparation lives in the separate
+[mib2q-rgi-tooling](https://github.com/waterfalldev/mib2q-rgi-tooling) repository.
+It consumes these component commands and records separate application/tooling
+commits. Component builds and tests do not require that repository or PowerShell.
+Firmware files and generated packages stay outside Git. For the standard M.I.B.
+installation workflow, see [installation](docs/deploy/install.md).
+`scripts/build_hook.sh` and `scripts/build_renderers.sh` retain the native build;
+`QNX_TOOLCHAIN_IMAGE` can pin its immutable image ID.
 
-### Tests
-
-Host-only, no unit needed:
-
-```sh
-./scripts/run_tests.sh            # C + shell: RGD parser, bus, cover art, shader cache, installer, supervisor
-./scripts/test_route_info.sh      # Java route-guidance / BAP bridge against the stock interfaces
-./scripts/test_java_transports.sh # Java bus + renderer sockets, touchpad
-./scripts/test_maneuver_native.sh # renderer engine + lanes (macOS, ASan/UBSan)
-```
-
-The Java suites use Docker and the same configurable stock/dependency inputs as
-the compiler. They run two JVMs at a time by default; `JAVA_TEST_JOBS` overrides
-that limit. `./scripts/check_java.sh` runs all groups plus stock linkage;
-the native contract probe also needs Python 3 and a host C compiler.
-`./scripts/test_java_build.sh` checks reproducible builds, resource failures and
-the original macOS input conventions. The latter uses a simulated Darwin
-launcher, so actual macOS/Apple Silicon execution still needs validation. Full toolchain,
-threading, boot and the complete test list live in the knowledge base - see
-[`docs/architecture.md`](docs/architecture.md).
+`scripts/run_tests.sh` runs native, supervisor, installer and logger checks on Linux/macOS.
+`tests/most/run-native-tests.sh <checkout>` runs the renderer's MOST output checks against
+the real QNX sources inside the toolchain image.
+`scripts/test_route_info.sh`, `scripts/test_java_transports.sh` and
+`scripts/test_pdc.sh` retain their respective test groups; the parking command
+checks an existing JAR. `scripts/check_java.sh` builds and runs all Java groups
+and the linkage audit. The suites run two JVMs at a time by default;
+`JAVA_TEST_JOBS` overrides that limit. `scripts/test_java_build.sh` checks
+reproducible builds, resource failures and the original macOS input layout. The route and complete shell checks also need Python 3
+and a host C compiler for their native contract probe; the package builder runs
+that part in Docker.
+`scripts/audit_java_stock.sh` retains the MU1316 source inventory and separate
+final/combined JAR audits. For explicit firmware inputs, set `JAVA_STOCK_SOURCES`
+to include that firmware's source inventory.
+The companion tooling tests its own managed package installation and recovery.
+The application retains tests for its standard M.I.B. scripts. No test connects
+to a vehicle. The macOS/MU1316 entry points
+have not yet been execution-tested on that setup.
 
 ## 🚀 Deployment
 
 **Compatibility.** The patch is not limited to US, EU or CN units, nor to one MU train: it is
-meant for any MHI2Q MU firmware (developed on MU1316). What matters is:
+meant for any MHI2Q MU firmware (developed on MU1316). The cluster presentation follows the
+unit's coding (sysConst 541):
 
-- cluster coding: Virtual Cockpit (sysConst 541=2) retains its existing presentation;
-  map-over-MOST analogue clusters (541=1) can show CarPlay maneuvers in the stock arrows view
-  with guidance text; RGI-only clusters (541=0) retain stock context ownership;
-- preferably, the latest firmware available for the unit, flashed before installing the patch.
+- **Virtual Cockpit** (541=2): the full feature set above.
+- **Map-over-MOST analogue cluster** (541=1): maneuvers in the stock arrows view and guidance
+  text. Tested on one MU1329 unit with an 800x252 arrows view; other trains and cluster variants
+  are untested. A rapid ticking sound during animated guidance has been reported there and is
+  not yet explained ([details](docs/cluster/most-cluster.md#-validation-and-limits)).
+- **RGI-only cluster** (541=0): stock cluster state is left alone. Untested.
 
-MOST behavior has been exercised on one MU1329 unit. This separated contribution
-still needs vehicle validation, including FPK regression checks. See
-[MOST presentation and limits](docs/cluster/most-cluster.md). Shared renderer pacing,
-mask-cache and profiling changes are not included here.
+Preferably flash the latest firmware available for the unit before installing the patch. The
+patch JAR must be built against the matching stock library. Neither compilation nor
+local tests prove behavior on a firmware or cluster that has not been tested in a car.
 
 A release is eight files plus two config edits; nothing stock is replaced and no firewall profile is
 touched:
@@ -189,21 +195,18 @@ touched:
 Both the `dio_manager.json` IDs and the hook's runtime Identify patch are required: without the IDs
 iOS sends route guidance and the SDK silently drops it.
 
-**With M.I.B. (recommended).** Copy `install_MoreIncredibleBash/` to the M.I.B. SD card and drop
-**all assets of a release** straight into `mod/carplay/` (the eight files above plus
-`carplay_child.json`; no folders needed), then run **GEM -> M.I.B. -> Advanced Settings -> Run Custom Script** (**Run individual script** on
-M.I.B. release zips up to V3.7.1) with CarPlay disconnected. `custom.sh` checks that the whole
-release is on the card (a partial copy stops before anything is written), copies it with atomic
-renames, patches both configs in place and keeps a `.carplay-stock` backup of each; it never stops
-processes or reboots. It also deletes M.I.B.'s NavActiveIgnore jar, which breaks CarPlay's app
-state. To remove everything, run `uninstall_MoreIncredibleBash/` the same way.
+**With M.I.B.** Copy `install_MoreIncredibleBash/` to the card and put all eight
+release files plus `carplay_child.json` into `mod/carplay/`. With CarPlay
+disconnected, run M.I.B.'s Custom Script / Individual Script action. The script
+checks that the release is complete, copies files using atomic renames, patches
+the two configurations and keeps `.carplay-stock` backups. It never stops
+processes or reboots. Use `uninstall_MoreIncredibleBash/` to remove that install.
+See [installation and recovery](docs/deploy/install.md) for card layouts and
+manual installation.
 
-**Manually** (no M.I.B.; needs a root shell on the unit over SSH or Telnet). `mount -uw /mnt/app` and `/mnt/system`, copy the files, back up and
-edit the two configs as text (`dio_manager.json` has `##` comment lines - no JSON tools).
-
-The step-by-step guide for both - the SD layout, installer output and warnings, the exact SI child and
-`dio_manager.json` lines, verification greps, uninstall and the SSH traps - is
-[`docs/deploy/install.md`](docs/deploy/install.md).
+Packages made by the companion tooling use a different managed backup/state
+format. Remove an existing installation using its own matching installer before
+switching workflows; the upstream and companion uninstallers are not interchangeable.
 
 **Reboot.** Disconnect CarPlay, run `sync` and wait a few seconds, then reboot normally: a forced
 reboot (the MMI button combo) right after copying can leave the files truncated or missing. The jar is
@@ -237,10 +240,11 @@ them before restarting.
 
 For raw route-guidance packet dumps, rebuild the hook with `LOG_RGD_PACKET_RAW=1` (see [Build](#-build)).
 
-**No shell? Use M.I.B.** Copy `logging_MoreIncredibleBash/` to the card and run it like the installer.
-Each run saves everything to `<card>/carplay_logs/NNN/` and then creates `/tmp/carplay_verbose`: run it
-once, reconnect the phone and drive with CarPlay, run it again - the second folder holds the verbose
-session. Attach that folder to a bug report.
+**No shell? Use M.I.B.** Copy `logging_MoreIncredibleBash/` to the card and run it
+like the installer. Each run saves logs into `<card>/carplay_logs/NNN/` and
+enables verbose logging for the next phone connection. Run it again after
+reproducing the issue to save that session. Captures can contain private
+identifiers; review and redact them before sharing.
 
 ## 📚 Documentation
 
