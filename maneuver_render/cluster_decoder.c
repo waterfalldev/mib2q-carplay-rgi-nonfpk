@@ -115,7 +115,12 @@ static struct {
     uint64_t first_at;                          /* the stream's first picture, for its rate */
     unsigned gap_max;                           /* longest pause between pictures, us */
     unsigned shown;                             /* pictures copied into the window */
+    /* The shown pictures' luma, by the copy (close_decoder reads it after the last copy). */
+    uint64_t luma[3];                           /* bytes, below 16, above 235 */
 } g;
+
+/* The range the stream's SPS signals (sps_range): written at a config, read by the copy. */
+static int g_range = -1;
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_changed = PTHREAD_COND_INITIALIZER;
@@ -294,11 +299,11 @@ static size_t tiled_bytes(uint32_t w, uint32_t h) {
     return chroma_at + cols * chroma_rows * CD_TILE_BYTES;
 }
 
-/* The phone's pictures are video range (luma 16-235, chroma 16-240).  The MOST encoder's
- * compositor reads an NV12 window as full range, so the map looked dull (map27) next to the
- * RGBA window, which the CPU converted as video range (map25-26).  The copy expands both
- * planes to 0-255 on the way; chroma 128 stays 128. */
-static uint8_t g_full_luma[256], g_full_chroma[256];
+/* The MOST encoder's compositor reads an NV12 window as full range.  A video-range picture
+ * (luma 16-235, chroma 16-240) looked dull there (map27), so the copy expands it to 0-255;
+ * chroma 128 stays 128.  A full-range picture is copied as it is: expanded, everything above
+ * 235 would turn white (light mode looked washed out, map28). */
+static uint8_t g_full_luma[256], g_full_chroma[256], g_same[256];
 static pthread_once_t g_full_once = PTHREAD_ONCE_INIT;
 
 static void full_range_tables(void) {
@@ -306,21 +311,130 @@ static void full_range_tables(void) {
     for (i = 0; i < 256; ++i) {
         g_full_luma[i] = (uint8_t)(i <= 16 ? 0 : i >= 235 ? 255 : ((i - 16) * 255 + 109) / 219);
         g_full_chroma[i] = (uint8_t)(i <= 16 ? 0 : i >= 240 ? 255 : ((i - 16) * 255 + 112) / 224);
+        g_same[i] = (uint8_t)i;
     }
 }
 
-/* One TILE_4x2 plane, `rows` tile rows of it, into a linear plane of cw x ch through `range`. */
+/* An SPS read as bits, emulation prevention removed.  Past the end it reads zeros and sets
+ * `over`. */
+typedef struct { uint8_t b[256]; size_t n, at; int over; } sps_bits_t;
+
+static unsigned sps_u(sps_bits_t *s, int bits) {
+    unsigned v = 0;
+    while (bits-- > 0) {
+        if (s->at >= s->n * 8) { s->over = 1; v <<= 1; continue; }
+        v = v << 1 | (unsigned)(s->b[s->at / 8] >> (7 - s->at % 8) & 1);
+        ++s->at;
+    }
+    return v;
+}
+
+static unsigned sps_ue(sps_bits_t *s) {
+    int zeros = 0;
+    while (!sps_u(s, 1) && !s->over && zeros < 31) ++zeros;
+    return ((1u << zeros) - 1) + sps_u(s, zeros);
+}
+
+static int sps_se(sps_bits_t *s) {
+    unsigned k = sps_ue(s);
+    return k & 1 ? (int)((k + 1) / 2) : -(int)(k / 2);
+}
+
+static void sps_skip_scaling_list(sps_bits_t *s, int size) {
+    int last = 8, next = 8, j;
+    for (j = 0; j < size; ++j) {
+        if (next) next = (last + sps_se(s) + 256) % 256;
+        if (next) last = next;
+    }
+}
+
+/* The range the parameter sets in Annex B `unit` signal (H.264 VUI video_full_range_flag):
+ * 1 full, 0 video, -1 none signalled (video, the default); `matrix` the matrix coefficients,
+ * -1 when not given. */
+static int sps_range(const uint8_t *unit, uint32_t bytes, int *matrix) {
+    sps_bits_t s;
+    uint32_t i = 0;
+    unsigned profile, v, k;
+    *matrix = -1;
+    while (i + 3 < bytes && !(unit[i] == 0 && unit[i + 1] == 0 && unit[i + 2] == 1 && (unit[i + 3] & 0x1f) == 7)) ++i;
+    if (i + 3 >= bytes) return -1;
+    memset(&s, 0, sizeof(s));
+    for (i += 4; i < bytes && s.n < sizeof(s.b); ++i) {
+        if (i + 2 < bytes && unit[i] == 0 && unit[i + 1] == 0 && unit[i + 2] <= 1) break;   /* next start code */
+        if (i >= 2 && unit[i] == 3 && unit[i - 1] == 0 && unit[i - 2] == 0) continue;     /* emulation prevention */
+        s.b[s.n++] = unit[i];
+    }
+    profile = sps_u(&s, 8);
+    sps_u(&s, 16);                                              /* constraints, level */
+    sps_ue(&s);                                                 /* seq_parameter_set_id */
+    if (profile == 100 || profile == 110 || profile == 122 || profile == 244 || profile == 44 || profile == 83
+        || profile == 86 || profile == 118 || profile == 128 || profile == 138 || profile == 139
+        || profile == 134 || profile == 135) {
+        unsigned chroma = sps_ue(&s);
+        if (chroma == 3) sps_u(&s, 1);
+        sps_ue(&s);
+        sps_ue(&s);                                             /* bit depths */
+        sps_u(&s, 1);
+        if (sps_u(&s, 1))                                       /* seq_scaling_matrix_present */
+            for (k = 0; k < (chroma == 3 ? 12u : 8u); ++k)
+                if (sps_u(&s, 1)) sps_skip_scaling_list(&s, k < 6 ? 16 : 64);
+    }
+    sps_ue(&s);                                                 /* log2_max_frame_num */
+    v = sps_ue(&s);                                             /* pic_order_cnt_type */
+    if (v == 0) sps_ue(&s);
+    else if (v == 1) {
+        sps_u(&s, 1);
+        sps_ue(&s);
+        sps_ue(&s);
+        for (k = sps_ue(&s); k > 0 && !s.over; --k) sps_ue(&s);
+    }
+    sps_ue(&s);
+    sps_u(&s, 1);                                               /* reference frames, gaps */
+    sps_ue(&s);
+    sps_ue(&s);                                                 /* size */
+    if (!sps_u(&s, 1)) sps_u(&s, 1);                            /* frame_mbs_only, else mbaff */
+    sps_u(&s, 1);                                               /* direct_8x8 */
+    if (sps_u(&s, 1)) for (k = 0; k < 4; ++k) sps_ue(&s);       /* cropping */
+    if (!sps_u(&s, 1)) return -1;                               /* no VUI */
+    if (sps_u(&s, 1) && sps_u(&s, 8) == 255) sps_u(&s, 32);     /* aspect ratio */
+    if (sps_u(&s, 1)) sps_u(&s, 1);                             /* overscan */
+    if (!sps_u(&s, 1)) return -1;                               /* no video signal type */
+    sps_u(&s, 3);
+    v = sps_u(&s, 1);
+    if (sps_u(&s, 1)) {                                         /* colour description */
+        sps_u(&s, 16);
+        k = sps_u(&s, 8);
+        if (!s.over) *matrix = (int)k;
+    }
+    return s.over ? -1 : (int)v;
+}
+
+/* One TILE_4x2 plane, `rows` tile rows of it, into a linear plane of cw x ch through `range`;
+ * `luma` (or NULL) counts its bytes, those below 16 and those above 235.  Each tile is mapped in
+ * a cached copy and leaves as whole rows: byte by byte straight between the decoder's buffer
+ * and the window's took 51 ms a picture (map28), whole rows ~1 (map27). */
 static void untile_plane(const uint8_t *src, size_t cols, size_t rows, uint8_t *dst, int stride, int cw, int ch,
-                         const uint8_t *range) {
+                         const uint8_t *range, uint64_t *luma) {
+    uint8_t tile[CD_TILE_BYTES];
     size_t tx, ty, r, i;
     for (ty = 0; ty < rows; ++ty)
         for (tx = 0; tx < cols && (int)(tx * CD_TILE_W) < cw; ++tx) {
-            const uint8_t *tile = src + tile_index(tx, ty, cols, rows) * CD_TILE_BYTES;
             size_t x0 = tx * CD_TILE_W, y0 = ty * CD_TILE_H, n = (size_t)cw - x0 < CD_TILE_W ? (size_t)cw - x0 : CD_TILE_W;
+            memcpy(tile, src + tile_index(tx, ty, cols, rows) * CD_TILE_BYTES, CD_TILE_BYTES);
             for (r = 0; r < CD_TILE_H && (int)(y0 + r) < ch; ++r) {
-                const uint8_t *in = tile + r * CD_TILE_W;
-                uint8_t *out = dst + (y0 + r) * (size_t)stride + x0;
-                for (i = 0; i < n; ++i) out[i] = range[in[i]];
+                uint8_t *row = tile + r * CD_TILE_W;
+                if (luma) {
+                    unsigned low = 0, high = 0;
+                    for (i = 0; i < n; ++i) {
+                        low += row[i] < 16;
+                        high += row[i] > 235;
+                    }
+                    luma[0] += n;
+                    luma[1] += low;
+                    luma[2] += high;
+                }
+                for (i = 0; i < n; ++i) row[i] = range[row[i]];
+                memcpy(dst + (y0 + r) * (size_t)stride + x0, row, n);
             }
         }
 }
@@ -370,9 +484,13 @@ static void close_decoder(const char *why) {
         /* The phone's own rate: pictures over the span they arrived in, and its longest pause. */
         uint64_t span_ms = g.pictures > 1 ? (g.newest_at - g.first_at) / 1000000u : 0u;
         unsigned fps10 = span_ms ? (unsigned)((uint64_t)(g.pictures - 1) * 10000u / span_ms) : 0u;
+        /* Their luma outside video range, per mille: how the range they signal holds up. */
+        unsigned low = g.luma[0] ? (unsigned)(g.luma[1] * 1000u / g.luma[0]) : 0u;
+        unsigned high = g.luma[0] ? (unsigned)(g.luma[2] * 1000u / g.luma[0]) : 0u;
         fprintf(stderr, "cluster_decoder: stream %u decoder closed (%s): %u units in, %u pictures, %u dropped, "
-                "%u errors; arriving at %u.%u fps, longest gap %u ms; %u shown\n", g.stream, why, g.fed,
-                g.pictures, g.dropped, g.errors, fps10 / 10, fps10 % 10, g.gap_max / 1000u, g.shown);
+                "%u errors; arriving at %u.%u fps, longest gap %u ms; %u shown, luma %u.%u%% below 16, "
+                "%u.%u%% above 235\n", g.stream, why, g.fed, g.pictures, g.dropped, g.errors, fps10 / 10,
+                fps10 % 10, g.gap_max / 1000u, g.shown, low / 10, low % 10, high / 10, high % 10);
     }
 }
 
@@ -388,6 +506,7 @@ static int open_decoder(uint32_t stream) {
     g.errors = g.pictures = 0;
     g.shown = g.gap_max = 0;
     g.newest_at = g.first_at = 0;
+    memset(g.luma, 0, sizeof(g.luma));
     pthread_mutex_unlock(&g_lock);
     g.stream = stream;
     g.fed = g.dropped = g.logged_errors = 0;
@@ -472,6 +591,13 @@ int cluster_decoder_feed(uint32_t stream, int config, const uint8_t *unit, uint3
     }
     cluster_decoder_poll();
     if (!g.omx) return -1;
+    if (config) {
+        int matrix, range = sps_range(unit, bytes, &matrix);
+        if (__sync_lock_test_and_set(&g_range, range) != range || g.fed == 0)
+            fprintf(stderr, "cluster_decoder: stream %u signals %s range (matrix %d): %s\n", stream,
+                    range == 1 ? "full" : range == 0 ? "video" : "no", matrix,
+                    range == 1 ? "copied as it is" : "expanded to full");
+    }
     deadline_in(&t, CD_INPUT_WAIT_MS);
     pthread_mutex_lock(&g_lock);
     while (!g.n_free_in && pthread_cond_timedwait(&g_changed, &g_lock, &t) != ETIMEDOUT) { }
@@ -538,10 +664,11 @@ int cluster_decoder_copy(unsigned *serial, uint8_t *y, int y_stride, uint8_t *uv
         const int cw = w < (int)fw ? w : (int)fw, ch = h < (int)fh ? h : (int)fh;
         size_t cols, rows, chroma_rows, chroma_at;
         const uint8_t *src = p->buffer + p->offset;
+        const int full = __sync_fetch_and_add(&g_range, 0) == 1;
         pthread_once(&g_full_once, full_range_tables);
         tile_layout(fw, fh, &cols, &rows, &chroma_rows, &chroma_at);
-        untile_plane(src, cols, rows, y, y_stride, cw, ch, g_full_luma);
-        untile_plane(src + chroma_at, cols, chroma_rows, uv, uv_stride, cw, ch / 2, g_full_chroma);
+        untile_plane(src, cols, rows, y, y_stride, cw, ch, full ? g_same : g_full_luma, g.luma);
+        untile_plane(src + chroma_at, cols, chroma_rows, uv, uv_stride, cw, ch / 2, full ? g_same : g_full_chroma, NULL);
         copied = 1;
     } else if (!g.warned_short++) {
         fprintf(stderr, "cluster_decoder: a %u-byte picture, short of TILE_4x2 %ux%u; not shown\n",

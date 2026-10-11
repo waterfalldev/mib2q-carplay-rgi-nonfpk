@@ -44,7 +44,7 @@ void cluster_decoder_close(void);
 int cluster_decoder_fresh(unsigned serial);
 
 /* Copies the newest picture into an NV12 target of w x h when it is newer than *serial (which
- * it then updates), expanded from video to full range: 1 when copied. */
+ * it then updates), expanded to full range unless its SPS signals full: 1 when copied. */
 int cluster_decoder_copy(unsigned *serial, uint8_t *y, int y_stride, uint8_t *uv, int uv_stride, int w, int h);
 
 /* Waits up to `ns` for a picture newer than `serial`, waking as soon as one arrives: 1 when one

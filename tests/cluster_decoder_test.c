@@ -228,17 +228,97 @@ int OMX_FreeHandle(omx_component_t *handle) {
 #define TPAD 20
 static uint8_t g_y[TH][TW + TPAD], g_uv[TH / 2][TW + TPAD];
 
-static int tiled_target_is(unsigned frame) {
+/* The target holds picture `frame`, expanded to full range or (`as_is`) unchanged. */
+static int target_is(unsigned frame, int as_is) {
     int x, y, ok = 1;
     for (y = 0; y < TH; ++y) {
-        for (x = 0; x < TW; ++x) ok &= g_y[y][x] == full_luma(luma_at((size_t)x, (size_t)y, frame));
+        for (x = 0; x < TW; ++x) {
+            uint8_t v = luma_at((size_t)x, (size_t)y, frame);
+            ok &= g_y[y][x] == (as_is ? v : full_luma(v));
+        }
         for (x = TW; x < TW + TPAD; ++x) ok &= g_y[y][x] == 0x11;
     }
     for (y = 0; y < TH / 2; ++y) {
-        for (x = 0; x < TW; ++x) ok &= g_uv[y][x] == full_chroma(chroma_at((size_t)x, (size_t)y, frame));
+        for (x = 0; x < TW; ++x) {
+            uint8_t v = chroma_at((size_t)x, (size_t)y, frame);
+            ok &= g_uv[y][x] == (as_is ? v : full_chroma(v));
+        }
         for (x = TW; x < TW + TPAD; ++x) ok &= g_uv[y][x] == 0x11;
     }
     return ok;
+}
+
+static int tiled_target_is(unsigned frame) { return target_is(frame, 0); }
+
+/* An Annex B SPS written bit by bit, emulation prevention inserted as an encoder does. */
+static struct { uint8_t rbsp[128]; size_t bits; } w;
+
+static void put(unsigned v, int bits) {
+    while (bits-- > 0) {
+        if (v >> bits & 1) w.rbsp[w.bits / 8] |= (uint8_t)(0x80 >> w.bits % 8);
+        ++w.bits;
+    }
+}
+
+static void put_ue(unsigned v) {
+    int len = 0;
+    while ((v + 1) >> (len + 1)) ++len;
+    put(0, len);
+    put(v + 1, len + 1);
+}
+
+static void put_se(int v) { put_ue(v > 0 ? (unsigned)(2 * v - 1) : (unsigned)(-2 * v)); }
+
+static size_t sps_out(uint8_t *out) {
+    size_t n = 0, i, zeros = 0;
+    put(1, 1);                                                  /* rbsp stop bit */
+    out[n++] = 0; out[n++] = 0; out[n++] = 0; out[n++] = 1; out[n++] = 0x67;
+    for (i = 0; i < (w.bits + 7) / 8; ++i) {
+        if (zeros >= 2 && w.rbsp[i] <= 3) { out[n++] = 3; zeros = 0; }
+        out[n++] = w.rbsp[i];
+        zeros = w.rbsp[i] ? 0 : zeros + 1;
+    }
+    out[n++] = 0; out[n++] = 0; out[n++] = 0; out[n++] = 1; out[n++] = 0x68; out[n++] = 0xce;   /* its PPS */
+    return n;
+}
+
+/* Profile 66, no VUI. */
+static size_t sps_plain(uint8_t *out) {
+    memset(&w, 0, sizeof(w));
+    put(66, 8); put(0xc0, 8); put(31, 8); put_ue(0);
+    put_ue(0); put_ue(0); put_ue(4);                            /* frame num, poc type 0 and its lsb */
+    put_ue(1); put(0, 1); put_ue(49); put_ue(18);               /* 800 x 304 */
+    put(1, 1); put(1, 1); put(1, 1);                            /* frame_mbs_only, direct, cropping: */
+    put_ue(0); put_ue(0); put_ue(0); put_ue(3);                 /* to 298 */
+    put(0, 1);                                                  /* no VUI */
+    return sps_out(out);
+}
+
+/* High profile through every branch the reader skips: a scaling list ending early, poc type 1,
+ * no frame_mbs_only, an extended aspect ratio of zeros (emulation prevention), the given range
+ * and, when `matrix` >= 0, a colour description. */
+static size_t sps_high(uint8_t *out, int full, int matrix) {
+    int j;
+    memset(&w, 0, sizeof(w));
+    put(100, 8); put(0, 8); put(0, 8); put_ue(0);
+    put_ue(1); put_ue(0); put_ue(0); put(0, 1);                 /* 4:2:0, 8 bits */
+    put(1, 1);                                                  /* scaling matrix */
+    put(1, 1); put_se(-8);                                      /* list 0: next 0 at once */
+    put(1, 1); for (j = 0; j < 16; ++j) put_se(j & 1 ? -3 : 5); /* list 1: all 16 deltas */
+    for (j = 2; j < 8; ++j) put(0, 1);
+    put_ue(0); put_ue(1); put(0, 1); put_se(-2); put_se(1);     /* poc type 1 */
+    put_ue(2); put_se(1); put_se(-1);
+    put_ue(1); put(0, 1); put_ue(49); put_ue(9);
+    put(0, 1); put(1, 1); put(1, 1);                            /* field coding, mbaff, direct */
+    put(0, 1);                                                  /* no cropping */
+    put(1, 1);                                                  /* VUI */
+    put(1, 1); put(255, 8); put(0, 16); put(0, 16);             /* aspect ratio 0:0 */
+    put(1, 1); put(0, 1);                                       /* overscan */
+    put(1, 1); put(5, 3); put((unsigned)full, 1);               /* video signal type */
+    put(matrix >= 0, 1);
+    if (matrix >= 0) { put(1, 8); put(1, 8); put((unsigned)matrix, 8); }
+    put(0, 1);                                                  /* no timing, and so on */
+    return sps_out(out);
 }
 
 static int copy(unsigned *serial) {
@@ -297,6 +377,19 @@ int main(void) {
     check(fed == 12 && f.frames == 12 && f.flags_ok == 13, "12 frames in, as ENDOFFRAME (config as CODECCONFIG)");
     check(cluster_decoder_fresh(serial) && copy(&serial) == 1 && tiled_target_is(12),
           "the newest picture untiled into the target, both planes, its padding untouched");
+    {
+        uint64_t low = 0, high = 0;
+        int x, y;
+        for (y = 0; y < TH; ++y)
+            for (x = 0; x < TW; ++x) {
+                uint8_t v = luma_at((size_t)x, (size_t)y, 12);
+                low += v < 16;
+                high += v > 235;
+            }
+        check(g.luma[0] == (uint64_t)TW * TH && g.luma[1] == low && g.luma[2] == high,
+              "its luma counted: %llu bytes, %llu below 16, %llu above 235", (unsigned long long)g.luma[0],
+              (unsigned long long)g.luma[1], (unsigned long long)g.luma[2]);
+    }
     check(g_full_luma[16] == 0 && g_full_luma[235] == 255 && g_full_luma[126] == 128 && g_full_chroma[16] == 0
           && g_full_chroma[128] == 128 && g_full_chroma[240] == 255 && g_full_luma[0] == 0 && g_full_chroma[255] == 255,
           "video range expanded to full: black 0, white 255, grey chroma 128, out of range clamped");
@@ -390,6 +483,34 @@ int main(void) {
     f.cb->event(&f.c, NULL, OMX_EVENT_PORT_SETTINGS, OMX_PORT_OUT, 0, NULL);
     check(cluster_decoder_feed(6, 0, frame, sizeof(frame), 0) == -1 && f.live_handles == 0 && f.allocated == f.freed,
           "the output changing under it closes the decoder for that stream");
+
+    {
+        uint8_t sps[160];
+        size_t n;
+        int matrix, range;
+        n = sps_plain(sps);
+        range = sps_range(sps, (uint32_t)n, &matrix);
+        check(range == -1 && matrix == -1, "an SPS without VUI signals no range (%d)", range);
+        n = sps_high(sps, 1, 1);
+        check(memmem(sps, n, "\x00\x00\x03", 3) != NULL, "the high-profile SPS needs emulation prevention");
+        range = sps_range(sps, (uint32_t)n, &matrix);
+        check(range == 1 && matrix == 1, "high profile past scaling lists, poc type 1, fields and an extended "
+              "aspect ratio: full range, matrix 1 (%d, %d)", range, matrix);
+        n = sps_high(sps, 0, -1);
+        range = sps_range(sps, (uint32_t)n, &matrix);
+        check(range == 0 && matrix == -1, "video range, no colour description (%d, %d)", range, matrix);
+        check(sps_range(sps, 12, &matrix) == -1, "a cut SPS signals nothing");
+        check(sps_range(frame, sizeof(frame), &matrix) == -1, "no SPS: nothing");
+
+        n = sps_high(sps, 1, 1);
+        check(cluster_decoder_feed(8, 1, sps, (uint32_t)n, 0) == 0 && g_range == 1, "a full-range stream's config");
+        cluster_decoder_feed(8, 0, frame, sizeof(frame), 1000);
+        check(copy(&serial) == 1 && target_is(f.frames, 1), "its pictures are copied as they are");
+        n = sps_high(sps, 0, 1);
+        cluster_decoder_feed(9, 1, sps, (uint32_t)n, 0);
+        cluster_decoder_feed(9, 0, frame, sizeof(frame), 1000);
+        check(g_range == 0 && copy(&serial) == 1 && target_is(f.frames, 0), "a video-range stream's are expanded");
+    }
     printf("cluster_decoder_test: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
