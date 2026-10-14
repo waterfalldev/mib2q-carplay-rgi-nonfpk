@@ -234,8 +234,6 @@ typedef struct {
     uint32_t distance_between;
     char description[256];
     char after_road_name[256];
-    rgd_lane_t lanes[MAX_LANE_GUIDANCE];
-    uint8_t lane_count;
 #if RGD_TRACE_RAW_FULL
     char lane_guidance_hex[(RGD_HEX_PREVIEW_MAX * 3) + 1];
 #endif
@@ -259,7 +257,6 @@ typedef struct {
 #define RGD_MAN_LANE_GUIDANCE_RAW    (1ULL << 9)
 #define RGD_MAN_EXIT_INFO_RAW        (1ULL << 10)
 #define RGD_MAN_EXIT_INFO_STR        (1ULL << 11)
-#define RGD_MAN_LANE_GUIDANCE        (1ULL << 12)  /* Parsed lane data in lanes[] */
 #define RGD_MAN_LINKED_LANE_INDEX    (1ULL << 13)  /* Scalar linked lane guidance index */
 
 /* ============================================================

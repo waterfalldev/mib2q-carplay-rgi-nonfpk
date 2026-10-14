@@ -352,99 +352,54 @@ static bool rgd_is_active_lane_index(uint16_t lane_idx) {
     return false;
 }
 
-static int rgd_slot_for_iap_index(uint16_t idx, bool create) {
-    /* Find existing mapping - touch seq (LRU refresh) so actively
-     * used slots don't become eviction victims. */
+/* Find idx in a slot map, refreshing its LRU seq so live slots are not eviction victims.
+ * With create, a missing idx takes a free slot, else the oldest slot whose index is not
+ * active - the ones on the cluster must survive incoming data for future maneuvers.  If
+ * every slot is active, plain LRU applies.  *assigned reports a new assignment. */
+static int rgd_assign_slot(uint16_t* map, uint32_t* seq, uint32_t* counter, bool (*active)(uint16_t),
+                           uint16_t idx, bool create, bool* assigned) {
+    int victim = -1;
+    uint32_t best = UINT32_MAX;
+    *assigned = false;
     for (int s = 0; s < MANEUVER_CACHE_SIZE; s++) {
-        if (g_rgd.route.slot_to_iap_idx[s] == idx) {
-            g_rgd.route.slot_seq[s] = ++g_rgd.route.seq_counter;
+        if (map[s] == idx) {
+            seq[s] = ++*counter;
             return s;
         }
     }
     if (!create) return -1;
-
-    /* Find free slot — new assignment bumps both LRU seq and version */
-    for (int s = 0; s < MANEUVER_CACHE_SIZE; s++) {
-        if (g_rgd.route.slot_to_iap_idx[s] == 0xFFFF) {
-            g_rgd.route.slot_to_iap_idx[s] = idx;
-            g_rgd.route.slot_seq[s] = ++g_rgd.route.seq_counter;
-            g_rgd.route.slot_ver[s] = ++g_rgd.route.ver_counter;
-            return s;
-        }
+    for (int s = 0; s < MANEUVER_CACHE_SIZE && victim < 0; s++) {
+        if (map[s] == 0xFFFF) victim = s;
     }
-
-    /* Evict oldest slot, but NEVER evict slots in the active ManeuverList.
-     * Without this protection, incoming 0x5202 data for future maneuvers
-     * can evict slots still being displayed on the cluster, causing the
-     * icon to get stuck on a stale maneuver direction. */
-    int victim = -1;
-    uint32_t best = UINT32_MAX;
-    for (int s = 0; s < MANEUVER_CACHE_SIZE; s++) {
-        if (rgd_is_active_index(g_rgd.route.slot_to_iap_idx[s])) continue;
-        if (g_rgd.route.slot_seq[s] < best) {
-            best = g_rgd.route.slot_seq[s];
-            victim = s;
-        }
-    }
-    if (victim < 0) {
-        /* All slots are in the active list (shouldn't happen with MANEUVER_CACHE_SIZE=32 slots
-         * and max 2-3 active maneuvers).  Fall back to true LRU. */
-        best = UINT32_MAX;
+    for (int pass = 0; pass < 2 && victim < 0; pass++) {
         for (int s = 0; s < MANEUVER_CACHE_SIZE; s++) {
-            if (g_rgd.route.slot_seq[s] < best) {
-                best = g_rgd.route.slot_seq[s];
+            if (pass == 0 && active(map[s])) continue;
+            if (seq[s] < best) {
+                best = seq[s];
                 victim = s;
             }
         }
     }
-    g_rgd.route.slot_to_iap_idx[victim] = idx;
-    g_rgd.route.slot_seq[victim] = ++g_rgd.route.seq_counter;
-    g_rgd.route.slot_ver[victim] = ++g_rgd.route.ver_counter;
-    memset(&g_rgd.route.slot_cache[victim], 0, sizeof(g_rgd.route.slot_cache[victim]));
+    if (victim < 0) victim = 0;
+    map[victim] = idx;
+    seq[victim] = ++*counter;
+    *assigned = true;
     return victim;
 }
 
+/* A new assignment bumps the slot version; the caller overwrites the slot's cache. */
+static int rgd_slot_for_iap_index(uint16_t idx, bool create) {
+    bool assigned;
+    int slot = rgd_assign_slot(g_rgd.route.slot_to_iap_idx, g_rgd.route.slot_seq, &g_rgd.route.seq_counter,
+                               rgd_is_active_index, idx, create, &assigned);
+    if (assigned) g_rgd.route.slot_ver[slot] = ++g_rgd.route.ver_counter;
+    return slot;
+}
+
 static int rgd_lane_slot_for_iap_index(uint16_t idx, bool create) {
-    for (int s = 0; s < MANEUVER_CACHE_SIZE; s++) {
-        if (g_rgd.route.lane_slot_to_iap_idx[s] == idx) {
-            g_rgd.route.lane_slot_seq[s] = ++g_rgd.route.lane_seq_counter;
-            return s;
-        }
-    }
-    if (!create) return -1;
-
-    for (int s = 0; s < MANEUVER_CACHE_SIZE; s++) {
-        if (g_rgd.route.lane_slot_to_iap_idx[s] == 0xFFFF) {
-            g_rgd.route.lane_slot_to_iap_idx[s] = idx;
-            g_rgd.route.lane_slot_seq[s] = ++g_rgd.route.lane_seq_counter;
-            return s;
-        }
-    }
-
-    int victim = -1;
-    uint32_t best = UINT32_MAX;
-    for (int s = 0; s < MANEUVER_CACHE_SIZE; s++) {
-        if (rgd_is_active_lane_index(g_rgd.route.lane_slot_to_iap_idx[s])) continue;
-        if (g_rgd.route.lane_slot_seq[s] < best) {
-            best = g_rgd.route.lane_slot_seq[s];
-            victim = s;
-        }
-    }
-    if (victim < 0) {
-        victim = 0;
-        best = UINT32_MAX;
-        for (int s = 0; s < MANEUVER_CACHE_SIZE; s++) {
-            if (g_rgd.route.lane_slot_seq[s] < best) {
-                best = g_rgd.route.lane_slot_seq[s];
-                victim = s;
-            }
-        }
-    }
-
-    g_rgd.route.lane_slot_to_iap_idx[victim] = idx;
-    g_rgd.route.lane_slot_seq[victim] = ++g_rgd.route.lane_seq_counter;
-    memset(&g_rgd.route.lane_cache[victim], 0, sizeof(g_rgd.route.lane_cache[victim]));
-    return victim;
+    bool assigned;
+    return rgd_assign_slot(g_rgd.route.lane_slot_to_iap_idx, g_rgd.route.lane_slot_seq,
+                           &g_rgd.route.lane_seq_counter, rgd_is_active_lane_index, idx, create, &assigned);
 }
 
 static void rgd_update_session_active(void) {
@@ -580,8 +535,7 @@ static void write_slot_data_keys(bus_text_builder_t* b, unsigned idx, const rgd_
         if (linked_slot >= 0) key_int(b, "m", idx, "linked_lane_guidance_slot", linked_slot);
     }
     /* A raw linked-lane payload alone still sends the lane keys, empty, to keep them coherent. */
-    if (man->present & RGD_MAN_LANE_GUIDANCE) key_lanes(b, "m", idx, man->lanes, man->lane_count);
-    else if (man->present & RGD_MAN_LANE_GUIDANCE_RAW) key_lanes(b, "m", idx, man->lanes, 0);
+    if (man->present & RGD_MAN_LANE_GUIDANCE_RAW) key_lanes(b, "m", idx, NULL, 0);
 #if RGD_TRACE_RAW_FULL
     if (man->present & RGD_MAN_EXIT_INFO_RAW) key_str(b, "m", idx, "exit_info_hex", man->exit_info_hex);
 #endif
@@ -633,59 +587,6 @@ static bool rgd_prune_stale_lane_cache(void) {
     return pruned;
 }
 
-/*
- * Resolve linked-lane guidance references.
- * When a maneuver has RGD_MAN_LINKED_LANE_INDEX but no RGD_MAN_LANE_GUIDANCE,
- * look up the referenced maneuver in the slot cache and copy its lane data.
- */
-static void rgd_resolve_linked_lanes(int slot) {
-    rgd_maneuver_t* man = &g_rgd.route.slot_cache[slot];
-    if (!(man->present & RGD_MAN_LINKED_LANE_INDEX)) return;
-    if (man->present & RGD_MAN_LANE_GUIDANCE) return; /* already has own lane data */
-
-    uint16_t linked_iap_idx = man->linked_lane_guidance_index;
-    int linked_slot = rgd_slot_for_iap_index(linked_iap_idx, false);
-    if (linked_slot < 0) return;
-
-    const rgd_maneuver_t* src = &g_rgd.route.slot_cache[linked_slot];
-    if (!(src->present & RGD_MAN_LANE_GUIDANCE) || src->lane_count == 0) return;
-
-    man->lane_count = src->lane_count;
-    memcpy(man->lanes, src->lanes, sizeof(man->lanes));
-    man->present |= RGD_MAN_LANE_GUIDANCE;
-
-    LOG_INFO(LOG_MODULE, "Resolved linked lanes: slot %d -> slot %d (iAP2 %u), %d lanes",
-             slot, linked_slot, linked_iap_idx, man->lane_count);
-}
-
-/*
- * Back-propagate lane data: when a maneuver with lane data is cached,
- * check if any other cached maneuver has a linked-lane index pointing to
- * this one's iAP2 index, and resolve those references.
- */
-static void rgd_backpropagate_linked_lanes(int source_slot) {
-    const rgd_maneuver_t* src = &g_rgd.route.slot_cache[source_slot];
-    if (!(src->present & RGD_MAN_LANE_GUIDANCE) || src->lane_count == 0) return;
-
-    uint16_t src_iap_idx = g_rgd.route.slot_to_iap_idx[source_slot];
-    if (src_iap_idx == 0xFFFF) return;
-
-    for (int s = 0; s < MANEUVER_CACHE_SIZE; s++) {
-        if (s == source_slot) continue;
-        rgd_maneuver_t* man = &g_rgd.route.slot_cache[s];
-        if (!(man->present & RGD_MAN_LINKED_LANE_INDEX)) continue;
-        if (man->present & RGD_MAN_LANE_GUIDANCE) continue;
-        if (man->linked_lane_guidance_index != src_iap_idx) continue;
-
-        man->lane_count = src->lane_count;
-        memcpy(man->lanes, src->lanes, sizeof(man->lanes));
-        man->present |= RGD_MAN_LANE_GUIDANCE;
-
-        LOG_INFO(LOG_MODULE, "Back-propagated linked lanes: slot %d <- slot %d (iAP2 %u), %d lanes",
-                 s, source_slot, src_iap_idx, man->lane_count);
-    }
-}
-
 static void write_bus_maneuver_partial(const rgd_maneuver_t* man) {
     if (!man) return;
     if (man->present == 0) return;
@@ -701,7 +602,6 @@ static void write_bus_maneuver_partial(const rgd_maneuver_t* man) {
                           RGD_MAN_JUNCTION_ANGLES |
                           RGD_MAN_LANE_GUIDANCE_RAW |
                           RGD_MAN_LINKED_LANE_INDEX |
-                          RGD_MAN_LANE_GUIDANCE |
                           RGD_MAN_EXIT_INFO_RAW |
                           RGD_MAN_EXIT_INFO_STR;
     if ((man->present & write_mask) == 0) return;
@@ -713,14 +613,6 @@ static void write_bus_maneuver_partial(const rgd_maneuver_t* man) {
 
     /* Cache for re-publish on 0x5201 */
     g_rgd.route.slot_cache[slot] = *man;
-
-    /* Resolve linked-lane guidance: if this maneuver references another's lanes, copy them */
-    rgd_resolve_linked_lanes(slot);
-
-    /* If this maneuver has lane data, back-propagate to any maneuver linking to it */
-    if (g_rgd.route.slot_cache[slot].present & RGD_MAN_LANE_GUIDANCE) {
-        rgd_backpropagate_linked_lanes(slot);
-    }
 
     write_bus_snapshot_from_cache(slot, &g_rgd.route.slot_cache[slot], NULL);
 }
