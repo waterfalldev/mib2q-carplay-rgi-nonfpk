@@ -463,10 +463,11 @@ static void apply_output(void) {
     g_engine.dirty = 1;
 }
 
-/* Output diagnostics: keep the latest settled maneuver frame, exactly as the MOST encoder
- * gets it, for the log collector.  Once per settled maneuver, and at most every
- * CR_MOST_FRAME_INTERVAL_S seconds: the readback stalls the GPU, so a maneuver held for a
- * long stretch is not captured again.  Call after render_end_frame() and before the swap. */
+/* Output diagnostics: while the carplay_verbose marker exists (the log collector sets it), keep
+ * the latest settled maneuver frame, exactly as the MOST encoder gets it, for the collector.
+ * Once per settled maneuver, and at most every CR_MOST_FRAME_INTERVAL_S seconds: the readback
+ * stalls the GPU, so a maneuver held for a long stretch is not captured again.  Call after
+ * render_end_frame() and before the swap. */
 static void capture_most_frame(const struct timespec *now) {
     static struct timespec last = {0, 0};
     static int logged_ok = 0, logged_fail = 0;
@@ -486,6 +487,7 @@ static void capture_most_frame(const struct timespec *now) {
     last = *now;
     captured = g_engine.current;
     captured_output = output;
+    if (!log_verbose_marker()) return;   /* only while logs are being collected */
     cr_profile_event(&g_profile, EV_CAPTURE);
     if (render_capture_output(CR_MOST_FRAME_PATH) == 0) {
         if (!logged_ok) fprintf(stderr, "maneuver_render: output frame saved to %s\n", CR_MOST_FRAME_PATH);

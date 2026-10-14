@@ -103,10 +103,11 @@ If the render targets exceed the GL size limits, fail to allocate or are incompl
 falls back to the platform size and does not try that size again. The log records the render
 size, offscreen memory and free system memory before and after.
 
-For diagnostics the renderer saves the settled maneuver frame, exactly as streamed, to
-`/tmp/carplay_most_frame.ppm` once per settled maneuver, at most every 10 s. It skips this
-while animating, and does not repeat it while the same maneuver stays on screen. The M.I.B.
-collector copies this file and both handshake files.
+While the `carplay_verbose` marker exists (the M.I.B. log collector sets it), the renderer saves
+the settled maneuver frame, exactly as streamed, to `/tmp/carplay_most_frame.ppm` once per
+settled maneuver, at most every 10 s. It skips this while animating, and does not repeat it
+while the same maneuver stays on screen. Without the marker nothing is read back or held.
+The M.I.B. collector copies this file and both handshake files.
 
 ## 🎞️ Stream rate
 
