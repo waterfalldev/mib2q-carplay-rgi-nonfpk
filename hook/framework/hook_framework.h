@@ -17,7 +17,7 @@ typedef struct hook_context hook_context_t;
 /* Callback Types */
 typedef bool (*hook_msg_handler_t)(hook_context_t* ctx, const iap2_frame_t* frame);
 typedef size_t (*hook_identify_patcher_t)(hook_context_t* ctx, uint8_t* buf, size_t len, size_t max_len);
-typedef void (*hook_state_callback_t)(hook_context_t* ctx, int event, void* event_data);
+typedef void (*hook_state_callback_t)(hook_context_t* ctx, int event);
 
 /* Called when transport sends a frame - for injection triggers */
 typedef void (*hook_transport_callback_t)(hook_context_t* ctx, uint16_t msgid);
@@ -98,8 +98,6 @@ typedef struct {
     hook_transport_recv_reset_t on_transport_recv_reset;
 
     hook_airplay_seams_t airplay;
-
-    void* user_data;
 } hook_module_def_t;
 
 /* The shipping module set, in initialisation order (hook/main.c).  This is the

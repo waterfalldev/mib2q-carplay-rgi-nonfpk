@@ -668,7 +668,7 @@ static void live_stream(void) {
     check(write(fd2, g_wire, g_wire_size) == (ssize_t)g_wire_size && bus_event(events + 3, &live, &stream)
           && live == 1 && stream != ring.session && session->refs == 2,
           "and is live itself, a new stream (%u) of the same held session", stream);
-    altscreen_module_def.on_state(NULL, HOOK_EVENT_IDENTIFY_START, NULL);
+    altscreen_module_def.on_state(NULL, HOOK_EVENT_IDENTIFY_START);
     check(bus_event(events + 4, &live, NULL) && live == 0 && refs_become(session, 1),
           "a new phone session ends the stream and lets its session go: %d refs", session->refs);
     if (fd >= 0) close(fd);

@@ -28,13 +28,13 @@
  *     and any future low-latency binary channel.
  *
  * Sticky state:
- *   - Types marked BUS_FLAG_STICKY on send are cached on the server side
- *     (one last-value slot per type).  When a new client connects and
- *     issues CMD_SYNC_REQ, the server replays every cached frame wrapped
- *     between EVT_SYNC_BEGIN and EVT_SYNC_END before resuming live traffic.
+ *   - Types marked BUS_FLAG_STICKY on send are cached by the hook (one last-value
+ *     slot per type).  When Java connects and issues CMD_SYNC_REQ, the hook
+ *     replays every cached frame wrapped between EVT_SYNC_BEGIN and EVT_SYNC_END
+ *     before resuming live traffic.
  *   - Replayed frames carry BUS_FLAG_REPLAY so the client can tell them
  *     apart from live events if needed.  Original type/flags/payload are
- *     preserved; seq is re-assigned from the server's current counter.
+ *     preserved; seq is re-assigned from the hook's current counter.
  *   - Non-sticky frames are fire-and-forget: new clients only see new ones.
  *   - **No publish yet = empty replay**: if the hook never emitted a given
  *     sticky type during its lifetime, new clients see the SYNC_BEGIN/END
@@ -64,14 +64,14 @@
 /* ============================================================
  * Flags
  * ============================================================ */
-#define BUS_FLAG_STICKY         0x01  /* server caches, replays on sync     */
+#define BUS_FLAG_STICKY         0x01  /* hook caches, replays on sync       */
 #define BUS_FLAG_BINARY         0x02  /* payload is binary, not text k:t:v  */
-#define BUS_FLAG_REPLAY         0x04  /* set by server during snapshot replay */
+#define BUS_FLAG_REPLAY         0x04  /* set by the hook during snapshot replay */
 
 /* ============================================================
  * Event types (Hook -> Java)   range 0x0000 .. 0x00FF
  * ============================================================ */
-#define EVT_HELLO               0x0001  /* server greet on connect, payload: text version info */
+#define EVT_HELLO               0x0001  /* hook greeting on connect, payload: text version info */
 #define EVT_SYNC_BEGIN          0x0002  /* snapshot replay starts            */
 #define EVT_SYNC_END            0x0003  /* snapshot replay finished          */
 

@@ -6,7 +6,7 @@
 #define CLUSTER_SURFACE_H
 /*
  * cluster_surface — shared managed-window primitive for the MHI2Q cluster
- * renderers (maneuver_render = GL overlay, altscreen_render = OMX video).
+ * renderers (maneuver_render: the GL overlay window and the OMX-decoded cluster video).
  *
  * Both open ONE QNX Screen window and hand it to the DisplayManager as a managed
  * client (screen_manage_window into the "How are you gentlemen?" group) under a

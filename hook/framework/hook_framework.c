@@ -350,10 +350,10 @@ static void clear_injection_context(void) {
 }
 
 /* Notify modules of state change */
-static void notify_state(int event, void* event_data) {
+static void notify_state(int event) {
     for (int i = 0; i < g_fw.module_count; i++) {
         if (hook_module_table[i]->on_state)
-            hook_module_table[i]->on_state(&g_fw.ctx, event, event_data);
+            hook_module_table[i]->on_state(&g_fw.ctx, event);
     }
 }
 
@@ -401,7 +401,7 @@ static void handle_state_messages(uint16_t msgid) {
             /* New session boundary — let the transport-recv sink (cover art)
              * drop any half-reassembled stream from a prior session. */
             notify_transport_recv_reset();
-            notify_state(HOOK_EVENT_IDENTIFY_START, NULL);
+            notify_state(HOOK_EVENT_IDENTIFY_START);
             break;
         case IAP2_MSG_IDENTIFY_ACCEPTED:
             g_fw.ctx.identify_accepted = true;
@@ -412,7 +412,7 @@ static void handle_state_messages(uint16_t msgid) {
             STATE_TRACE("IAP_IDENTIFY_END", "msg=0x1d03 session_active=%d",
                         g_fw.ctx.session_active ? 1 : 0);
             if (!g_fw.ctx.session_active) {
-                notify_state(HOOK_EVENT_IDENTIFY_END, NULL);
+                notify_state(HOOK_EVENT_IDENTIFY_END);
             }
             break;
         case IAP2_MSG_AUTH_COMPLETE:
@@ -562,7 +562,7 @@ void hook_framework_shutdown(void) {
     memset(&g_fw.ctx.inject, 0, sizeof(g_fw.ctx.inject));
     pthread_mutex_unlock(&g_fw.lock);
 
-    notify_state(HOOK_EVENT_SHUTDOWN, NULL);
+    notify_state(HOOK_EVENT_SHUTDOWN);
     STATE_TRACE("HOOK_SHUTDOWN", "pid=%d", (int)getpid());
 
     /* No module has an ELF destructor, which would run in unspecified order and even

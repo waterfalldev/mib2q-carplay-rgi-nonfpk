@@ -128,7 +128,7 @@ static struct {
 /* Forward declarations */
 static bool rgd_message_handler(hook_context_t* ctx, const iap2_frame_t* frame);
 static size_t rgd_identify_patcher(hook_context_t* ctx, uint8_t* buf, size_t len, size_t max_len);
-static void rgd_state_handler(hook_context_t* ctx, int event, void* event_data);
+static void rgd_state_handler(hook_context_t* ctx, int event);
 static void rgd_transport_handler(hook_context_t* ctx, uint16_t msgid);
 static void write_bus_update_partial(const rgd_update_t* upd);
 static void write_bus_maneuver_partial(const rgd_maneuver_t* man);
@@ -1232,9 +1232,7 @@ static size_t rgd_identify_patcher(hook_context_t* ctx, uint8_t* buf, size_t len
 }
 
 /* State handler */
-static void rgd_state_handler(hook_context_t* ctx, int event, void* event_data) {
-    (void)event_data;
-
+static void rgd_state_handler(hook_context_t* ctx, int event) {
     switch (event) {
         case HOOK_EVENT_IDENTIFY_START:
             /* dio_manager may survive a fast phone reconnect.  Never carry

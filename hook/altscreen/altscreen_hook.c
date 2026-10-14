@@ -217,9 +217,8 @@ static void end_session_soon(uint32_t hold, const char *why) {
     g_end_why = why;
 }
 
-static void altscreen_on_state(hook_context_t *ctx, int event, void *data) {
+static void altscreen_on_state(hook_context_t *ctx, int event) {
     (void)ctx;
-    (void)data;
     if (event != HOOK_EVENT_IDENTIFY_START) return;
     pthread_mutex_lock(&g_session_lock);
     end_session_soon(g_session_hold, "a new phone session started");

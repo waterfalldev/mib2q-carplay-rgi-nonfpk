@@ -78,7 +78,6 @@ def same_path(c_path, c_name, java_path):
 for name in ("CR_MOST_OUTPUT_PATH", "CR_MOST_OUTPUT_READY_PATH",
              "CR_MOST_MAP_OUTPUT_PATH", "CR_MOST_MAP_OUTPUT_READY_PATH"):
     same_path("maneuver_render/protocol.h", name, MOST)
-# ponytail: altscreen_render/AltscreenControlServer compare dropped (RGI-only fork has no altscreen).
 print(f"Local transport constants: {checks} matching Java/C ports, opcodes, flags, sizes and limits")
 jar = ROOT / "build/carplay_hook.jar"
 if not jar.exists():
