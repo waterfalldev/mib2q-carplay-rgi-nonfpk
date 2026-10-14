@@ -54,6 +54,10 @@ public final class ClusterVideo implements CarplayBus.Listener {
     /* The MMI's night mode (1 night, 0 day), -1 until CarPlay starts; guarded by this. */
     private int night = -1;
 
+    /* The cluster's own map colour setting, as BAP MapColorAndType carries it; guarded by this. */
+    public static final int COLOUR_DAY = 0, COLOUR_NIGHT = 1, COLOUR_AUTO = 2;
+    private int colour = COLOUR_AUTO;
+
     /** The MMI's night mode at CarPlay start and on every change (CarplayDSILifecycleController).
      *  Stock tells the phone for the whole session, and the cluster map does not follow
      *  (map23): the hook sets the cluster display's own (setNightMode with its uuid), now and
@@ -65,14 +69,29 @@ public final class ClusterVideo implements CarplayBus.Listener {
         sendNightMode("MMI");
     }
 
-    private void sendNightMode(String why) {
-        int n;
+    /** The cluster's Light / Dark / Automatic map setting (ScreenCombiBAPListener), at start-up
+     *  and whenever the driver changes it.  Light and Dark fix the phone's cluster map; Automatic
+     *  follows the MMI's night mode. */
+    public void setClusterColour(int c) {
+        if (c != COLOUR_DAY && c != COLOUR_NIGHT) c = COLOUR_AUTO;
         synchronized (this) {
-            n = night;
+            if (c == colour) return;
+            colour = c;
+            if (!running) return;   /* applied when CarPlay starts */
+        }
+        sendNightMode("cluster setting");
+    }
+
+    private void sendNightMode(String why) {
+        int n, c;
+        synchronized (this) {
+            c = colour;
+            n = c == COLOUR_DAY ? 0 : c == COLOUR_NIGHT ? 1 : night;
         }
         if (n < 0) return;
         boolean sent = CarplayBus.getInstance().sendBinary(CarplayBus.CMD_ALT_APPEARANCE, new byte[] { (byte) n });
-        Log.w(TAG, (n == 1 ? "night" : "day") + " mode for the cluster display (" + why + ")"
+        Log.w(TAG, (n == 1 ? "night" : "day") + " mode for the cluster display (" + why + ", cluster "
+            + (c == COLOUR_DAY ? "light" : c == COLOUR_NIGHT ? "dark" : "automatic") + ")"
             + (sent ? "" : ": not sent, no hook connection"));
     }
 

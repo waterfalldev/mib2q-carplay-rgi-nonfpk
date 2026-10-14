@@ -230,7 +230,10 @@ public final class MostMapViewTest {
 
     /** The next CMD_ALT_ZOOM the hook reads (past others, such as the sync request): its one
      *  signed step byte, or -128 when malformed. */
-    private static int zoomFrame(DataInputStream in) throws Exception {
+    private static int zoomFrame(DataInputStream in) throws Exception { return frame(in, CarplayBus.CMD_ALT_ZOOM); }
+
+    /* The one-byte value of the next bus frame of this type. */
+    private static int frame(DataInputStream in, int wanted) throws Exception {
         while (true) {
             if (in.readInt() != CarplayBus.MAGIC) return -128;
             in.readInt();
@@ -239,7 +242,7 @@ public final class MostMapViewTest {
             int len = in.readInt();
             byte[] body = new byte[len];
             in.readFully(body);
-            if (type != CarplayBus.CMD_ALT_ZOOM) continue;
+            if (type != wanted) continue;
             return flags == CarplayBus.FLAG_BINARY && len == 1 ? body[0] : -128;
         }
     }
@@ -282,12 +285,48 @@ public final class MostMapViewTest {
         }
     }
 
+    /* The cluster map theme: the cluster's Light and Dark settings fix it, Automatic follows the MMI. */
+    private static void clusterTheme() throws Exception {
+        ClusterVideo video = ClusterVideo.getInstance();
+        Socket hook = null;
+        try {
+            video.setClusterColour(ClusterVideo.COLOUR_DAY);
+            video.start();
+            long end = System.currentTimeMillis() + 3000L;
+            while (hook == null && System.currentTimeMillis() < end) {
+                try { hook = new Socket("127.0.0.1", CarplayBus.PORT); } catch (java.io.IOException e) { Thread.sleep(20); }
+            }
+            while (!CarplayBus.getInstance().isConnected() && System.currentTimeMillis() < end) Thread.sleep(20);
+            check(hook != null && CarplayBus.getInstance().isConnected(), "The fake hook is connected");
+            hook.setSoTimeout(3000);
+            DataInputStream in = new DataInputStream(hook.getInputStream());
+            int a = CarplayBus.CMD_ALT_APPEARANCE;
+            video.setNightMode(true);
+            check(frame(in, a) == 0, "Cluster set to Light: day even when the MMI is at night");
+            video.setClusterColour(ClusterVideo.COLOUR_AUTO);
+            check(frame(in, a) == 1, "Automatic follows the MMI's night");
+            video.setNightMode(false);
+            check(frame(in, a) == 0, "Automatic follows the MMI back to day");
+            video.setClusterColour(ClusterVideo.COLOUR_NIGHT);
+            check(frame(in, a) == 1, "Changed to Dark while driving: night at once");
+            byte[] live = "live:b:true\nstream:n:2\n".getBytes("UTF-8");
+            video.onFrame(CarplayBus.EVT_CLUSTER_VIDEO, 0, live, live.length);
+            check(frame(in, a) == 1, "A new stream gets the cluster's setting");
+        } finally {
+            video.stop();
+            video.setClusterColour(ClusterVideo.COLOUR_AUTO);
+            CarplayBus.getInstance().stop();
+            if (hook != null) hook.close();
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         measuredConfirmedWindowOnly();
         placementAndWindowToken();
         viewsAreIndependent();
         phoneNavigationWithoutGuidance();
         wheelZoom();
-        System.out.println("MostMapViewTest: measured, confirmed MAP window only, stock restoration, independent views, the navigation-and-stream rule and wheel zoom PASS (" + checks + " checks)");
+        clusterTheme();
+        System.out.println("MostMapViewTest: measured, confirmed MAP window only, stock restoration, independent views, the navigation-and-stream rule, wheel zoom and the cluster theme PASS (" + checks + " checks)");
     }
 }

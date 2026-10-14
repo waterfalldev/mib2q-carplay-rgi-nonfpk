@@ -74,6 +74,9 @@ LIVI receiver are the protocol references; none of their code is used.
     live (`CMD_ALT_APPEARANCE`); the hook sends `setNightMode {uuid, nightMode}` for the cluster
     display (yuedizhibo/MHI2Q-CarPlay-AltScreen issue 25). The phone ignores a value it already
     holds (map24), so after `showUI` the opposite value goes first and the MMI's 1 s later.
+    The cluster's own map colour setting (Light / Dark / Automatic; BAP `MapColorAndType`
+    0 day, 1 night, 2 auto, seen by `ScreenCombiBAPListener` at start-up and on every change)
+    decides first: Light and Dark fix the theme, Automatic follows the MMI's night mode.
 - **Receiver**: a listener in `dio_manager` on the first free of TCP 7100, 7000, 7001, 6200,
   6100, 6001, 6000, 5010. `lsm-pf` passes TCP into `carplay0` only on those and stock's own
   ports (map07-map10). One connection at a time, the newest.

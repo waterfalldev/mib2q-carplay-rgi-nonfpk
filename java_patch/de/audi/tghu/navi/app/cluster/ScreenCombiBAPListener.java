@@ -16,9 +16,12 @@ import de.audi.tghu.navi.app.map.MapManager;
  * the layer controller before stock acknowledges them.  The steering-wheel roller
  * (setMapScale) zooms stock's native map, except while a MOST cluster's MAP view
  * shows the phone's map: then its steps zoom that map (ClusterVideo.zoom), and stock
- * still answers the request, with its own map's unchanged scale.
+ * still answers the request, with its own map's unchanged scale.  The cluster's map colour
+ * (Light / Dark / Automatic) also sets the phone's cluster map theme (ClusterVideo).
  */
 public final class ScreenCombiBAPListener extends CombiBAPListener {
+    private final MapManager maps;
+
     public ScreenCombiBAPListener(
         ClusterService service,
         LogChannel logChannel,
@@ -41,6 +44,21 @@ public final class ScreenCombiBAPListener extends CombiBAPListener {
             commandListFactory,
             viewSizeManager
         );
+        this.maps = mapManager;
+    }
+
+    /** Start-up: stock seeds the cluster from the head unit's saved cluster map setup. */
+    public void initFromSetup() {
+        super.initFromSetup();
+        try {
+            com.luka.carplay.cluster.ClusterVideo.getInstance().setClusterColour(this.maps.getSetupKombi().getDayNightView());
+        } catch (Throwable t) { /* stock's start-up must never fail on ours */ }
+    }
+
+    /** The driver changed the cluster's map colour (BAP MapColorAndType: 0 day, 1 night, 2 auto). */
+    public void setMapColor(int colour) {
+        super.setMapColor(colour);
+        com.luka.carplay.cluster.ClusterVideo.getInstance().setClusterColour(colour);
     }
 
     /** Apply the accepted stock state before its Status acknowledgement. This boundary
