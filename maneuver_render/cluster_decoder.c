@@ -124,7 +124,18 @@ static struct {
 static int g_range = -1;
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_changed = PTHREAD_COND_INITIALIZER;
+/* Timed waits run on CLOCK_MONOTONIC, so a clock set after boot cannot stretch them.  Made
+ * once by open_decoder, before any callback or wait can use it. */
+static pthread_cond_t g_changed;
+static pthread_once_t g_changed_once = PTHREAD_ONCE_INIT;
+
+static void changed_init(void) {
+    pthread_condattr_t a;
+    pthread_condattr_init(&a);
+    pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
+    pthread_cond_init(&g_changed, &a);
+    pthread_condattr_destroy(&a);
+}
 
 /* A byte per new picture wakes cluster_decoder_wait; poll()'s relative timeout keeps it off the
  * wall clock.  Non-blocking both ends: a full pipe already means "wake". */
@@ -151,7 +162,7 @@ static uint64_t monotonic_ns(void) {
 }
 
 static void deadline_in(struct timespec *t, long ms) {
-    clock_gettime(CLOCK_REALTIME, t);
+    clock_gettime(CLOCK_MONOTONIC, t);
     t->tv_sec += ms / 1000;
     t->tv_nsec += (ms % 1000) * 1000000L;
     if (t->tv_nsec >= 1000000000L) { ++t->tv_sec; t->tv_nsec -= 1000000000L; }
@@ -405,6 +416,7 @@ static int open_decoder(uint32_t stream) {
     uint32_t i;
     int e;
     if (!load_core()) return -1;
+    pthread_once(&g_changed_once, changed_init);
     pthread_once(&g_wake_once, wake_open);      /* before any callback can write to it */
     pthread_mutex_lock(&g_lock);
     g.state = OMX_STATE_LOADED;
