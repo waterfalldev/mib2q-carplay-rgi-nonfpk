@@ -1386,20 +1386,6 @@ static void uniform3(GLint location, const float v[3]) {
 }
 
 static void sync_camera_uniforms(void) {
-    /* Animate g_persp_t toward target with ease-in-out */
-    {
-        float target = (float)g_perspective;
-        float diff = target - g_persp_t;
-        if (fabsf(diff) < 0.001f) {
-            g_persp_t = target;
-        } else {
-            g_persp_t += (diff > 0 ? 1.0f : -1.0f) * PERSP_ANIM_SPEED * g_frame_step;
-            if ((diff > 0 && g_persp_t > target) ||
-                (diff < 0 && g_persp_t < target))
-                g_persp_t = target;
-        }
-    }
-
     /* Quintic ease-in-out (smootherstep) */
     float t = g_persp_t;
     float ts = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
@@ -1450,6 +1436,19 @@ static void sync_camera_uniforms(void) {
 
 void render_begin_frame(void) {
     double now=viewport_now();
+    /* The 2D/3D blend steps once a frame; the camera syncs several times a frame. */
+    {
+        float target = (float)g_perspective;
+        float diff = target - g_persp_t;
+        if (fabsf(diff) < 0.001f) {
+            g_persp_t = target;
+        } else {
+            g_persp_t += (diff > 0 ? 1.0f : -1.0f) * PERSP_ANIM_SPEED * g_frame_step;
+            if ((diff > 0 && g_persp_t > target) ||
+                (diff < 0 && g_persp_t < target))
+                g_persp_t = target;
+        }
+    }
     g_mask_skip = 0;                  /* a mask painting that never ended must not skip more */
     g_mask_hold = 0;                  /* a hold lasts one frame at most */
     cr_rect_animate(&g_visible_area,now);
