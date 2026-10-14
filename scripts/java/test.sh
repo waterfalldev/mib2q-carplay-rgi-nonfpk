@@ -11,7 +11,7 @@ ASM_JAR=${ASM_JAR:-/inputs/asm.jar}
 ASM_TREE_JAR=${ASM_TREE_JAR:-/inputs/asm-tree.jar}
 PATCH_JAR=${CARPLAY_HOOK_JAR:-$JAVA_OUTPUT/carplay_hook.jar}
 GROUP=${1:-all}
-case "$GROUP" in all|route|transports|pdc|linkage|maneuvers|contract) ;;
+case "$GROUP" in all|route|transports|pdc|linkage|contract) ;;
     *) echo "Unknown Java test group: $GROUP" >&2; exit 2;; esac
 for input in "$PATCH_JAR" "$STOCK_JAR" "$STOCK_RUNTIME_JAR"; do
     test -f "$input" || { echo "Missing Java test input: $input" >&2; exit 1; }
@@ -204,14 +204,6 @@ if [ "$GROUP" = all ] || [ "$GROUP" = route ] || [ "$GROUP" = contract ]; then
         echo 'SKIPPED RgdNativeContractProbe: no native frames supplied (set RGD_CONTRACT_FRAMES, or run check_java.sh)'
     fi
 fi
-if [ "$GROUP" = maneuvers ]; then
-    compile maneuvers "$HOST_CP" "$TESTS/TestSupport.java" "$TESTS/ManeuverChainAudit.java" "$TESTS/RampDescriptorAudit.java" "$TESTS/ManeuverIconSelectionAudit.java"
-    # These exporters report row counts rather than PASS and are not test suites.
-    for item in ManeuverChainAudit:java_mapping.csv RampDescriptorAudit:ramp_mapping.csv ManeuverIconSelectionAudit:selection_examples.csv; do
-        java -Xverify:none -cp "$COMPILED_DIR:$HOST_CP" "${item%%:*}" "$JAVA_OUTPUT/${item#*:}"
-    done
-fi
-
 wait
 report="$JAVA_OUTPUT/host-tests.tsv"
 : > "$report"
