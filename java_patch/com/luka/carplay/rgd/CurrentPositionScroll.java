@@ -179,11 +179,7 @@ final class CurrentPositionScroll {
             pending = true;
             pendingText = null;
         }
-        if (pendingText == null) {
-            pendingText = directionMark + prefix + (fallback ? "\u2026" : source.substring(starts[frameIndex], ends[frameIndex])) + suffix;
-            if (pendingText.length() == 0) pendingText = "\u2026";
-        }
-        return pendingText;
+        return current();
     }
 
     /** Used by initial/replay publication, preserving the current fragment. */

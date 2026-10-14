@@ -48,8 +48,6 @@ public final class ScreenModule implements Module {
     private Thread worker;                        /* the ONE persistent switch worker (guarded by LOCK) */
     private static volatile Thread contextWriterThread;
 
-    /* true while the cluster is on OUR context (set AFTER the physical switch completes). */
-    private static volatile boolean clusterActive = false;
     private static volatile boolean platformSupported = true;
     /* terminal-1 contexts are ours only on the Virtual Cockpit composition
      * (ClusterPlatform.ownsContexts).  Decided once per session in start(). */
@@ -58,10 +56,10 @@ public final class ScreenModule implements Module {
 
     /**
      * True from start() (BEFORE any switch) until stop() — i.e. this returns our *intent* to own the
-     * cluster for the whole session, not the applied state.  CombiMapController's View-pin reads THIS:
-     * pinning on the applied state leaves a ~180ms window during the first switch where a View press
-     * could steal terminal 1 to the stock map (worker then thinks it still owns ctx → stuck).
-     * Intent-based pin closes that window from t0. */
+     * cluster for the whole session, not the applied state.  ownsClusterContext(), which
+     * CombiMapController's View-pin reads, builds on it: pinning on the applied state leaves a
+     * ~180ms window during the first switch where a View press could steal terminal 1 to the
+     * stock map (worker then thinks it still owns ctx → stuck).  Intent closes that window from t0. */
     public static boolean isConnected() { return platformSupported && connected; }
 
     /** true only while a session is connected AND this cluster uses the validated
@@ -274,8 +272,7 @@ public final class ScreenModule implements Module {
             navActive = false;
             navHidePending = false;
             desiredCtx = CTX_STOCK_CLUSTER;
-        }
-        synchronized (LOCK) {
+
             /* Create the single persistent worker once; recreate only if it never started or died.
              * Assign the field ONLY after start() succeeds so a throw leaves worker==null for retry. */
             if (worker == null || !worker.isAlive()) {
@@ -386,7 +383,6 @@ public final class ScreenModule implements Module {
                 }
                 d.switchContext(ctx, TERMINAL_CLUSTER, null);
                 d.setUpdateRate(TERMINAL_CLUSTER, CLUSTER_FPS);   /* (idempotent when already running) */
-                clusterActive = true;
             } else {
                 /* Preserve the stop-before-switch ordering, but never leave terminal 1
                  * parked at 0 FPS. On this A5/MHI2Q the stock
@@ -401,13 +397,12 @@ public final class ScreenModule implements Module {
                 } finally {
                     d.setUpdateRate(TERMINAL_CLUSTER, CLUSTER_FPS);
                 }
-                clusterActive = false;
             }
             synchronized (LOCK) { if (dm == d) currentCtx = ctx; }
             /* Context composition is now final: replay the last KDK popup geometry so a
              * navActive edge cannot leave planes 98/101/102 at their previous opacity. */
             com.luka.carplay.cluster.ClusterLayerController.reapply();
-            Log.i(TAG, "cluster -> ctx " + ctx + " (active=" + clusterActive + ")");
+            Log.i(TAG, "cluster -> ctx " + ctx);
         } catch (Throwable t) {
             Log.w(TAG, "switch(" + ctx + ") failed: " + t);
             synchronized (LOCK) { currentCtx = -1; }

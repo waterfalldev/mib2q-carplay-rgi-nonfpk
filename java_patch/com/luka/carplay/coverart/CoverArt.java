@@ -61,8 +61,6 @@ public class CoverArt implements CarplayBus.Listener {
         Log.i(TAG, "Stopped");
     }
 
-    public boolean isRunning() { return running; }
-
     /** Projection-session boundary: do not let an identical CRC or stale path from the previous
      * phone/source suppress the first artwork event of the new CarPlay session. */
     public synchronized void resetSession() {

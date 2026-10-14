@@ -36,12 +36,11 @@ final class RgdModule implements Module {
             return false;
         }
 
-        /* Init + subscribe ONCE.  Guard against re-running rg.init() on a retry (it builds a
-         * fresh BAPBridge each call → would re-wrap the gate every retry).  rg.start() is
+        /* Init ONCE: a retry must not rebuild the RouteGuidance/BAPBridge pair.  rg.start() is
          * idempotent (returns early if already running). */
         if (rg == null) {
             RouteGuidance r = new RouteGuidance();
-            if (!r.init(navi)) {                                  /* BAPBridge init (ClusterService) not ready */
+            if (!r.init(navi)) {                                  /* not a CombiBAPServiceNavi */
                 return false;
             }
             rg = r;

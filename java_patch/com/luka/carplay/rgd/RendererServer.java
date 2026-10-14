@@ -14,7 +14,7 @@
  *   - sendXxx() returns false if no current connection — caller (BAPBridge)
  *     counts failures to drop the view and wait for a reconnect; Java never
  *     kills or starts the renderer.
- *   - disconnect() stops the accept thread + closes everything.
+ *   - dispose() stops the accept thread + closes everything.
  *
  * No timing dependencies, no blocking accepts, no Thread.sleep hacks.
  *
@@ -125,7 +125,7 @@ public class RendererServer {
     /**
      * Open the listen socket and start the background accept thread.
      * Non-blocking — returns immediately whether the renderer is up
-     * or not.  Method name kept for BAPBridge call-site compatibility.
+     * or not.
      */
     public boolean connect() {
         synchronized (lock) {
@@ -237,8 +237,6 @@ public class RendererServer {
                     try { s.close(); } catch (Exception e2) {}
                 }
             } catch (IOException e) {
-                if (running) {
-                }
                 /* If the listen socket was closed (dispose()), exit. */
                 synchronized (lock) {
                     if (server == null || server.isClosed()) break;
@@ -472,7 +470,7 @@ public class RendererServer {
 
     /**
      * True once the renderer has successfully connected at least once
-     * during the current connect()/disconnect() lifecycle.  Caller uses
+     * during the current connect()/dispose() lifecycle.  Caller uses
      * this to distinguish "still starting up" (sends fail naturally)
      * from "had a connection that died" (drop the view, wait for reconnect).
      */
@@ -521,26 +519,26 @@ public class RendererServer {
     }
     static byte[] lanePacket(LaneGuidanceSnapshot lanes, int token) {
         byte[] batch = new byte[(lanes.count + 2) * PKT_SIZE];
-        batch[0] = CMD_LANES_BEGIN; putLaneInt(batch, 2, token);
+        batch[0] = CMD_LANES_BEGIN; putInt(batch, 2, token);
         batch[6] = (byte)lanes.count; batch[7] = (byte)(lanes.complete ? 1 : 0);
-        batch[8] = (byte)(lanes.showing ? 1 : 0); putLaneInt(batch, 10, lanes.eventIndex);
+        batch[8] = (byte)(lanes.showing ? 1 : 0); putInt(batch, 10, lanes.eventIndex);
         for (int i = 0; i < lanes.count; ++i) {
             int p = (i + 1) * PKT_SIZE;
-            batch[p] = CMD_LANES_LANE; putLaneInt(batch, p + 2, token);
-            batch[p + 6] = (byte)i; putLaneShort(batch, p + 7, lanes.positions[i]);
+            batch[p] = CMD_LANES_LANE; putInt(batch, p + 2, token);
+            batch[p + 6] = (byte)i; putShort(batch, p + 7, lanes.positions[i]);
             batch[p + 9] = (byte)lanes.status[i]; batch[p + 10] = (byte)lanes.angles[i].length;
-            putLaneShort(batch, p + 11, lanes.primary[i]);
+            putShort(batch, p + 11, lanes.primary[i]);
             for (int j = 0; j < lanes.angles[i].length; ++j)
-                putLaneShort(batch, p + 13 + j * 2, lanes.angles[i][j]);
+                putShort(batch, p + 13 + j * 2, lanes.angles[i][j]);
         }
         int end = (lanes.count + 1) * PKT_SIZE;
-        batch[end] = CMD_LANES_COMMIT; putLaneInt(batch, end + 2, token);
+        batch[end] = CMD_LANES_COMMIT; putInt(batch, end + 2, token);
         return batch; // One writer queue entry: records cannot interleave.
     }
-    private static void putLaneInt(byte[] b, int p, int v) {
+    private static void putInt(byte[] b, int p, int v) {
         b[p]=(byte)(v>>>24); b[p+1]=(byte)(v>>>16); b[p+2]=(byte)(v>>>8); b[p+3]=(byte)v;
     }
-    private static void putLaneShort(byte[] b, int p, int v) { b[p]=(byte)(v>>>8); b[p+1]=(byte)v; }
+    private static void putShort(byte[] b, int p, int v) { b[p]=(byte)(v>>>8); b[p+1]=(byte)v; }
 
     private boolean sendManeuverPacket(int icon, int direction, int exitAngle,
                                       int drivingSide, int[] junctionAngles,
@@ -565,8 +563,7 @@ public class RendererServer {
         /* payload[1]: direction (signed) */
         pkt[3] = (byte) direction;
         /* payload[2..3]: exit_angle (big-endian i16) */
-        pkt[4] = (byte) ((exitAngle >> 8) & 0xFF);
-        pkt[5] = (byte) (exitAngle & 0xFF);
+        putShort(pkt, 4, exitAngle);
         /* payload[4]: driving_side */
         pkt[6] = (byte) (drivingSide & 0xFF);
         /* payload[5]: junction_count */
@@ -578,10 +575,7 @@ public class RendererServer {
         pkt[7] = (byte) (jCount & 0xFF);
         /* payload[6..41]: junction_angles (big-endian i16 each) */
         for (int i = 0; i < jCount; i++) {
-            int off = 8 + i * 2;
-            int a = junctionAngles[i];
-            pkt[off]     = (byte) ((a >> 8) & 0xFF);
-            pkt[off + 1] = (byte) (a & 0xFF);
+            putShort(pkt, 8 + i * 2, junctionAngles[i]);
         }
 
         /* perspective in payload[43] when flag set */
@@ -625,8 +619,7 @@ public class RendererServer {
             int[] values = new int[]{x, y, w, h};
             for (int i = 0; i < 4; i++) {
                 if (values[i] < 0 || values[i] > 65535) return false;
-                pkt[2 + 2*i] = (byte)(values[i] >>> 8);
-                pkt[3 + 2*i] = (byte)values[i];
+                putShort(pkt, 2 + 2*i, values[i]);
             }
             if (!sendPacket(pkt)) return false;
             visibleX = x; visibleY = y; visibleW = w; visibleH = h;

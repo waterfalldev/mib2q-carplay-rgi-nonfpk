@@ -116,8 +116,4 @@ final class VCTextData {
         if ((props(cp) & 65536) != 0) return 0; // default-ignorable, including ZWJ/VS
         return range(advances, cp, unknownAdvance);
     }
-
-    boolean covered(int cp) {
-        return (props(cp) & 65536) != 0 || range(advances, cp, -1) >= 0;
-    }
 }

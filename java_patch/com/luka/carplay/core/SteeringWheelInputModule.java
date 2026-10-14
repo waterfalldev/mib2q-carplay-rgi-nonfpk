@@ -64,8 +64,7 @@ public final class SteeringWheelInputModule implements Module {
         FrameworkRef.ServiceHandle handle = fw.getServiceHandle(DSIKeyPanel.class);
         if (handle == null || !(handle.service() instanceof DSIKeyPanel)) {
             if (handle != null) handle.release();
-            /* Log.d is below the production level and would leave a permanently failing start
-             * silent: say it once at INFO. */
+            /* A permanently failing start must not stay silent: say it once at INFO. */
             if (!keyPanelMissLogged) {
                 keyPanelMissLogged = true;
                 Log.i(TAG, "DSIKeyPanel not available yet - retrying, MFW OK inactive until it is");
