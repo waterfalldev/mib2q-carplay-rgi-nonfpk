@@ -1,7 +1,7 @@
 #!/bin/sh
 # Host-side C tests for the RGI hook framework and maneuver renderer.
 # Java/renderer suites: test_route_info.sh, test_java_transports.sh,
-# test_maneuver_native.sh.  Safe to run anywhere (no HU access).
+# tests/renderer/run.sh.  Safe to run anywhere (no HU access).
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"

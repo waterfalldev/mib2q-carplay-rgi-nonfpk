@@ -13,7 +13,7 @@ sources:
   - code: java_patch/com/luka/carplay/rgd/RendererMapper.java
   - code: java_patch/com/luka/carplay/cluster/ClusterLayerController.java
   - code: scripts/build_renderers.sh
-  - test: scripts/test_maneuver_native.sh
+  - test: tests/renderer/run.sh
   - test: tests/RendererViewportTest.java
   - test: tests/RendererServerTransportTest.java
 reconciles:
@@ -133,6 +133,8 @@ Renderer milestones (`starting`, `EGL`, `connected`) and every Java log line car
 `./scripts/build_renderers.sh` (Docker `qnx65-armv7-toolchain`; the script header names GCC 8.5) builds
 the scene archive with `g++`, links `build/maneuver_render` against synthesized Screen/EGL/GLES stubs,
 and rejects any non-ARM or emutls-carrying binary. On macOS `make -C maneuver_render` builds the GLFW
-dev renderer + harness. Host tests: `scripts/test_maneuver_native.sh` (lane decoder, scene engine,
-maneuver parity under ASan/UBSan) and the C tests in `scripts/run_tests.sh` (including `gl_program_cache_test`: store, hit, miss on a
+dev renderer + harness. Host tests: `tests/renderer/run.sh` (lane decoder, scene engine and
+maneuver parity under UBSan, plus `check`, which compares a geometry fingerprint of 223 render scenarios
+with `tests/renderer/fingerprint.sum`; see [its README](../../tests/renderer/README.md))
+and the C tests in `scripts/run_tests.sh` (including `gl_program_cache_test`: store, hit, miss on a
 changed source or binding, driver reject, corrupt file, no save after a failed link).

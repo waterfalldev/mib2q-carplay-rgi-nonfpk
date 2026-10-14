@@ -243,7 +243,9 @@ installation workflow, see [installation](docs/deploy/install.md).
 
 `scripts/run_tests.sh` runs native, supervisor, installer and logger checks on Linux/macOS.
 `tests/most/run-native-tests.sh <checkout>` runs the renderer's MOST output checks against
-the real QNX sources inside the toolchain image.
+the real QNX sources inside the toolchain image. `tests/renderer/run.sh` runs the renderer
+suites the same way, and `tests/renderer/run.sh . check` compares its drawing output with a
+recorded fingerprint.
 `scripts/test_route_info.sh`, `scripts/test_java_transports.sh` and
 `scripts/test_pdc.sh` retain their respective test groups; the parking command
 checks an existing JAR. `scripts/check_java.sh` builds and runs all Java groups
