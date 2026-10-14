@@ -137,7 +137,6 @@ static void write_bus_snapshot_from_cache(int extra_slot, const rgd_maneuver_t* 
                                           const rgd_update_t* current_upd);
 static void write_slot_data_keys(bus_text_builder_t* b, unsigned slot, const rgd_maneuver_t* man);
 static void write_lane_data_keys(bus_text_builder_t* b, unsigned slot, const rgd_lane_guidance_t* lane);
-static void write_lane_clear_keys(bus_text_builder_t* b, unsigned slot);
 static void rgd_lazy_init(void);
 
 static void rgd_update_cache_reset(void) {
@@ -549,12 +548,6 @@ static void write_lane_data_keys(bus_text_builder_t* b, unsigned idx, const rgd_
     key_lanes(b, "lg", idx, lane->lanes, lane->lane_count);
 }
 
-static void write_lane_clear_keys(bus_text_builder_t* b, unsigned idx) {
-    key_int(b, "lg", idx, "index", -1);
-    key_int(b, "lg", idx, "lane_complete", 0);
-    key_lanes(b, "lg", idx, NULL, -1);
-}
-
 static bool rgd_lane_slot_has_data(int slot) {
     if (slot < 0 || slot >= MANEUVER_CACHE_SIZE) return false;
     return (g_rgd.route.lane_cache[slot].present & (RGD_LANE_GUIDANCE_INDEX | RGD_LANE_INFORMATIONS)) ==
@@ -808,13 +801,15 @@ static void write_bus_snapshot_from_cache(int extra_slot, const rgd_maneuver_t* 
     for (int i = 0; i < listed_count; i++)
         write_slot_data_keys(b, (unsigned)listed_slots[i], &g_rgd.route.slot_cache[listed_slots[i]]);
 
+    /* lane_slots names every slot that holds lanes; Java empties the rest.  Each snapshot
+     * carries the whole set, so a frame lost on the bus cannot strand stale lanes. */
+    uint32_t lane_slots = 0;
     for (int i = 0; i < MANEUVER_CACHE_SIZE; i++) {
-        if (rgd_lane_slot_has_data(i)) {
-            write_lane_data_keys(b, (unsigned)i, &g_rgd.route.lane_cache[i]);
-        } else {
-            write_lane_clear_keys(b, (unsigned)i);
-        }
+        if (!rgd_lane_slot_has_data(i)) continue;
+        lane_slots |= 1u << i;
+        write_lane_data_keys(b, (unsigned)i, &g_rgd.route.lane_cache[i]);
     }
+    bus_text_uint(b, "lane_slots", lane_slots);
 
     /*
      * Extra slot (from 0x5202) that is already in the listed maneuver_list

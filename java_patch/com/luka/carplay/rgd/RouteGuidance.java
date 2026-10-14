@@ -229,14 +229,23 @@ public class RouteGuidance implements CarplayBus.Listener {
         public void clearAllManeuverSlots() {
             for (int i = 0; i < MAX_MANEUVERS; i++) {
                 clearManeuverSlot(i);
-                lgIndex[i] = -1;
-                lgLanePositions[i] = null;
-                lgLaneCount[i] = -1;
-                lgLaneComplete[i] = -1;
-                lgLaneDirections[i] = null;
-                lgLaneStatus[i] = null;
-                lgLaneAngles[i] = null;
+                clearLaneSlot(i);
             }
+        }
+
+        /** Empty one lane-guidance cache slot; true if it held anything. */
+        public boolean clearLaneSlot(int i) {
+            boolean had = lgIndex[i] != -1 || lgLaneCount[i] != -1 || lgLaneComplete[i] != -1
+                || lgLanePositions[i] != null || lgLaneDirections[i] != null
+                || lgLaneStatus[i] != null || lgLaneAngles[i] != null;
+            lgIndex[i] = -1;
+            lgLanePositions[i] = null;
+            lgLaneCount[i] = -1;
+            lgLaneComplete[i] = -1;
+            lgLaneDirections[i] = null;
+            lgLaneStatus[i] = null;
+            lgLaneAngles[i] = null;
+            return had;
         }
 
         /** Reset a reassigned maneuver without touching independent lane events. */
@@ -1008,6 +1017,14 @@ public class RouteGuidance implements CarplayBus.Listener {
         for (int k = 0; k < d.size(); k++) {
             markSlot(d.key(k), "lg", lgSlots);
             markSlot(d.key(k), "m", mSlots);
+        }
+        /* lane_slots names every lane-guidance slot that holds lanes; the rest are empty.
+         * Each snapshot carries it, so a frame lost on the bus cannot strand stale lanes. */
+        if (d.has("lane_slots")) {
+            long held = d.num64("lane_slots", 0);
+            for (int i = 0; i < MAX_MANEUVERS; i++)
+                if ((held & (1L << i)) == 0 && state.clearLaneSlot(i))
+                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
         }
         for (int i = 0; i < MAX_MANEUVERS; i++) {
             if (!lgSlots[i]) continue;

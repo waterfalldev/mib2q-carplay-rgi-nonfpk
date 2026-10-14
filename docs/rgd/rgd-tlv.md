@@ -99,7 +99,9 @@ Every ID matches `+[ACCNavigationRouteGuidanceUpdateInfo keyForType:]` (accessor
 `0x01` LaneGuidanceIndex - `0x02` LaneInformations (per-lane angle vectors) - `0x03` Description.
 Up to 8 lanes x 16 angles are kept. The parser also publishes `lgN_lane_complete` (bus key): `1` only
 when every nested lane-information TLV was consumed exactly and each lane carried both an index and a
-status; an overflow, a trailing byte or a missing field clears it. Detail -> [lane-guidance](lane-guidance.md).
+status; an overflow, a trailing byte or a missing field clears it. Each snapshot sends only the slots that hold
+lanes, plus `lane_slots`, a bitmask of those slots; Java empties every slot outside it. Detail ->
+[lane-guidance](lane-guidance.md).
 
 ## ✅ Whole-message validation
 
