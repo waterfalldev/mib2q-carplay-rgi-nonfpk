@@ -45,8 +45,6 @@ struct Builder {
     static constexpr int MaxKeys = RMESH_MAX_VERTS + 2048;
     float points[MaxKeys][3];
     int point_count;
-    uint32_t scene_mesh_hash;
-    float exit_fade_length;
     DisplayList *list;
     float projection[16], matrix[16], pan_x, pan_y;
     bool failed;
@@ -88,17 +86,10 @@ struct Builder {
     void reset(DisplayList *output, const float camera[16]) {
         std::memset(this, 0, sizeof(*this));
         list = output;
-        exit_fade_length = EXIT_FADE_LENGTH;
         output->count = 0;
         output->overflow = false;
         std::memcpy(projection, camera, sizeof(projection));
         camera_sync();
-    }
-    void update_mesh_hash() {
-        const unsigned char *bytes = reinterpret_cast<const unsigned char *>(mesh.verts);
-        scene_mesh_hash = 2166136261u;
-        for (size_t i = 0; i < static_cast<size_t>(mesh.vert_count) * 6 * sizeof(float); ++i)
-            scene_mesh_hash = (scene_mesh_hash ^ bytes[i]) * 16777619u;
     }
     void compile_native(const maneuver_state_t *maneuver);
     void key_point(float x, float h, float y);

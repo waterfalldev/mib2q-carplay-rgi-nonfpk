@@ -325,6 +325,7 @@ static GLint  g_fxaa_uni_tex = -1;
 static GLint  g_fxaa_uni_rcp = -1;  /* 1/width, 1/height */
 static float g_mask_half_w = 1.6f;
 static float g_mask_half_h = 1.0f;
+static int   g_lit_static_dirty = 1; /* constant lit-program uniforms (light colours, mask scale) need uploading */
 
 
 static const material_preset_t k_material_presets[RENDER_MAT_COUNT] = {
@@ -792,6 +793,7 @@ static int build_program(void) {
     g_uni_tex      = glGetUniformLocation(g_program, "u_tex");
     g_uni_mask_scale = glGetUniformLocation(g_program, "u_mask_scale");
     g_uni_global_alpha = glGetUniformLocation(g_program, "u_global_alpha");
+    g_lit_static_dirty = 1;
     return 0;
 }
 
@@ -1053,6 +1055,23 @@ static void update_mask_config(int fb_width, int fb_height) {
     if (required_x / aspect > g_mask_half_h)
         g_mask_half_h = required_x / aspect;
     g_mask_half_w = g_mask_half_h * aspect;
+
+    /* Pure 2D orthographic MVP for mask rendering.
+     * Same top-down view as ortho mode but with no perspective blend. */
+    {
+        float proj[16], view[16];
+        mat4_ortho(proj, -g_mask_half_w, g_mask_half_w,
+                   -g_mask_half_h, g_mask_half_h, 0.1f, 20.0f);
+        mat4_zero(view);
+        view[0]  =  1.0f;   /* x -> x */
+        view[9]  =  1.0f;   /* z -> y_screen */
+        view[13] =  0.0f;
+        view[6]  =  1.0f;   /* y -> z_depth */
+        view[14] = -5.0f;   /* push into view */
+        view[15] =  1.0f;
+        mat4_mul(g_mvp_ortho_2d, proj, view);
+    }
+    g_lit_static_dirty = 1;
 }
 
 /* ================================================================
@@ -1279,7 +1298,7 @@ void render_get_render_size(int *w, int *h) {
     *h = g_win_h;
 }
 
-static void build_camera_mvp(float *mvp, float aspect, float pan_x, float pan_z,
+static void build_camera_mvp(float *mvp, float *eye_out, float aspect, float pan_x, float pan_z,
                               float rotation, float ts,float dolly) {
     float cam_cos = cosf(rotation);
     float cam_sin = sinf(rotation);
@@ -1294,6 +1313,7 @@ static void build_camera_mvp(float *mvp, float aspect, float pan_x, float pan_z,
         eye_z=ctr_z+(eye_z-ctr_z)*distance;
         eye_y=CAM_CTR_Y+(CAM_EYE_Y-CAM_CTR_Y)*distance;
     }
+    if(eye_out) { eye_out[0]=eye_x; eye_out[1]=eye_y; eye_out[2]=eye_z; }
 
     /* Compute both MVPs and lerp */
     float mvp_persp[16], mvp_ortho[16];
@@ -1354,11 +1374,15 @@ static void build_camera_mvp(float *mvp, float aspect, float pan_x, float pan_z,
 }
 
 void render_get_layout_matrix(float out[16]) {
-    if(out)build_camera_mvp(out,(float)g_fb_w/g_fb_h,0,0,0,1,0);
+    if(out)build_camera_mvp(out,NULL,(float)g_fb_w/g_fb_h,0,0,0,1,0);
 }
 
 void render_build_framing_matrix(float out[16],float aspect,float dolly) {
-    if(out)build_camera_mvp(out,aspect,0,0,0,1,dolly);
+    if(out)build_camera_mvp(out,NULL,aspect,0,0,0,1,dolly);
+}
+
+static void uniform3(GLint location, const float v[3]) {
+    glUniform3f(location, v[0], v[1], v[2]);
 }
 
 static void sync_camera_uniforms(void) {
@@ -1379,40 +1403,21 @@ static void sync_camera_uniforms(void) {
     /* Quintic ease-in-out (smootherstep) */
     float t = g_persp_t;
     float ts = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
-
-    float cam_cos=cosf(g_cam_rot), cam_sin=sinf(g_cam_rot);
-    float eye_x=g_cam_pan_x+cam_cos*CAM_EYE_X-cam_sin*CAM_EYE_Z;
-    float eye_z=g_cam_pan_z+cam_sin*CAM_EYE_X+cam_cos*CAM_EYE_Z;
-    float eye_y=CAM_EYE_Y;
-    if(g_content_offset.current.w!=0) {
-        float distance=1+g_content_offset.current.w;
-        float ctr_x=g_cam_pan_x+cam_cos*CAM_CTR_X-cam_sin*CAM_CTR_Z;
-        float ctr_z=g_cam_pan_z+cam_sin*CAM_CTR_X+cam_cos*CAM_CTR_Z;
-        eye_x=ctr_x+(eye_x-ctr_x)*distance;eye_z=ctr_z+(eye_z-ctr_z)*distance;
-        eye_y=CAM_CTR_Y+(CAM_EYE_Y-CAM_CTR_Y)*distance;
-    }
-    build_camera_mvp(g_mvp_current,(float)g_fb_w/g_fb_h,
+    float eye[3];
+    build_camera_mvp(g_mvp_current,eye,(float)g_fb_w/g_fb_h,
                      g_cam_pan_x,g_cam_pan_z,g_cam_rot,ts,g_content_offset.current.w);
     for(int c=0;c<4;++c) {
         g_mvp_current[c*4]+=g_mvp_current[c*4+3]*2*g_content_offset.current.x/CR_DEFAULT_WIDTH;
         g_mvp_current[c*4+1]-=g_mvp_current[c*4+3]*2*g_content_offset.current.y/CR_DEFAULT_HEIGHT;
     }
 
-    /* Pure 2D orthographic MVP for mask rendering.
-     * Same top-down view as ortho mode but with no perspective blend. */
-    {
-        float proj[16], view[16];
-        mat4_ortho(proj, -g_mask_half_w, g_mask_half_w,
-                   -g_mask_half_h, g_mask_half_h, 0.1f, 20.0f);
-        mat4_zero(view);
-        view[0]  =  1.0f;   /* x -> x */
-        view[9]  =  1.0f;   /* z -> y_screen */
-        view[13] =  0.0f;
-        view[6]  =  1.0f;   /* y -> z_depth */
-        view[14] = -5.0f;   /* push into view */
-        view[15] =  1.0f;
-        mat4_mul(g_mvp_ortho_2d, proj, view);
-
+    if (g_lit_static_dirty) {
+        g_lit_static_dirty = 0;
+        uniform3(g_uni_light_key_color, k_lighting_state.key_color);
+        uniform3(g_uni_light_fill_color, k_lighting_state.fill_color);
+        uniform3(g_uni_light_sky_color, k_lighting_state.sky_color);
+        uniform3(g_uni_light_ground_color, k_lighting_state.ground_color);
+        uniform3(g_uni_light_spec_color, k_lighting_state.spec_color);
         /* mask_scale: maps world (x,z) -> mask UV (0..1).
          * UV = world_coord * scale + 0.5 */
         glUniform2f(g_uni_mask_scale, 0.5f / g_mask_half_w, 0.5f / g_mask_half_h);
@@ -1433,32 +1438,12 @@ static void sync_camera_uniforms(void) {
     g_light_vector[1]=ly/ll;
     g_light_vector[2]=lz/ll;
     glUniform3f(g_uni_light, lx/ll, ly/ll, lz/ll);
-    glUniform3f(g_uni_light_key_color,
-                k_lighting_state.key_color[0],
-                k_lighting_state.key_color[1],
-                k_lighting_state.key_color[2]);
-    glUniform3f(g_uni_light_fill_color,
-                k_lighting_state.fill_color[0],
-                k_lighting_state.fill_color[1],
-                k_lighting_state.fill_color[2]);
-    glUniform3f(g_uni_light_sky_color,
-                k_lighting_state.sky_color[0],
-                k_lighting_state.sky_color[1],
-                k_lighting_state.sky_color[2]);
-    glUniform3f(g_uni_light_ground_color,
-                k_lighting_state.ground_color[0],
-                k_lighting_state.ground_color[1],
-                k_lighting_state.ground_color[2]);
-    glUniform3f(g_uni_light_spec_color,
-                k_lighting_state.spec_color[0],
-                k_lighting_state.spec_color[1],
-                k_lighting_state.spec_color[2]);
 
     /* Camera eye position for specular/rim -- lerp between modes */
     glUniform3f(g_uni_eye,
-                eye_x * ts + 0.0f * (1.0f - ts),
-                eye_y * ts + 5.0f * (1.0f - ts),
-                eye_z * ts + 0.0f * (1.0f - ts));
+                eye[0] * ts + 0.0f * (1.0f - ts),
+                eye[1] * ts + 5.0f * (1.0f - ts),
+                eye[2] * ts + 0.0f * (1.0f - ts));
 
     g_z_bias = 0.0f;
 }

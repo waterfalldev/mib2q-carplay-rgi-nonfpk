@@ -99,7 +99,7 @@ The renderer frames the arrow for the part of the 328x180 frame the VC actually 
 (`scene/scene.h`), built `-fno-exceptions -fno-rtti` into `build/libmaneuver_scene.a` and linked into
 the C renderer. `build_renderers.sh` fails the build if the scene objects reference any C++ runtime
 symbol (`__cxa*`, `_ZSt*`, typeinfo/vtables, `new`/`delete`, personality). A scene is prepared per
-maneuver (immutable input + generation); geometry it cannot fit falls back to the built-in maneuver
+maneuver (immutable input); geometry it cannot fit falls back to the built-in maneuver
 family (side roads, roundabouts, arrival flag, elevation). The arrow fill/blink is `arrow_progress.h`;
 the progress state comes from the wire and is only eased locally.
 

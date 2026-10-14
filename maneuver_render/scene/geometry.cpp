@@ -23,7 +23,6 @@ void Builder::compile_native(const maneuver_state_t *m) {
         const Frame &frame = style::SmallFrame;
         framing_ok = !failed && frame_bounds[0] >= frame.left && frame_bounds[1] >= frame.top &&
                      frame_bounds[2] <= frame.right && frame_bounds[3] <= frame.bottom;
-        update_mesh_hash();
     }
 }
 
@@ -120,7 +119,7 @@ void Builder::exit_point(int i, float offset, float *x, float *y) {
 void Builder::exit_fade_begin(void) {
     float dx = cosf(path.arrow_angle), dy = sinf(path.arrow_angle);
     direction_fade(path.arrow_x + dx * EXIT_ROAD_REACH, path.arrow_y + dy * EXIT_ROAD_REACH, -dx, -dy,
-                   exit_fade_length);
+                   EXIT_FADE_LENGTH);
 }
 
 void Builder::exit_fade_end(void) {
@@ -157,7 +156,6 @@ void Builder::compile_road(const maneuver_state_t *maneuver) {
                 key_point(v[0], v[1], v[2]);
         }
         frame_scene(0);
-        update_mesh_hash();
 
         begin_outline();
         /* Thin curb strips share the pavement's directional end fade. */

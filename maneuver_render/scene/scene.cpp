@@ -44,7 +44,7 @@ bool same_maneuver(const maneuver_state_t &a, const maneuver_state_t &b) {
            !std::memcmp(a.junction_angles, b.junction_angles, a.junction_angle_count * sizeof(float));
 }
 bool same_input(const cr_scene_input_t &a, const cr_scene_input_t &b) {
-    return a.generation == b.generation && same_maneuver(a.maneuver, b.maneuver);
+    return same_maneuver(a.maneuver, b.maneuver);
 }
 } // namespace
 
@@ -150,9 +150,6 @@ extern "C" int cr_scene_prepare(cr_scene_t *s, const cr_scene_input_t *input, co
     d.route_elevation = b.route_elevation;
     d.camera_x = b.camera_x;
     d.camera_y = b.camera_y;
-    std::memcpy(d.bounds, b.frame_bounds, sizeof(d.bounds));
-    d.framed = b.framing_ok;
-    d.mesh_hash = b.scene_mesh_hash;
     d.fallback = fallback;
     d.command_count = s->display.count;
     ++d.builds;
@@ -203,5 +200,4 @@ extern "C" void cr_scene_paint(cr_scene_t *s, float tx, float ty, float c, float
     }
     render_pop_mask_transform();
     render_set_mask_entry_fade(0, 0);
-    ++s->info.paint_count;
 }
