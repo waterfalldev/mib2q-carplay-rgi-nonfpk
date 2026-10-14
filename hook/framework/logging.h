@@ -23,14 +23,6 @@
 #define ENABLE_LOGGING 1
 #endif
 
-/* A state-trace build keeps the same bounded asynchronous writer while all
- * ordinary LOG_* calls and binary captures remain compiled out.  This is the
- * safe diagnostic shape for startup: stock iAP2/AirPlay/QSA threads enqueue a
- * short record and never perform filesystem I/O themselves. */
-#ifndef ENABLE_STATE_TRACE
-#define ENABLE_STATE_TRACE 0
-#endif
-
 /* Log levels */
 typedef enum {
     LOG_LEVEL_DEBUG = 0,
@@ -50,11 +42,7 @@ typedef struct {
 /* Default configuration.
  * Production emits WARN and ERROR only.  INFO/DEBUG stay compiled in and are lifted to INFO
  * without a rebuild by `touch /mnt/app/carplay_verbose` - see log_init() in logging.c. */
-#if ENABLE_STATE_TRACE && !ENABLE_LOGGING
-#define LOG_DEFAULT_PATH "/tmp/carplay_state_trace.log"
-#else
 #define LOG_DEFAULT_PATH "/tmp/carplay_hook.log"
-#endif
 
 #define LOG_CONFIG_DEFAULT { \
     .log_path = LOG_DEFAULT_PATH, \
@@ -63,7 +51,7 @@ typedef struct {
     .max_files = 3 \
 }
 
-#if ENABLE_LOGGING || ENABLE_STATE_TRACE
+#if ENABLE_LOGGING
 
 /* Initialize logging system */
 hook_result_t log_init(const log_config_t* config);

@@ -51,7 +51,7 @@ docker run --rm --platform=linux/amd64 -v "$PROJECT_DIR":/host "$IMG" bash -c '
   mkdir -p /src/build
   cp -a /host/hook /host/common /src/
   cd /src/hook
-  SRCS="framework/logging.c framework/state_trace.c framework/signal_guard.c framework/bus.c \
+  SRCS="framework/logging.c framework/signal_guard.c framework/bus.c \
         framework/iap2_protocol.c framework/hook_framework.c framework/cflite.c framework/airplay_seams.c \
         routeguidance/rgd_tlv.c routeguidance/rgd_hook.c coverart/jpeg_safety.c coverart/coverart_stream.c coverart/coverart_hook.c \
         altscreen/altscreen_hook.c main.c"

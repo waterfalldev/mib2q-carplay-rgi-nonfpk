@@ -6,7 +6,7 @@
 
 #include "logging.h"
 
-#if ENABLE_LOGGING || ENABLE_STATE_TRACE
+#if ENABLE_LOGGING
 
 #define MAX_LOG_LINE 1024
 #define LOG_QUEUE_CAPACITY 64
@@ -116,14 +116,7 @@ static void* log_writer_main(void* unused) {
         pthread_mutex_lock(&g_log.lock);
         while (!g_log.shutdown && g_log.queue_count == 0)
             pthread_cond_wait(&g_log.cond, &g_log.lock);
-#if ENABLE_STATE_TRACE && !ENABLE_LOGGING
-        /* Trace-only shutdown is itself evidence. Drain already-enqueued
-         * terminal records before exiting; log_shutdown still caps the wait,
-         * so a wedged filesystem cannot become a watchdog hang. */
-        if (g_log.shutdown && g_log.queue_count == 0) {
-#else
         if (g_log.shutdown) {
-#endif
             g_log.writer_running = false;
             pthread_cond_broadcast(&g_log.cond);
             pthread_mutex_unlock(&g_log.lock);
@@ -217,9 +210,7 @@ void log_shutdown(void) {
     }
 
     g_log.shutdown = true;
-#if !(ENABLE_STATE_TRACE && !ENABLE_LOGGING)
     g_log.queue_head = g_log.queue_tail = g_log.queue_count = 0;
-#endif
     pthread_cond_broadcast(&g_log.cond);
     COND_WAIT_MS(&g_log.cond, &g_log.lock, LOG_SHUTDOWN_WAIT_MS,
                  !g_log.writer_created || !g_log.writer_running);

@@ -158,9 +158,6 @@ support - it supplies a genuinely absent case. *(RE-derived; not re-checkable fr
 - **FIXED - host signal dispositions** [x]. The bus's `SIGPIPE` ignore and fault-signal diagnostics go
   through `signal_guard`, which saves `dio_manager`'s previous `sigaction`s, chains fault signals to
   them, and restores them on shutdown; control signals stay untouched - see [bus-protocol](bus-protocol.md).
-- **State trace** - `framework/state_trace.c` (generation-scoped startup trace of iAP2/transport
-  markers) is compiled out unless `ENABLE_STATE_TRACE=1`; `build_hook.sh` never sets it, so shipping
-  builds carry only inline no-op stubs.
 - **P2 - fail-open process gate** (!) **open in code** (mitigated). `hook_process_is_dio_manager()` returns
   **true** when `/proc/self/cmdline` can't be opened/read (fail-open). Mitigated because the startup
   script restricts `LD_PRELOAD` to `dio_manager`; fail-closed would still be safer.

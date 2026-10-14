@@ -60,10 +60,6 @@ build_bg cc -D_GNU_SOURCE -std=gnu99 -O1 -Wall -Wextra -Werror -Itests tests/clu
     -rdynamic -lpthread $DL_LIB $RT_LIB -o "$OUT/cluster_decoder"
 build_bg cc -D_GNU_SOURCE -std=c99 -O1 -Wall -Wextra -Werror -Wno-unused-function \
     -DENABLE_LOGGING=0 -Ihook -Ihook/framework tests/inject_generation_test.c $DL_LIB -o "$OUT/inject_generation"
-build_bg cc -D_GNU_SOURCE -std=c99 -O2 -Wall -Wextra -Werror -Ihook \
-    -DENABLE_LOGGING=0 -DENABLE_STATE_TRACE=1 \
-    tests/state_trace_test.c hook/framework/state_trace.c \
-    hook/framework/iap2_protocol.c $DL_LIB -o "$OUT/state_trace"
 build_bg cc -D_GNU_SOURCE -std=c99 -O2 -Wall -Wextra -Werror -pedantic -Ihook \
     tests/signal_guard_test.c hook/framework/signal_guard.c \
     $DL_LIB -o "$OUT/signal_guard"
@@ -71,10 +67,6 @@ build_bg cc -D_GNU_SOURCE -std=gnu99 -O2 -Wall -Wextra -Werror \
     -Wno-unused-variable -Wno-unused-but-set-variable -Ihook \
     tests/bus_transport_test.c hook/framework/signal_guard.c \
     -lpthread $DL_LIB -o "$OUT/bus_transport"
-build_bg cc -D_GNU_SOURCE -std=c99 -O2 -Wall -Wextra -Werror -Ihook \
-    -DENABLE_LOGGING=0 -DENABLE_STATE_TRACE=1 \
-    tests/state_trace_logger_test.c hook/framework/logging.c \
-    -lpthread $DL_LIB -o "$OUT/state_trace_logger"
 for pid in $PIDS; do wait "$pid" || exit 1; done
 
 printf '%-32s ' maneuver_surface_test
@@ -122,17 +114,11 @@ printf '%-32s ' cluster_decoder_test
 printf '%-32s ' inject_generation_test
 "$OUT/inject_generation"
 
-printf '%-32s ' state_trace_test
-"$OUT/state_trace" && echo OK
-
 printf '%-32s ' signal_guard_test
 "$OUT/signal_guard"
 
 printf '%-32s ' bus_transport_test
 "$OUT/bus_transport"
-
-printf '%-32s ' state_trace_logger_test
-"$OUT/state_trace_logger" && echo OK
 
 printf '%-32s ' local_protocols
 python3 scripts/check_local_protocols.py
