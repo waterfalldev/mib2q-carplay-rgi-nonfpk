@@ -391,7 +391,7 @@ It was just the warm-up, next:
   <img src="assets/coming-soon.jpg" width="70%" />
 </p>
 
-- **AltScreen** - full CarPlay map, right in cluster
+- **AltScreen** - full CarPlay map, right in cluster *(done for MOST clusters in this fork, see [Features](#-features); Virtual Cockpit still to come)*
 - **Multichannel audio support** - from stereo up to 6- or even 8-channel
 - **Apple Spatial Audio**
 - **Dolby Atmos** - High Quality 5.1.2 masters
