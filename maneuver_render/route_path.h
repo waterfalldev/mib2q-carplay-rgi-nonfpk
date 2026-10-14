@@ -83,6 +83,8 @@ void rpath_add_arc(route_path_t *p, float cx, float cy, float radius,
                    float start_rad, float end_rad);
 void rpath_densify(route_path_t *p);
 void rpath_set_arrow(route_path_t *p, float x, float y, float angle_rad);
+/* Densified point index and position at a distance along the path (0 = past the end). */
+int  rpath_locate(const route_path_t *p, float dist, float *x, float *y);
 
 /* Mesh generation + drawing.
  * t0/t1 = animation window: extrude path from fraction t0 to t1.

@@ -46,15 +46,6 @@ typedef struct {
     int bap_geometry;    /* inhibit snap (BAP roads or missing/typed exit fallback) */
 } maneuver_state_t;
 
-/* Exit point of a maneuver path (for chaining). */
-typedef struct {
-    float x, y;       /* exit point in local maneuver coords */
-    float heading;     /* exit heading in radians (math convention) */
-} maneuver_exit_t;
-
-/* Get the exit point and heading for a maneuver (pure computation). */
-maneuver_exit_t maneuver_get_exit(const maneuver_state_t *state);
-
 /* Build route path segments for a maneuver (no extend/densify/extrude).
  * Used for path chaining during transitions. */
 void maneuver_build_route(const maneuver_state_t *state, route_path_t *path);

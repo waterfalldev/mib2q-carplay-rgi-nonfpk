@@ -515,12 +515,11 @@ int main(void) {
 
     memset(&s, 0, sizeof(s)); s.icon = ICON_ROUNDABOUT; s.exit_angle = -67.5f;
     s.junction_angle_count = 1; s.junction_angles[0] = -90; s.bap_geometry = 1;
-    maneuver_exit_t ex = maneuver_get_exit(&s);
-    assert(near(ex.heading, 157.5f * (float)M_PI / 180));
     maneuver_build_route(&s, &path);
-    assert(near(path.arrow_angle, ex.heading));
+    assert(near(path.arrow_angle, 157.5f * (float)M_PI / 180));
     s.bap_geometry = 0;
-    assert(near(maneuver_get_exit(&s).heading, (float)M_PI)); /* legacy snap retained */
+    maneuver_build_route(&s, &path);
+    assert(near(path.arrow_angle, (float)M_PI)); /* legacy snap retained */
 
     /* Raw roads contain the active exit; BAP-filtered roads do not. The active
      * road must be chosen before an adjacent road, with a strict 30-degree cap. */
@@ -528,8 +527,8 @@ int main(void) {
     s.junction_angles[0]=-90;s.junction_angles[1]=-65;s.junction_angles[2]=0;
     rab_snap_t snap=snap_roundabout_exit(s.exit_angle,s.junction_angles,3,s.bap_geometry);
     assert(snap.snapped_idx==1 && near(snap.snapped_deg,-65));
-    ex=maneuver_get_exit(&s);maneuver_build_route(&s,&path);
-    assert(near(ex.heading,155*(float)M_PI/180) && near(path.arrow_angle,ex.heading));
+    maneuver_build_route(&s,&path);
+    assert(near(path.arrow_angle,155*(float)M_PI/180));
     s.junction_angles[0]=-97;
     snap=snap_roundabout_exit(-67,s.junction_angles,1,0);
     assert(snap.snapped_idx==-1 && near(snap.snapped_deg,-67));
@@ -562,16 +561,16 @@ int main(void) {
         for (side = 0; side < 2; side++) {
             memset(&s, 0, sizeof(s));s.icon=i;s.driving_side=side;s.direction=side?1:-1;
             s.exit_angle=side?67.5f:-67.5f;s.bap_geometry=1;
-            maneuver_build_route(&s, &path);ex=maneuver_get_exit(&s);
-            assert(path.seg_count>0 && near(path.arrow_x,ex.x) && near(path.arrow_y,ex.y));
-            assert(near(path.arrow_angle,ex.heading));
+            maneuver_build_route(&s, &path);
+            assert(path.seg_count>0 && isfinite(path.arrow_x) && isfinite(path.arrow_y) && isfinite(path.arrow_angle));
             rpath_densify(&path);assert(isfinite(path.total_length) && path.total_length>0);
         }
     }
     memset(&left,0,sizeof(left));left.icon=ICON_ROUNDABOUT_EXIT;left.driving_side=1;
     right=left;right.driving_side=0;
-    maneuver_exit_t l=maneuver_get_exit(&left),r=maneuver_get_exit(&right);
-    assert(l.x<0 && r.x>0 && near(l.x,-r.x) && near(l.y,r.y));
+    route_path_t lp,rp;
+    maneuver_build_route(&left,&lp);maneuver_build_route(&right,&rp);
+    assert(lp.arrow_x<0 && rp.arrow_x>0 && near(lp.arrow_x,-rp.arrow_x) && near(lp.arrow_y,rp.arrow_y));
 
     assert(!(cr_merge_maneuver_flags(1,4,12)&MAN_FLAG_REFRESH)); /* new + refresh */
     assert(!(cr_merge_maneuver_flags(1,12,4)&MAN_FLAG_REFRESH)); /* refresh + new */
