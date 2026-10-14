@@ -29,9 +29,6 @@ public class RouteGuidance implements CarplayBus.Listener {
      */
     private static final int ROUTE_STATE_NO_ROUTE_SET = 0;
     private static final int ROUTE_STATE_ROUTE_SET = 1;
-    private static final int ROUTE_STATE_REROUTING = 5;
-    /* MHI3 accepts every maneuver update while routeGuidanceState == 5; that rule
-     * lives in the hook (rgd_hook.c, RGD_STATE_REROUTING), not here. */
 
     /* State */
     private BAPBridge bap;
@@ -120,12 +117,7 @@ public class RouteGuidance implements CarplayBus.Listener {
         public static final int DIRTY_SOURCE_SUPPORTS_RG = 1 << 20;
         public static final int DIRTY_LANE_GUIDANCE    = 1 << 21;
 
-        /* Per-maneuver dirty */
-        public static final int MAN_DIR_ICON = 1;
-        public static final int MAN_DIR_TEXT = 2;
-
         public int dirtyMask = 0;
-        public int[] mDirty = new int[MAX_MANEUVERS];
 
         /* Route */
         public int routeState = -1;
@@ -136,7 +128,6 @@ public class RouteGuidance implements CarplayBus.Listener {
         public int visibleInApp = -1;
         public int sourceSupportsRg = -1;
         public int laneGuidanceShowing = -1;
-        public int laneGuidanceTotal = -1;
         public int laneGuidanceIndex = -1;
         public int laneGuidanceSlot = -1;
 
@@ -226,10 +217,7 @@ public class RouteGuidance implements CarplayBus.Listener {
             disconnectReason = null;
             visibleInApp = -1;
             sourceSupportsRg = -1;
-            laneGuidanceShowing = -1;
-            laneGuidanceTotal = -1;
-            laneGuidanceIndex = -1;
-            laneGuidanceSlot = -1;
+            clearLaneGuidance();
             clearAllManeuverSlots();
             clearDirty();
         }
@@ -274,22 +262,18 @@ public class RouteGuidance implements CarplayBus.Listener {
             mLaneAngles[i] = null;
         }
 
+        public void clearLaneGuidance() {
+            laneGuidanceShowing = -1;
+            laneGuidanceIndex = -1;
+            laneGuidanceSlot = -1;
+        }
+
         public void clearDirty() {
             dirtyMask = 0;
-            for (int i = 0; i < MAX_MANEUVERS; i++) {
-                mDirty[i] = 0;
-            }
         }
 
         public void markDirty(int flag) {
             dirtyMask |= flag;
-        }
-
-        public void markManeuverDirty(int idx, int flag) {
-            if (idx < 0 || idx >= MAX_MANEUVERS) return;
-            mDirty[idx] |= flag;
-            if ((flag & MAN_DIR_ICON) != 0) dirtyMask |= DIRTY_MANEUVER_ICON;
-            if ((flag & MAN_DIR_TEXT) != 0) dirtyMask |= DIRTY_MANEUVER_TEXT;
         }
 
         /** Re-publish the cached full snapshot after a late renderer connection/restart. */
@@ -299,9 +283,6 @@ public class RouteGuidance implements CarplayBus.Listener {
                 | DIRTY_TIME_REMAINING | DIRTY_CURRENT_ROAD | DIRTY_DESTINATION
                 | DIRTY_MANEUVER_ICON | DIRTY_MANEUVER_TEXT | DIRTY_VISIBLE_IN_APP
                 | DIRTY_SOURCE_SUPPORTS_RG | DIRTY_LANE_GUIDANCE;
-            for (int i = 0; i < MAX_MANEUVERS; i++) {
-                mDirty[i] |= MAN_DIR_ICON | MAN_DIR_TEXT;
-            }
         }
 
     }
@@ -320,10 +301,6 @@ public class RouteGuidance implements CarplayBus.Listener {
             bap = null;
             return false;
         }
-        bap.setPresentationListener(bapPresentationListener);
-        com.luka.carplay.core.ScreenModule.setViewAreaModeListener(viewAreaModeListener);
-        com.luka.carplay.core.ScreenModule.setInfoModeListener(infoModeListener);
-        com.luka.carplay.cluster.ClusterLayerController.setViewportListener(viewportListener);
 
         Log.i(TAG, "Initialized");
         return true;
@@ -342,8 +319,8 @@ public class RouteGuidance implements CarplayBus.Listener {
             routeWantsActive = false;
             state.reset();
         }
-        /* stop() clears static listeners so a restarted module never retains a
-         * stale RouteGuidance instance. Re-register both session inputs here. */
+        /* stop() clears the static listeners so a restarted module never retains a
+         * stale RouteGuidance instance; start() installs the session inputs. */
         com.luka.carplay.core.ScreenModule.setViewAreaModeListener(viewAreaModeListener);
         com.luka.carplay.core.ScreenModule.setInfoModeListener(infoModeListener);
         com.luka.carplay.cluster.ClusterLayerController.setViewportListener(viewportListener);
@@ -439,11 +416,8 @@ public class RouteGuidance implements CarplayBus.Listener {
     public synchronized void onFrame(int type, int flags, byte[] payload, int len) {
         if (!running) return;
         if (type != CarplayBus.EVT_RGD_UPDATE) return;
-        CarplayBus.Data d = CarplayBus.parseText(payload, len);
-        if (d == null) return;
-
         /* Parse into state (delta) */
-        parse(d);
+        parse(CarplayBus.parseText(payload, len));
         if (state.dirtyMask == 0) {
             if (rgActive && !presentationConfirmed) requestPresentationCheck();
             return;
@@ -846,10 +820,7 @@ public class RouteGuidance implements CarplayBus.Listener {
                 state.timeRemainingSampleSeconds = -1L;
                 state.currentRoad = null;
                 state.destination = null;
-                state.laneGuidanceShowing = -1;
-                state.laneGuidanceIndex = -1;
-                state.laneGuidanceSlot = -1;
-                state.laneGuidanceTotal = -1;
+                state.clearLaneGuidance();
                 state.markAllDirtyForReplay();
             }
         }
@@ -882,22 +853,8 @@ public class RouteGuidance implements CarplayBus.Listener {
                     /* support=0 is the authoritative hard-clear edge even if an earlier transient
                      * route_state=0 already changed routeState.  Never let that transient suppress
                      * clearing cached slots/lane data. */
-                    if (state.routeState != ROUTE_STATE_NO_ROUTE_SET) {
-                        state.routeState = ROUTE_STATE_NO_ROUTE_SET;
-                        state.markDirty(State.DIRTY_ROUTE_STATE);
-                    }
-                    if (state.maneuverCount != 0) {
-                        state.maneuverCount = 0;
-                        state.markDirty(State.DIRTY_MANEUVER_COUNT);
-                    }
-                    state.maneuverOrder = null;
-                    state.markDirty(State.DIRTY_MANEUVER_LIST);
+                    clearRoute();
                     state.clearAllManeuverSlots();
-                    state.laneGuidanceShowing = -1;
-                    state.laneGuidanceTotal = -1;
-                    state.laneGuidanceIndex = -1;
-                    state.laneGuidanceSlot = -1;
-                    state.markDirty(State.DIRTY_MANEUVER_ICON | State.DIRTY_MANEUVER_TEXT | State.DIRTY_LANE_GUIDANCE);
                 }
             }
         }
@@ -918,21 +875,7 @@ public class RouteGuidance implements CarplayBus.Listener {
              * can suppress maneuver output without losing cached data.
              */
             if (v == 0) {
-                if (state.routeState != 0) {
-                    state.routeState = 0;
-                    state.markDirty(State.DIRTY_ROUTE_STATE);
-                }
-                if (state.maneuverCount != 0) {
-                    state.maneuverCount = 0;
-                    state.markDirty(State.DIRTY_MANEUVER_COUNT);
-                }
-                state.maneuverOrder = null;
-                state.markDirty(State.DIRTY_MANEUVER_LIST);
-                state.laneGuidanceShowing = -1;
-                state.laneGuidanceTotal = -1;
-                state.laneGuidanceIndex = -1;
-                state.laneGuidanceSlot = -1;
-                state.markDirty(State.DIRTY_MANEUVER_ICON | State.DIRTY_MANEUVER_TEXT | State.DIRTY_LANE_GUIDANCE);
+                clearRoute();
                 /* Per-slot data (mType, mTurnAngle, etc.) is NOT cleared here.
                  * It is preserved so that when count>0 returns, BAPBridge can
                  * immediately display the correct maneuver icons.
@@ -1016,13 +959,11 @@ public class RouteGuidance implements CarplayBus.Listener {
             }
         }
         int showing = intOr(d, "lane_guidance_showing", state.laneGuidanceShowing);
-        int total = intOr(d, "lane_guidance_total", state.laneGuidanceTotal);
         int index = intOr(d, "lane_guidance_index", state.laneGuidanceIndex);
         int slot = intOr(d, "lane_guidance_slot", state.laneGuidanceSlot);
-        if (showing != state.laneGuidanceShowing || total != state.laneGuidanceTotal
+        if (showing != state.laneGuidanceShowing
                 || index != state.laneGuidanceIndex || slot != state.laneGuidanceSlot) {
             state.laneGuidanceShowing = showing;
-            state.laneGuidanceTotal = total;
             state.laneGuidanceIndex = index;
             state.laneGuidanceSlot = slot;
             state.markDirty(State.DIRTY_LANE_GUIDANCE);
@@ -1101,8 +1042,8 @@ public class RouteGuidance implements CarplayBus.Listener {
                 if (v >= 0 && v != state.mVer[i]) {
                     state.clearManeuverSlot(i);
                     state.mVer[i] = v;
-                    state.markManeuverDirty(i, State.MAN_DIR_ICON | State.MAN_DIR_TEXT);
-                    state.markDirty(State.DIRTY_LANE_GUIDANCE);
+                    state.markDirty(State.DIRTY_MANEUVER_ICON | State.DIRTY_MANEUVER_TEXT
+                        | State.DIRTY_LANE_GUIDANCE);
                 }
             }
 
@@ -1119,7 +1060,7 @@ public class RouteGuidance implements CarplayBus.Listener {
                     icon = true;
                 }
             }
-            if (icon) state.markManeuverDirty(i, State.MAN_DIR_ICON);
+            if (icon) state.markDirty(State.DIRTY_MANEUVER_ICON);
 
             /* MHI3 computes the bargraph in the maneuver-update path (tbt_renderer
              * updateCurrentManeuver) from distanceBetweenManeuver: refresh distance and bargraph. */
@@ -1128,7 +1069,7 @@ public class RouteGuidance implements CarplayBus.Listener {
             boolean text = setStr(d, p + "name", state.mName, i);
             text |= setStr(d, p + "after_road", state.mAfterRoad, i);
             text |= setStr(d, p + "exit_info", state.mExitInfo, i);
-            if (text) state.markManeuverDirty(i, State.MAN_DIR_TEXT);
+            if (text) state.markDirty(State.DIRTY_MANEUVER_TEXT);
 
             boolean lanes = setInt(d, p + "lane_count", state.mLaneCount, i);
             lanes |= setInt(d, p + "linked_lane_guidance_index", state.mLinkedLaneGuidanceIndex, i);
@@ -1139,6 +1080,22 @@ public class RouteGuidance implements CarplayBus.Listener {
             lanes |= setAngles(d, p + "lane_angles", state.mLaneAngles, i);
             if (lanes) state.markDirty(State.DIRTY_LANE_GUIDANCE);
         }
+    }
+
+    /* No route: zero state/count, empty maneuver list and lane guidance.  Per-slot data stays. */
+    private void clearRoute() {
+        if (state.routeState != ROUTE_STATE_NO_ROUTE_SET) {
+            state.routeState = ROUTE_STATE_NO_ROUTE_SET;
+            state.markDirty(State.DIRTY_ROUTE_STATE);
+        }
+        if (state.maneuverCount != 0) {
+            state.maneuverCount = 0;
+            state.markDirty(State.DIRTY_MANEUVER_COUNT);
+        }
+        state.maneuverOrder = null;
+        state.clearLaneGuidance();
+        state.markDirty(State.DIRTY_MANEUVER_LIST | State.DIRTY_MANEUVER_ICON | State.DIRTY_MANEUVER_TEXT
+            | State.DIRTY_LANE_GUIDANCE);
     }
 
     /* A field of the frame, or the value it already has when the frame does not carry it. */
