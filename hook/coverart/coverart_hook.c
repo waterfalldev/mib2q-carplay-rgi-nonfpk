@@ -4,9 +4,8 @@
  * Taps the Cinemo transport at NmeTransport::Recv (declared as the module
  * def's on_transport_recv), reassembles the FF 5A framed iAP2 link
  * stream, extracts the NowPlaying artwork JPEG, decodes + resizes to
- * 256x256, and writes it as a PNG file (+ bus notify).  There is NO libc
- * read()/recv()/open()/close() interposition — cover art no longer touches
- * the process-wide I/O path.
+ * 256x256, and writes it as a PNG file (+ bus notify).  It interposes no libc
+ * read()/recv()/open()/close(), so it stays off the process-wide I/O path.
  *
  * Copyright (c) 2026 LuKa (@LuKa_dev)
  */
@@ -18,9 +17,7 @@
 #include "jpeg_safety.h"
 #include "coverart_stream.h"
 
-#ifndef COVERART_MAX_DIMENSION
 #define COVERART_MAX_DIMENSION 4096
-#endif
 
 /* stb's own axis cap prevents oversized allocations inside header parsing;
  * the stricter total-pixel budget below protects wide-but-valid images. */
@@ -61,27 +58,12 @@ DEFINE_LOG_MODULE(COVERART);
 #define COVERART_DIR "/var/app/icab/tmp/37"
 #endif
 
-#ifndef COVERART_FILE
 #define COVERART_FILE COVERART_DIR "/coverart.png"
-#endif
 
 /* Size filter */
-#ifndef COVERART_MIN_BYTES
 #define COVERART_MIN_BYTES 500
-#endif
-
-#ifndef COVERART_MAX_BYTES
 #define COVERART_MAX_BYTES 800000
-#endif
-
-#ifndef COVERART_MAX_PIXELS
 #define COVERART_MAX_PIXELS (8u * 1024u * 1024u)
-#endif
-
-/* Debug: dump raw JPEG for analysis (set to path to enable, NULL to disable) */
-#ifndef COVERART_DUMP_DIR
-#define COVERART_DUMP_DIR NULL
-#endif
 
 /* Output size */
 #define OUTPUT_WIDTH  256
@@ -89,11 +71,10 @@ DEFINE_LOG_MODULE(COVERART);
 #define COVERART_WORKER_DRAIN_MS 1000
 #define OUTPUT_HEIGHT 256
 
-/* Function pointer types — only write() is still resolved (for the PNG output
- * file).  read()/recv()/open()/close() are NO LONGER interposed: cover art
- * taps the Cinemo transport at NmeTransport::Recv instead of globally
- * interposing libc, which removes our symbols from the path of every I/O call
- * in dio_manager (the fragility that could perturb the CarPlay handshake). */
+/* Only write() is resolved, for the PNG output file.  Cover art taps the Cinemo
+ * transport at NmeTransport::Recv rather than interposing libc read()/recv()/open()/
+ * close(), so no hook symbol sits in the path of every I/O call in dio_manager,
+ * where it could perturb the CarPlay handshake. */
 typedef ssize_t (*WriteFunc)(int fd, const void* buf, size_t count);
 
 static WriteFunc real_write = NULL;
@@ -126,18 +107,6 @@ static int worker_exited = 0;            /* guarded by worker_mutex */
 static uint32_t worker_generation = 1;
 static uint32_t pending_generation;
 
-/* CRC32 for deduplication */
-static uint32_t crc32_bytes(const uint8_t* data, size_t size) {
-    uint32_t crc = 0xFFFFFFFF;
-    for (size_t i = 0; i < size; i++) {
-        crc ^= data[i];
-        for (int j = 0; j < 8; j++) {
-            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
-        }
-    }
-    return ~crc;
-}
-
 /* Check for PNG signature */
 static int is_png(const uint8_t* data, size_t size) {
     static const uint8_t sig[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
@@ -151,13 +120,14 @@ static int is_jpeg(const uint8_t* data, size_t size) {
     return data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF;
 }
 
+/* Nearest-neighbour resize into a dst whose rows are dst_stride bytes apart. */
 static void resize_rgb(const uint8_t* src, int sw, int sh,
-                       uint8_t* dst, int dw, int dh, int flip) {
+                       uint8_t* dst, int dw, int dh, int dst_stride, int flip) {
     for (int y = 0; y < dh; y++) {
         int sy = y * sh / dh;
         int src_y = flip ? (sh - 1 - sy) : sy;
         const uint8_t* src_row = src + src_y * sw * 3;
-        uint8_t* dst_row = dst + y * dw * 3;
+        uint8_t* dst_row = dst + (size_t)y * dst_stride;
         for (int x = 0; x < dw; x++) {
             int sx = x * sw / dw;
             const uint8_t* p = src_row + sx * 3;
@@ -186,21 +156,9 @@ static void resize_rgb_contain(const uint8_t* src, int sw, int sh,
     if (nw > dw) nw = dw;
     if (nh > dh) nh = dh;
 
-    uint8_t* tmp = (uint8_t*)malloc((size_t)nw * nh * 3);
-    if (!tmp) return;
-
-    resize_rgb(src, sw, sh, tmp, nw, nh, flip);
-
     int x0 = (dw - nw) / 2;
     int y0 = (dh - nh) / 2;
-
-    for (int y = 0; y < nh; y++) {
-        uint8_t* dst_row = dst + ((y0 + y) * dw + x0) * 3;
-        const uint8_t* src_row = tmp + y * nw * 3;
-        memcpy(dst_row, src_row, (size_t)nw * 3);
-    }
-
-    free(tmp);
+    resize_rgb(src, sw, sh, dst + ((size_t)y0 * dw + x0) * 3, nw, nh, dw * 3, flip);
 }
 
 /* Build PNG from RGB data */
@@ -334,23 +292,23 @@ static int ensure_dir(const char* dir) {
  *   2. Create temp symlink coverart.png.tmp -> coverart_<new_slot>.png
  *   3. rename() temp symlink over coverart.png  (atomic on POSIX)
  *   4. Unlink old coverart_<old_slot>.png
+ *
+ * Step 1 is the slow one and takes no lock; steps 2-4 are metadata-only and
+ * run under worker_mutex together with the generation check.
  */
+static void png_slot_path(char* out, size_t cap, int slot) {
+    snprintf(out, cap, COVERART_DIR "/coverart_%d.png", slot);
+}
+
 static int write_png_file(const uint8_t* data, size_t len) {
+    char new_path[256];
+
     if (!real_write) {
         real_write = (WriteFunc)dlsym(RTLD_NEXT, "write");
     }
 
     ensure_dir(COVERART_DIR);
-
-    int new_slot = 1 - g_coverart.slot;
-    int old_slot = g_coverart.slot;
-
-    char new_path[256], old_path[256], tmp_link[256], new_name[64];
-
-    snprintf(new_path, sizeof(new_path), COVERART_DIR "/coverart_%d.png", new_slot);
-    snprintf(old_path, sizeof(old_path), COVERART_DIR "/coverart_%d.png", old_slot);
-    snprintf(tmp_link, sizeof(tmp_link), COVERART_FILE ".tmp");
-    snprintf(new_name, sizeof(new_name), "coverart_%d.png", new_slot);
+    png_slot_path(new_path, sizeof(new_path), 1 - g_coverart.slot);
 
     /* 1. Write PNG to new slot */
     int fd = open(new_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -375,6 +333,18 @@ static int write_png_file(const uint8_t* data, size_t len) {
         unlink(new_path);
         return -1;
     }
+    return 0;
+}
+
+/* Steps 2-4; the caller holds worker_mutex. */
+static int publish_png_file(void) {
+    int new_slot = 1 - g_coverart.slot;
+    char new_path[256], old_path[256], tmp_link[256], new_name[64];
+
+    png_slot_path(new_path, sizeof(new_path), new_slot);
+    png_slot_path(old_path, sizeof(old_path), g_coverart.slot);
+    snprintf(tmp_link, sizeof(tmp_link), COVERART_FILE ".tmp");
+    snprintf(new_name, sizeof(new_name), "coverart_%d.png", new_slot);
 
     /* 2. Create temp symlink (relative target within same dir) */
     unlink(tmp_link);
@@ -408,69 +378,17 @@ static void write_coverart_notify(uint32_t crc) {
     bus_text_uint(&b, "crc",  (uint64_t)crc);
     bus_text_str (&b, "path", COVERART_FILE);
     bus_send_text(EVT_COVERART, BUS_FLAG_STICKY, &b);
-    LOG_DEBUG(LOG_MODULE, "bus EVT_COVERART crc=%08x", crc);
-}
-
-/* Dump raw JPEG for debugging */
-static void dump_raw_jpeg(const uint8_t* data, size_t len, int index) {
-    static const char* dump_dir = COVERART_DUMP_DIR;
-    if (!dump_dir) return;
-
-    if (!real_write) {
-        real_write = (WriteFunc)dlsym(RTLD_NEXT, "write");
-    }
-
-    ensure_dir(dump_dir);
-
-    char path[256];
-    snprintf(path, sizeof(path), "%s/raw_%03d.jpg", dump_dir, index);
-
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        LOG_ERROR(LOG_MODULE, "Dump failed to open %s: %d", path, errno);
-        return;
-    }
-
-    ssize_t written;
-    if (real_write) {
-        written = real_write(fd, data, len);
-    } else {
-        written = write(fd, data, len);
-    }
-    close(fd);
-
-    if (written == (ssize_t)len) {
-        LOG_INFO(LOG_MODULE, "Dumped JPEG #%d: %s (%zu bytes)", index, path, len);
-    } else {
-        LOG_ERROR(LOG_MODULE, "Dump write failed: %zd/%zu", written, len);
-    }
 }
 
 /* Process and save artwork */
 static int save_artwork(const uint8_t* data, size_t len, uint32_t generation) {
-    if (!data || len < COVERART_MIN_BYTES || len > COVERART_MAX_BYTES) {
-        return 0;
-    }
-
     /* CRC check for deduplication */
-    uint32_t crc = crc32_bytes(data, len);
+    uint32_t crc = (uint32_t)crc32(crc32(0L, Z_NULL, 0), data, (uInt)len);
     if (crc == g_coverart.last_crc) {
         return 1;  /* Same image, already saved */
     }
 
-    /* Dump raw JPEG if enabled */
-    dump_raw_jpeg(data, len, g_coverart.images_found + 1);
-
     /* Decode image to RGB using stb_image */
-    /* Reset global flip state in case other code modified it */
-    stbi_set_flip_vertically_on_load(0);
-#ifdef STBI_THREAD_LOCAL
-    /* If thread-locals are enabled, a previous call in this thread to
-     * stbi_set_flip_vertically_on_load_thread(1) would override the global.
-     * Force thread-local flip off so our own flip logic is deterministic. */
-    stbi_set_flip_vertically_on_load_thread(0);
-#endif
-
     int src_w = 0, src_h = 0, channels = 0;
     if (!stbi_info_from_memory(data, (int)len, &src_w, &src_h, &channels) ||
         !coverart_image_dimensions_safe(src_w, src_h,
@@ -484,7 +402,6 @@ static int save_artwork(const uint8_t* data, size_t len, uint32_t generation) {
     uint8_t* rgb = stbi_load_from_memory(data, (int)len, &src_w, &src_h, &channels, 3);
 
     if (!rgb || src_w <= 0 || src_h <= 0) {
-        LOG_DEBUG(LOG_MODULE, "Image decode failed (len=%zu)", len);
         if (rgb) stbi_image_free(rgb);
         return 0;
     }
@@ -533,14 +450,31 @@ static int save_artwork(const uint8_t* data, size_t len, uint32_t generation) {
     free(resized);
 
     /* A slow decode from a retired Identify generation must never overwrite
-     * or notify the new session. Reset and publication share this lock. */
+     * or notify the new session.  Reset and the final generation check plus
+     * publication share worker_mutex; the file write between the two checks
+     * holds no lock, so a slow filesystem cannot stall the iAP2 threads that
+     * take it. */
     pthread_mutex_lock(&worker_mutex);
-    if (generation != worker_generation) {
-        pthread_mutex_unlock(&worker_mutex);
+    int current = (generation == worker_generation);
+    pthread_mutex_unlock(&worker_mutex);
+    if (!current) {
         free(png);
         return 0;
     }
-    if (write_png_file(png, png_len) == 0) {
+    int written = (write_png_file(png, png_len) == 0);
+    free(png);
+
+    pthread_mutex_lock(&worker_mutex);
+    if (generation != worker_generation) {
+        pthread_mutex_unlock(&worker_mutex);
+        if (written) {
+            char stale_path[256];
+            png_slot_path(stale_path, sizeof(stale_path), 1 - g_coverart.slot);
+            unlink(stale_path);
+        }
+        return 0;
+    }
+    if (written && publish_png_file() == 0) {
         g_coverart.last_crc = crc;
         g_coverart.images_found++;
         LOG_INFO(LOG_MODULE, "Saved PNG #%d: %s (%zu bytes)",
@@ -553,7 +487,6 @@ static int save_artwork(const uint8_t* data, size_t len, uint32_t generation) {
     }
 
     pthread_mutex_unlock(&worker_mutex);
-    free(png);
     return 1;
 }
 
@@ -564,7 +497,6 @@ static int maybe_handle_image(const uint8_t* data, size_t size, uint32_t generat
     }
 
     if (is_jpeg(data, size) || is_png(data, size)) {
-        LOG_DEBUG(LOG_MODULE, "Found image: %zu bytes", size);
         return save_artwork(data, size, generation);
     }
     return 0;
@@ -598,16 +530,6 @@ static pthread_cond_t runtime_cond = PTHREAD_COND_INITIALIZER;
 static int runtime_initialized = 0;      /* guarded by runtime_mutex */
 static int runtime_shutting_down = 0;    /* guarded by runtime_mutex */
 static int runtime_callbacks = 0;        /* guarded by runtime_mutex */
-
-static void coverart_deadline_after_ms(struct timespec* deadline, long ms) {
-    clock_gettime(CLOCK_REALTIME, deadline);
-    deadline->tv_sec += ms / 1000L;
-    deadline->tv_nsec += (ms % 1000L) * 1000000L;
-    if (deadline->tv_nsec >= 1000000000L) {
-        deadline->tv_sec++;
-        deadline->tv_nsec -= 1000000000L;
-    }
-}
 
 static void* coverart_worker_main(void* arg) {
     (void)arg;
@@ -698,37 +620,9 @@ static void handle_recv_stream(const uint8_t* buf, size_t len) {
     pthread_mutex_lock(&recv_mutex);
     uint8_t* process_buf = NULL;
     size_t process_len = 0;
-    coverart_stream_stats_t previous = g_recv_stream.stats;
     coverart_stream_feed(&g_recv_stream, buf, len, &process_buf, &process_len);
     int confirmed = g_recv_stream.confirmed;
     uint32_t generation = recv_generation;
-
-    /* Bounded metadata-only diagnostics, emitted through the asynchronous
-     * logger. No image/control payload capture or receive-thread file I/O. */
-    static uint32_t stats_generation;
-    static unsigned stats_reports;
-    const coverart_stream_stats_t *stats = &g_recv_stream.stats;
-    if (stats_generation != generation) {
-        stats_generation = generation; stats_reports = 0;
-    }
-    if (stats_reports < 64 &&
-        (stats->setups != previous.setups || stats->starts != previous.starts ||
-         stats->completed != previous.completed ||
-         (stats->packets != previous.packets &&
-          (stats->packets <= 12 || (stats->packets >> 7) != (previous.packets >> 7))))) {
-        ++stats_reports;
-        LOG_INFO(LOG_MODULE,
-                 "RX packets=%u ctrl=%02x seq=%u next=%u session=%u kind=%u file=%u op=%02x "
-                 "setup=%u len=%u prefix=%016llx type=%u rejected=%u start=%u complete=%u gaps=%u old=%u checksum=%u pending=%u",
-                 (unsigned)stats->packets, stats->control, stats->seq, g_recv_stream.next_seq,
-                 stats->session, stats->session_kind, stats->file, stats->op,
-                 (unsigned)stats->setups, stats->setup_len,
-                 (unsigned long long)stats->setup_prefix, stats->setup_type,
-                 (unsigned)stats->rejected_setups,
-                 (unsigned)stats->starts, (unsigned)stats->completed,
-                 (unsigned)stats->gaps, (unsigned)stats->old_packets,
-                 (unsigned)stats->bad_checksum, (unsigned)g_recv_stream.pending_bytes);
-    }
 
     static int seam_confirmed = 0; /* guarded by recv_mutex */
     if (confirmed && !seam_confirmed) {
@@ -834,8 +728,6 @@ static void coverart_runtime_shutdown(void) {
     int join_worker = 0;
     int callbacks_quiesced = 0;
     int worker_quiesced = 1;
-    int wait_rc = 0;
-    struct timespec deadline;
 
     /* The taps stay declared in the module def for the life of the process;
      * runtime_shutting_down below is what actually stops them.  It always was:
@@ -851,10 +743,7 @@ static void coverart_runtime_shutdown(void) {
         return;
     }
     runtime_shutting_down = 1;
-    coverart_deadline_after_ms(&deadline, COVERART_CALLBACK_DRAIN_MS);
-    while (runtime_callbacks != 0 && wait_rc != ETIMEDOUT)
-        wait_rc = pthread_cond_timedwait(&runtime_cond, &runtime_mutex,
-                                         &deadline);
+    COND_WAIT_MS(&runtime_cond, &runtime_mutex, COVERART_CALLBACK_DRAIN_MS, runtime_callbacks == 0);
     callbacks_quiesced = (runtime_callbacks == 0);
     pthread_mutex_unlock(&runtime_mutex);
 
@@ -877,12 +766,7 @@ static void coverart_runtime_shutdown(void) {
     pthread_cond_signal(&worker_cond);
     if (worker_started) {
         thread_to_join = worker_thread;
-        worker_quiesced = worker_exited;
-        wait_rc = 0;
-        coverart_deadline_after_ms(&deadline, COVERART_WORKER_DRAIN_MS);
-        while (!worker_exited && wait_rc != ETIMEDOUT)
-            wait_rc = pthread_cond_timedwait(&worker_cond, &worker_mutex,
-                                             &deadline);
+        COND_WAIT_MS(&worker_cond, &worker_mutex, COVERART_WORKER_DRAIN_MS, worker_exited);
         worker_quiesced = worker_exited;
         join_worker = worker_quiesced;
     }

@@ -30,14 +30,6 @@ void platform_shutdown(void);
 /* Get actual framebuffer size (may differ from window size on HiDPI). */
 void platform_get_framebuffer_size(int *width, int *height);
 
-/* Get the active routing IDs used by the platform backend.
- * On macOS this returns the protocol defaults. */
-void platform_get_routing_ids(int *display_id, int *context_id, int *displayable_id);
-
-/* Ensure the renderer context is active on the target display.
- * QNX uses dmdt gs/sc; other platforms no-op. */
-void platform_ensure_focus(void);
-
 /* Health-check our screen window and recover (recreate) if we have lost
  * the displaymanager binding.  Two failure modes covered:
  *   1. Window destroyed cross-process — screen_get_window_property_iv
@@ -52,6 +44,34 @@ void platform_ensure_focus(void);
  * No-op on non-QNX platforms. */
 void platform_check_and_recover_window(void);
 
+/* presentation window vs rendered content.  A MOST (KOMO video) cluster streams
+ * our window as-is at its KOMO view size (KVS_Most 800x252 on the tested MOST cluster), which differs
+ * from the 328x181 content.  platform_check_output() (every ~1 s) resizes the window to
+ * what Java asked for in CR_MOST_OUTPUT_PATH; platform_get_output() reports the window
+ * size and the rectangle (GL bottom-left origin) the content is fitted into, plus
+ * whether the window is opaque.  Its return value changes whenever any of that does.
+ * Without the Java request the window is the content size and the rectangle covers it. */
+void platform_check_output(void);
+unsigned platform_get_output(int *win_w, int *win_h, int *x, int *y, int *w, int *h, int *opaque);
+
+/* The MOST MAP view window (displayable 99, NV12, filled by the CPU), which exists only while
+ * Java asks for it in CR_MOST_MAP_OUTPUT_PATH.  It belongs to the map thread (map_layer.c),
+ * never the render loop, so a slow scene frame cannot hold its pictures back.
+ * platform_map_check(0): follows that request; platform_map_check(1): recreates a lost window.
+ * platform_check_output / platform_check_and_recover_window handle the scene window only.
+ * platform_map_window(): 1 with its size and a serial that changes with every new window
+ * while one can be drawn, else 0.  platform_map_nv12_buffer(): its next buffer - luma rows
+ * `y_stride` apart, the interleaved chroma plane (height / 2 rows) `uv_stride` apart - or 0.
+ * platform_map_nv12_post(): presents that buffer, and reports the window to Java after its
+ * first frame; 0 when that failed (the window is being recreated). */
+int platform_map_window(int *w, int *h, unsigned *window);
+int platform_map_nv12_buffer(unsigned char **y, int *y_stride, unsigned char **uv, int *uv_stride);
+int platform_map_nv12_post(void);
+void platform_map_check(int recover);
+
+/* Output diagnostics: free system memory in KB (the GPU allocates from it), or -1. */
+long platform_free_memory_kb(void);
+
 /* Release the displayable binding back to the native owner (QNX:
  * explicit screen_destroy_window on our window).  Counterpart to
  * platform_check_and_recover_window — lets displaymanager re-bind
@@ -59,22 +79,5 @@ void platform_check_and_recover_window(void);
  * (typically the native KOMO RG widget's window).
  * Called from platform_shutdown.  No-op on non-QNX platforms. */
 void platform_release_displayable(void);
-
-/* Key codes for test navigation */
-#define CR_KEY_LEFT   0
-#define CR_KEY_RIGHT  1
-#define CR_KEY_UP     2
-#define CR_KEY_DOWN   3
-#define CR_KEY_P      4
-#define CR_KEY_SPACE  5
-#define CR_KEY_S      6
-#define CR_KEY_A      7
-#define CR_KEY_LBRACKET 8
-#define CR_KEY_RBRACKET 9
-#define CR_KEY_D     10
-#define CR_KEY_MAX   11
-
-/* Returns 1 if key was tapped since last poll, clears the tap state. */
-int platform_key_tap(int key);
 
 #endif /* CR_PLATFORM_H */

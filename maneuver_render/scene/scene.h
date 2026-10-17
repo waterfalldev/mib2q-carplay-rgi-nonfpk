@@ -1,16 +1,14 @@
 #ifndef CR_SCENE_H
 #define CR_SCENE_H
-#include <stdint.h>
 #include "../maneuver.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Immutable maneuver input. generation identifies scene ownership. */
+/* Immutable maneuver input. */
 typedef struct {
     maneuver_state_t maneuver;
-    uint64_t generation;
 } cr_scene_input_t;
 
 typedef struct {
@@ -28,12 +26,10 @@ typedef enum {
 
 typedef struct {
     cr_scene_kind_t kind;
-    float camera_x, camera_y, bounds[4];
+    float camera_x, camera_y;
     float route_elevation;
-    int framed;
-    uint32_t mesh_hash;
     cr_scene_fallback_t fallback;
-    unsigned builds, paint_count, command_count;
+    unsigned builds, command_count;
 } cr_scene_info_t;
 
 typedef struct cr_scene cr_scene_t;

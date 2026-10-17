@@ -28,7 +28,8 @@ def numeric(expr):
 def constants(path, java=False):
     text = (ROOT / path).read_text()
     text = re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S)
-    pattern = r"\b(?:int|byte)\s+(\w+)\s*=\s*([^;]+);" if java else r"^#define\s+(\w+)\s+([^\n]+)"
+    # A valueless header guard must not consume the next #define as its value.
+    pattern = r"\b(?:int|byte|long)\s+(\w+)\s*=\s*([^;]+);" if java else r"^#define[ \t]+(\w+)[ \t]+([^\n]+)"
     return dict(re.findall(pattern, text, re.M))
 
 
@@ -49,7 +50,7 @@ def compare(c_path, java_path, mapping, shared=()):
 compare("hook/framework/bus_protocol.h", "java_patch/com/luka/carplay/bus/CarplayBus.java", {
     "BUS_TCP_PORT": "PORT", "BUS_MAGIC": "MAGIC", "BUS_HEADER_SIZE": "HEADER_SIZE",
     "BUS_MAX_PAYLOAD": "MAX_PAYLOAD", "BUS_FLAG_STICKY": "FLAG_STICKY",
-    "BUS_FLAG_BINARY": "FLAG_BINARY", "BUS_FLAG_REPLAY": "FLAG_REPLAY",
+    "BUS_FLAG_BINARY": "FLAG_BINARY",
 }, ("CMD_", "EVT_"))
 compare("hook/framework/bus.c", "java_patch/com/luka/carplay/bus/CarplayBus.java", {"MAX_TYPES": "MAX_TYPES"})
 bus_limit = numeric(constants("hook/framework/bus.c")["MAX_TYPES"])
@@ -63,6 +64,25 @@ compare("altscreen_render/protocol.h", "java_patch/com/luka/carplay/core/Altscre
     "ALTCTL_PORT": "PORT", "ALTEVT_VIDEO_ON": "EVT_VIDEO_ON", "ALTEVT_VIDEO_OFF": "EVT_VIDEO_OFF",
     "ALTCMD_VIEW_AREA": "CMD_VIEW_AREA",
 })
+
+MOST = "java_patch/com/luka/carplay/cluster/MostPresentation.java"
+compare("maneuver_render/protocol.h", MOST, {
+    "CR_MAP_DISPLAYABLE_ID": "MAP_DISPLAYABLE", "CR_OUTPUT_MIN": "OUTPUT_MIN",
+    "CR_OUTPUT_MAX": "OUTPUT_MAX",
+})
+
+def same_path(c_path, c_name, java_path):
+    """Java names these files as string literals (tests point them at scratch files)."""
+    global checks
+    value = constants(c_path)[c_name].strip()
+    if not value.startswith('"') or value not in (ROOT / java_path).read_text():
+        raise SystemExit(f"Path mismatch: {c_path}:{c_name} not named by {java_path}")
+    checks += 1
+
+# The renderer's request/ready files.
+for name in ("CR_MOST_OUTPUT_PATH", "CR_MOST_OUTPUT_READY_PATH",
+             "CR_MOST_MAP_OUTPUT_PATH", "CR_MOST_MAP_OUTPUT_READY_PATH"):
+    same_path("maneuver_render/protocol.h", name, MOST)
 print(f"Local transport constants: {checks} matching Java/C ports, opcodes, flags, sizes and limits")
 jar = ROOT / "build/carplay_hook.jar"
 if not jar.exists():

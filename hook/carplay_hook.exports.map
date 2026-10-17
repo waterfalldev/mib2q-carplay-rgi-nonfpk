@@ -21,6 +21,7 @@
         AirPlayReceiverSessionControl;
         AirPlayReceiverSessionSetNightMode;
         AirPlayReceiverSessionSetup;
+        AirPlayReceiverSessionSetSecurityInfo;
         AirPlayReceiverSessionTearDown;
         AirTunesServer_EnsureCreated;
         AudioSessionGetSupportedOutputFormats;

@@ -29,12 +29,11 @@
 #define JOIN_MIN_ANGLE 0.03f /* ~1.7deg -- skip join for tiny direction changes */
 #define MITER_LIMIT 3.0f    /* max miter length / half-width ratio */
 
-/* Height ramp:
- * - Tail fade: first 0.35 units sink to ground (within pre-extension, invisible).
- * - Entry to head: multiplicative ramp from 1x to 2x height.
+/* Height ramp (lift added to base and top; the lift is the maneuver's elevation, 0 when flat):
+ * - Pre-extension (before HEIGHT_ENTRY_DIST): no lift.
+ * - Entry to head: linear ramp up to the full lift over HEIGHT_RAMP_DIST.
  *   Anchored to ROUTE_EXTEND (maneuver entry) so the ramp is identical on
- *   standalone and combined paths — no visual jump at commit.
- * - Pre-extension (0.35..0.50): flat at 1x nominal height. */
+ *   standalone and combined paths — no visual jump at commit. */
 #define HEIGHT_ENTRY_DIST  RPATH_ANIMATION_EXTENSION   /* maneuver entry = ROUTE_EXTEND from path start */
 #define HEIGHT_RAMP_DIST   1.5f    /* fixed distance over which ramp reaches max */
 /* Per-maneuver elevation lifts (world units added to base+top).
@@ -150,6 +149,23 @@ void rpath_densify(route_path_t *p) {
     }
     if (p->pt_count > 0)
         p->total_length = p->dist[p->pt_count - 1];
+}
+
+/* Index i (>= 1) of the first densified point at or beyond `dist` along the path,
+ * with the point `dist` along it in (x, y); 0 and x, y untouched when `dist` is
+ * past the end. */
+int rpath_locate(const route_path_t *p, float dist, float *x, float *y) {
+    int i;
+    for (i = 1; i < p->pt_count; i++) {
+        if (p->dist[i] >= dist) {
+            float seg_len = p->dist[i] - p->dist[i - 1];
+            float frac = (seg_len > 1e-6f) ? (dist - p->dist[i - 1]) / seg_len : 0.0f;
+            *x = p->px[i - 1] + frac * (p->px[i] - p->px[i - 1]);
+            *y = p->py[i - 1] + frac * (p->py[i] - p->py[i - 1]);
+            return i;
+        }
+    }
+    return 0;
 }
 
 /* ================================================================
@@ -318,38 +334,16 @@ void rpath_extrude_partial(const route_path_t *p, route_mesh_t *m,
     float start_dist = t0 * p->total_length;
     int s_idx = 0;  /* first original point index to include after interpolated start */
     float start_x = p->px[0], start_y = p->py[0];
-    if (t0 > 0.0f) {
-        int i;
-        for (i = 1; i < p->pt_count; i++) {
-            if (p->dist[i] >= start_dist) {
-                float seg_len = p->dist[i] - p->dist[i - 1];
-                float frac = (seg_len > 1e-6f) ?
-                    (start_dist - p->dist[i - 1]) / seg_len : 0.0f;
-                start_x = p->px[i - 1] + frac * (p->px[i] - p->px[i - 1]);
-                start_y = p->py[i - 1] + frac * (p->py[i] - p->py[i - 1]);
-                s_idx = i;
-                break;
-            }
-        }
-    }
+    if (t0 > 0.0f)
+        s_idx = rpath_locate(p, start_dist, &start_x, &start_y);
 
     /* Determine effective endpoint from t1 parameter */
     float target_dist = t1 * p->total_length;
     int e_idx = p->pt_count - 1;
     float end_x = p->px[e_idx], end_y = p->py[e_idx];
     if (t1 < 1.0f) {
-        int i;
-        for (i = 1; i < p->pt_count; i++) {
-            if (p->dist[i] >= target_dist) {
-                float seg_len = p->dist[i] - p->dist[i - 1];
-                float frac = (seg_len > 1e-6f) ?
-                    (target_dist - p->dist[i - 1]) / seg_len : 0.0f;
-                end_x = p->px[i - 1] + frac * (p->px[i] - p->px[i - 1]);
-                end_y = p->py[i - 1] + frac * (p->py[i] - p->py[i - 1]);
-                e_idx = i;
-                break;
-            }
-        }
+        int hit = rpath_locate(p, target_dist, &end_x, &end_y);
+        if (hit) e_idx = hit;
     }
 
     /* Build local point array from [t0..t1] window */
@@ -428,10 +422,7 @@ void rpath_extrude_partial(const route_path_t *p, route_mesh_t *m,
 
                 float blend_start = g_ramp_restart - HEIGHT_ENTRY_DIST;
                 float blend_len = HEIGHT_ENTRY_DIST;
-                float bt = (d - blend_start) / blend_len;
-                if (bt < 0.0f) bt = 0.0f;
-                if (bt > 1.0f) bt = 1.0f;
-                bt = bt * bt * (3.0f - 2.0f * bt);  /* smoothstep */
+                float bt = rpath_smooth01((d - blend_start) / blend_len);
                 lift = first_lift * (1.0f - bt);
             } else {
                 /* First maneuver: ramp from entry */
@@ -670,16 +661,9 @@ void rpath_extrude_partial(const route_path_t *p, route_mesh_t *m,
         float tip_base = e_base[li];
         float tip_top  = e_top[li];
 
-        float ax, az, a_dir;
-        if (t1 >= 1.0f) {
-            ax = epx[li];
-            az = epy[li];
-            a_dir = atan2f(dir_y[n_pts - 2], dir_x[n_pts - 2]);
-        } else {
-            ax = end_x;
-            az = end_y;
-            a_dir = atan2f(dir_y[n_pts - 2], dir_x[n_pts - 2]);
-        }
+        float ax = (t1 >= 1.0f) ? epx[li] : end_x;
+        float az = (t1 >= 1.0f) ? epy[li] : end_y;
+        float a_dir = atan2f(dir_y[n_pts - 2], dir_x[n_pts - 2]);
 
         /* Continue the metric through the head. Keep the same distance tags
          * as the arrow vertices/bulb so arrival reaches the complete tip. */

@@ -23,7 +23,7 @@ public class CarPlayPhoneSMM extends PhoneSMM {
 
     public boolean checkGuard(int transition, int branch) {
         boolean taken = super.checkGuard(transition, branch);
-        if (taken && branch == 0 && isDisclaimerEntry(transition))
+        if (taken && branch == 0 && com.luka.carplay.core.Features.CARPLAY_POPUP_SKIP && isDisclaimerEntry(transition))
             CarPlayDisclaimerSkip.press(getFramework(), "phone transition " + transition);
         return taken;
     }

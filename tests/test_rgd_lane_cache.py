@@ -9,10 +9,11 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-BUILD = ROOT / 'build/rgd-lane-cache'
-BUILD.mkdir(parents=True, exist_ok=True)
+# a temporary directory: the package build runs this suite on a read-only source tree
+BUILD = Path(tempfile.mkdtemp(prefix='rgd-lane-cache-'))
 HOOK = Path(os.environ.get('HOOK_SRC', ROOT / 'hook'))   # another hook tree, e.g. a mutant
 hook = (HOOK / 'routeguidance/rgd_hook.c').read_text()
 
@@ -69,8 +70,17 @@ int main(void) {
 }
 '''
 (BUILD / 'lane_cache.c').write_text(c)
+# gcc 10's ASan (the Debian 11 host-test image) loops on DEADLYSIGNAL at start-up in about
+# 4 runs of 10 when the kernel randomizes mmap with more than 28 bits (WSL2 6.x: 32).
+sanitize = '-fsanitize=address,undefined'
+try:
+    if int(Path('/proc/sys/vm/mmap_rnd_bits').read_text()) > 28:
+        sanitize = '-fsanitize=undefined'
+        print('(ASan off: vm.mmap_rnd_bits > 28) ', end='', flush=True)
+except (OSError, ValueError):
+    pass
 cc = ['cc', '-std=c99', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-unused-variable',
-      '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-DENABLE_LOGGING=0',
+      sanitize, '-fno-omit-frame-pointer', '-DENABLE_LOGGING=0',
       '-I' + str(HOOK), str(BUILD / 'lane_cache.c'), str(HOOK / 'routeguidance/rgd_tlv.c'),
       '-o', str(BUILD / 'lane_cache')]
 subprocess.run(cc, check=True)

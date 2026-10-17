@@ -29,7 +29,7 @@ import de.esolutions.hmi.widgets.audi.base.Layout;
 
 public final class ClusterLayerController {
 
-    /* CarPlay cluster displayables (see dc[80] = {98,101,102,99} in DisplayManagerMIB2High). */
+    /* CarPlay cluster displayables (see dc[80] = {98,101,102,33} in DisplayManagerMIB2High). */
     private static final int MANEUVER      = 98;    /* maneuver_render (Software) */
     private static final int BACKING_SPORT = 101;   /* 987 KDK backing, 328x180 */
     private static final int BACKING_POPUP = 102;   /* 987 KDK backing, 210x153 */
@@ -41,8 +41,6 @@ public final class ClusterLayerController {
     private static final int LC_POPUP_CROP_W = 120, LC_POPUP_CROP_H = 121;
     private static final int LC_IN_TUBE_CROP_X = 122, LC_IN_TUBE_CROP_Y = 123;
     private static final int LC_IN_TUBE_CROP_W = 124, LC_IN_TUBE_CROP_H = 125;
-    /* Stock map-only offset, recorded for diagnostics; never applied to KDK. */
-    private static final int LC_SMALL_STAGE_DX = 80, LC_SMALL_STAGE_DY = 81;
     private static final Object LOCK = new Object();
     private static final Object APPLY_LOCK = new Object();
     private static IDisplayManagerKombiControl lastDm;
@@ -59,7 +57,6 @@ public final class ClusterLayerController {
         984, 139, 1091, 110,
         59, 27, 210, 153,
         0, 0, 328, 180,
-        -476, 0,
         "fallback-sport");
     private static boolean haveLayout;
     private static boolean errorLogged;
@@ -75,9 +72,23 @@ public final class ClusterLayerController {
         if (viewportListener == listener) viewportListener = null;
     }
 
+    private static void notifyViewportChanged() {
+        ViewportListener listener = viewportListener;
+        if (listener != null) {
+            try { listener.onManeuverViewportChanged(); }
+            catch (Throwable t) { Log.w("ClusterLayers", "viewport listener failed: " + t); }
+        }
+    }
+
     /** Source pixels actually visible on VC, in the renderer's 328x181 frame.
      * Use the same stage selection and crop as applyNow(), without moving the plane. */
     public static int[] maneuverViewport() {
+        /* a MOST cluster shows the whole renderer frame, aspect-fitted into the KOMO
+         * stream window (maneuver_render fits it; MostPresentation sizes the window); the VC
+         * popup/in-tube crops do not apply there. */
+        if (ClusterPlatform.isMost()) {
+            return new int[]{0, 0, MostPresentation.SRC_W, MostPresentation.SRC_H};
+        }
         synchronized (LOCK) {
             boolean popup = haveVcStage ? vcPopup : lastStockPopup;
             Geometry g = lastGeometry;
@@ -92,13 +103,11 @@ public final class ClusterLayerController {
         final int inTubeX, inTubeY, popupX, popupY;
         final int popupCropX, popupCropY, popupCropW, popupCropH;
         final int inTubeCropX, inTubeCropY, inTubeCropW, inTubeCropH;
-        final int smallStageDX, smallStageDY;
         final String layoutName;
 
         Geometry(int inTubeX, int inTubeY, int popupX, int popupY,
                  int popupCropX, int popupCropY, int popupCropW, int popupCropH,
                  int inTubeCropX, int inTubeCropY, int inTubeCropW, int inTubeCropH,
-                 int smallStageDX, int smallStageDY,
                  String layoutName) {
             this.inTubeX = inTubeX;
             this.inTubeY = inTubeY;
@@ -112,8 +121,6 @@ public final class ClusterLayerController {
             this.inTubeCropY = inTubeCropY;
             this.inTubeCropW = inTubeCropW;
             this.inTubeCropH = inTubeCropH;
-            this.smallStageDX = smallStageDX;
-            this.smallStageDY = smallStageDY;
             this.layoutName = layoutName;
         }
 
@@ -124,8 +131,7 @@ public final class ClusterLayerController {
                 && popupCropX == other.popupCropX && popupCropY == other.popupCropY
                 && popupCropW == other.popupCropW && popupCropH == other.popupCropH
                 && inTubeCropX == other.inTubeCropX && inTubeCropY == other.inTubeCropY
-                && inTubeCropW == other.inTubeCropW && inTubeCropH == other.inTubeCropH
-                && smallStageDX == other.smallStageDX && smallStageDY == other.smallStageDY;
+                && inTubeCropW == other.inTubeCropW && inTubeCropH == other.inTubeCropH;
         }
     }
 
@@ -143,8 +149,6 @@ public final class ClusterLayerController {
             layout.getIntegerConstant(LC_IN_TUBE_CROP_Y),
             layout.getIntegerConstant(LC_IN_TUBE_CROP_W),
             layout.getIntegerConstant(LC_IN_TUBE_CROP_H),
-            layout.getIntegerConstant(LC_SMALL_STAGE_DX),
-            layout.getIntegerConstant(LC_SMALL_STAGE_DY),
             layout.getClass().getName());
     }
 
@@ -168,19 +172,14 @@ public final class ClusterLayerController {
             haveLayout = true;
         }
         if (changed) {
-            ViewportListener listener = viewportListener;
-            if (listener != null) {
-                try { listener.onManeuverViewportChanged(); }
-                catch (Throwable t) { Log.w("ClusterLayers", "viewport listener failed: " + t); }
-            }
+            notifyViewportChanged();
             Log.i("ClusterLayers", "layout=" + geometry.layoutName
                 + " inTube=(" + geometry.inTubeX + "," + geometry.inTubeY + ") crop=("
                 + geometry.inTubeCropX + "," + geometry.inTubeCropY + ","
                 + geometry.inTubeCropW + "x" + geometry.inTubeCropH + ") popup=("
                 + geometry.popupX + "," + geometry.popupY + ") crop=("
                 + geometry.popupCropX + "," + geometry.popupCropY + ","
-                + geometry.popupCropW + "x" + geometry.popupCropH + ")"
-                + " smallStage=(" + geometry.smallStageDX + "," + geometry.smallStageDY + ")");
+                + geometry.popupCropW + "x" + geometry.popupCropH + ")");
         }
     }
 
@@ -226,13 +225,7 @@ public final class ClusterLayerController {
         }
         Log.i("ClusterLayers", "VC Fct54 KDK stage=" + (largeMapView ? "popup" : "inTube"));
         reapply();
-        if (changed) {
-            ViewportListener listener = viewportListener;
-            if (listener != null) {
-                try { listener.onManeuverViewportChanged(); }
-                catch (Throwable t) { Log.w("ClusterLayers", "viewport listener failed: " + t); }
-            }
-        }
+        if (changed) notifyViewportChanged();
     }
 
     /** Cache stock hints for normal-navigation restoration. CarPlay uses the same VC
@@ -257,6 +250,10 @@ public final class ClusterLayerController {
     }
 
     private static void reapplySerialized() {
+        /* 98/101/102 are only a presentation path on the Virtual Cockpit composition.
+         * A MOST or RGI-only cluster never created 101/102 (configureDM), and stock never
+         * writes these planes there, so neither do we - not even the "restore" branch. */
+        if (!ClusterPlatform.ownsContexts()) return;
         IDisplayManagerKombiControl dm;
         int terminal;
         boolean stockVisible;
@@ -276,7 +273,7 @@ public final class ClusterLayerController {
     private static void applyNow(IDisplayManagerKombiControl dm, int terminal, Geometry geometry,
                                  boolean stockVisible, int stockOpacity) {
         boolean popup;
-        boolean carplayOwnsCluster = com.luka.carplay.core.AltScreenModule.isConnected();
+        boolean carplayOwnsCluster = com.luka.carplay.core.AltScreenModule.ownsClusterContext();
         int permittedOpacity;
         synchronized (LOCK) {
             popup = carplayOwnsCluster && haveVcStage ? vcPopup : lastStockPopup;
@@ -358,8 +355,7 @@ public final class ClusterLayerController {
             + " backing=" + (popup ? BACKING_POPUP : BACKING_SPORT)
             + " opacity=" + opacity
             + " src=(" + cropX + "," + cropY + " " + cropW + "x" + cropH + ")"
-            + " dst=(" + dstX + "," + dstY + ")"
-            + " smallStageOffset=(" + g.smallStageDX + "," + g.smallStageDY + ") [not applied]";
+            + " dst=(" + dstX + "," + dstY + ")";
 
         /* Every value that can change the picture is in the line, so comparing the line itself
          * is the dedup key. */

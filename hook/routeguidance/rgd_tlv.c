@@ -34,11 +34,13 @@ static void replace_newlines(char* s, size_t buf_sz) {
     const size_t sep_len = 3;
     char tmp[256];
     size_t si = 0;
-    for (size_t i = 0; s[i] != '\0' && si < sizeof(tmp) - sep_len - 1; i++) {
-        if (s[i] == '\r' && s[i + 1] == '\n') {
-            memcpy(tmp + si, sep, sep_len); si += sep_len; i++; /* skip \r\n */
-        } else if (s[i] == '\n' || s[i] == '\r') {
-            memcpy(tmp + si, sep, sep_len); si += sep_len;
+    /* Bounded by the result (at most 255 bytes), not by room for a whole separator: a string
+     * that fills its field without a newline stays whole. */
+    size_t room = (buf_sz < sizeof(tmp) ? buf_sz : sizeof(tmp)) - 1;
+    for (size_t i = 0; s[i] != '\0' && si < room; i++) {
+        if (s[i] == '\r' || s[i] == '\n') {
+            if (s[i] == '\r' && s[i + 1] == '\n') i++; /* skip \r\n */
+            for (size_t k = 0; k < sep_len && si < room; k++) tmp[si++] = sep[k];
         } else {
             tmp[si++] = s[i];
         }

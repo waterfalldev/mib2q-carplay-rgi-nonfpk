@@ -38,7 +38,7 @@ void render_rect(float x, float y, float w, float h,
 void render_triangle(float x0, float y0, float x1, float y1, float x2, float y2,
                      float r, float g, float b, float a);
 
-/* End frame (no-op, swap is done by platform). */
+/* End frame: FXAA and downsample the frame into the output window (the platform swaps). */
 void render_end_frame(void);
 
 /* Cleanup GL resources. */
@@ -46,6 +46,20 @@ void render_shutdown(void);
 
 /* Update viewport (call on resize). */
 void render_set_viewport(int fb_width, int fb_height);
+
+/* present the frame into (x, y, w, h) of a win_w x win_h window (GL origin
+ * bottom-left) instead of filling the window; opaque = everything else black and every
+ * pixel alpha 1 (a MOST KOMO stream).  win_w <= 0 restores "fill the window".
+ * On an opaque output the scene renders at w x h itself (no supersampling, FXAA, copied
+ * 1:1), falling back to the render_init/render_set_viewport size if those render
+ * targets cannot be allocated.  Returns 1 when the render targets changed size. */
+int render_set_output(int win_w, int win_h, int x, int y, int w, int h, int opaque);
+int render_output_is_opaque(void);
+/* The pre-SSAA size the scene currently renders at. */
+void render_get_render_size(int *w, int *h);
+/* Output diagnostics: write the window's current frame (before the swap) to path as a
+ * binary PPM, top row first.  Returns 0 on success. */
+int render_capture_output(const char *path);
 
 /* Thick line segment (rendered as quad). */
 void render_thick_line(float x0, float y0, float x1, float y1, float thickness,
@@ -67,12 +81,9 @@ void render_circle(float cx, float cy, float radius, float thickness, int segmen
 /* Toggle perspective on/off. enabled=0 -> flat (no perspective). */
 void render_set_perspective(int enabled);
 
-/* Debug grid: colored checkerboard + red popup crop outline. */
+/* Debug grid: colored checkerboard over the content area. */
 void render_set_debug_grid(int on);
 void render_debug_grid(void);
-/* Draw only the exact current visible-area border (no checkerboard). */
-void render_debug_visible_area(void);
-void render_debug_small_area(void);
 
 /* Set camera pan offset in maneuver space (shifts entire scene). */
 void render_set_camera_pan(float x, float y);
@@ -91,12 +102,9 @@ void render_set_frame_step(float frames);
 float render_frame_step(void);
 /* Pure settled projection for scene compilation; does not move the live camera. */
 void render_get_layout_matrix(float out[16]);
-void render_build_layout_matrix(float out[16],float aspect);
-void render_get_camera_pose(float *x,float *y,float *rotation);
 /* Animated camera dolly plus source-pixel lens shift, additive to native travel. */
 void render_set_content_framing(float x,float y,float dolly);
 void render_reset_content_offset(void);
-void render_get_content_framing(float *x,float *y,float *dolly);
 void render_build_framing_matrix(float out[16],float aspect,float dolly);
 
 /* Select the shading preset used by subsequent 3D geometry draws. */
@@ -154,12 +162,30 @@ void render_reset_depth(void);
 /* Mark masks as needing re-render (call on maneuver state change) */
 void render_invalidate_masks(void);
 
+/* Mark only set 1, the next maneuver's masks, as needing re-render: the next maneuver changed
+ * but the current one did not, so its set 0 stays valid. */
+void render_invalidate_next_masks(void);
+
 /* Apply/remove a 2D rigid transform for mask rendering (second maneuver). */
 void render_push_mask_transform(float tx, float ty, float cos_r, float sin_r);
 void render_pop_mask_transform(void);
 
-/* Returns 1 if masks need re-rendering */
+/* Returns 1 if the current maneuver's masks (set 0) need re-rendering */
 int render_masks_dirty(void);
+
+/* Mask set for painting and render_composite(): 0 = current maneuver, 1 = the next one
+ * during a push.  A set invalidated since its last composite is painted; a clean set
+ * replays the painting calls without GPU work.  maneuver_draw leaves set 0 selected. */
+void render_select_mask_set(int set);
+
+/* Until the next render_select_mask_set, the selected set's painting waits for a later frame:
+ * it replays without GPU work, as for a clean set, and render_composite leaves the set dirty
+ * (it composites set 0's layers in its place).  For a set composited invisibly, so a frame
+ * that already painted set 0 does not paint set 1 as well. */
+void render_hold_mask_set(void);
+
+/* Mask layers painted (FBO clears) since start, for the pacing log. */
+unsigned render_mask_paint_count(void);
 
 /* ================================================================
  * Flag sprite API
@@ -175,7 +201,6 @@ int render_get_flag_frame_count(void);
  * size = half-extent in maneuver space.
  * frame = animation frame index (0..frame_count-1). */
 void render_sprite_flag(float x, float y, float size, int frame);
-void render_sprite_flag_ex(float x, float y, float size, int frame, int flip_x);
 
 /* ================================================================
  * Vertex buffer -- exposed for route_path.c mesh drawing
@@ -189,11 +214,6 @@ void render_set_route_progress(float fill, float path_weight, float glow);
 /* Preclipped receiver triangles: pos(3), signed edge distance/height gap/onset fade(3). */
 void render_contact_shadow(const float *verts,int count,float alpha,float thickness);
 const cr_route_progress_map_t *render_prepare_route_progress(const cr_route_progress_point_t *points, int count);
-void vb_quad(float x0, float y0, float z0,
-             float x1, float y1, float z1,
-             float x2, float y2, float z2,
-             float x3, float y3, float z3,
-             float nx, float ny, float nz);
 void vb_flush(float r, float g, float b, float a);
 
 #ifdef __cplusplus

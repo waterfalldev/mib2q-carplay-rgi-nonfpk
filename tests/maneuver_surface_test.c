@@ -24,16 +24,18 @@ EGLBoolean eglSwapInterval(EGLDisplay d, EGLint interval)
 EGLBoolean eglDestroySurface(EGLDisplay d, EGLSurface s)
 { (void)d; assert(s); ++destroys; return 1; }
 EGLint eglGetError(void) { return 0x300d; }
+EGLContext eglCreateContext(EGLDisplay d, EGLConfig c, EGLContext s, const EGLint *a)
+{ (void)d; (void)c; (void)s; (void)a; assert(!"a window with a context never makes another"); return 0; }
 int main(void) {
-    g_egl_display = (EGLDisplay)1; g_egl_config = (EGLConfig)2; g_egl_context = (EGLContext)3;
-    assert(create_window_and_egl_surface() == 0 && intervals == 1);
-    platform_recreate_window("test-loss");
+    g_egl_display = (EGLDisplay)1; g_egl_config = (EGLConfig)2; g_arrows.context = (EGLContext)3;
+    assert(create_window_and_egl_surface(&g_arrows) == 0 && intervals == 1);
+    recreate_output(&g_arrows, "test-loss");
     assert(recreates == 1 && creates == 2 && destroys == 1 && intervals == 2);
-    fail_interval = 1; platform_recreate_window("test-interval-rejected");
-    assert(g_egl_surface == EGL_NO_SURFACE && intervals == 3 && destroys == 3);
-    fail_interval = 0; fail_bind = 1; platform_recreate_window("test-bind-failed");
-    assert(g_egl_surface == EGL_NO_SURFACE && intervals == 3 && destroys == 4);
-    fail_bind = 0; platform_recreate_window("test-retry");
-    assert(g_egl_surface != EGL_NO_SURFACE && intervals == 4);
+    fail_interval = 1; recreate_output(&g_arrows, "test-interval-rejected");
+    assert(g_arrows.surface == EGL_NO_SURFACE && intervals == 3 && destroys == 3);
+    fail_interval = 0; fail_bind = 1; recreate_output(&g_arrows, "test-bind-failed");
+    assert(g_arrows.surface == EGL_NO_SURFACE && intervals == 3 && destroys == 4);
+    fail_bind = 0; recreate_output(&g_arrows, "test-retry");
+    assert(g_arrows.surface != EGL_NO_SURFACE && intervals == 4);
     puts("maneuver_surface_test: interval reapplied on recreate, failed bind/interval cleanup and retry PASS");
 }

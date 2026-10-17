@@ -37,6 +37,7 @@ public class GatedAddressBook implements CombiBAPServiceAddressBook {
 
     /** Wraps once: a second registration must not stack wrappers. */
     public static Object wrap(Object service) {
+        if (!com.luka.carplay.core.Features.PHONE_DATA) return service;
         if (service instanceof GatedAddressBook || !(service instanceof CombiBAPServiceAddressBook)) return service;
         return new GatedAddressBook((CombiBAPServiceAddressBook)service);
     }

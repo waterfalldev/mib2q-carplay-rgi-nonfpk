@@ -233,6 +233,7 @@ public class CarplayDSILifecycleController extends AbstractDSIController impleme
                 .tmManager
                 .getNightDayModeHandler()
                 .getRequestedNightMode();
+            com.luka.carplay.cluster.ClusterVideo.getInstance().setNightMode(serviceconfiguration.startInNightMode);
             serviceconfiguration.physicalDisplayHeight = this.this$0.configuration.getCarPlayPhysicalDisplayHeight();
             serviceconfiguration.physicalDisplayWidth = this.this$0.configuration.getCarPlayPhysicalDisplayWidth();
             serviceconfiguration.inputFeatures = b0;
@@ -330,6 +331,7 @@ public class CarplayDSILifecycleController extends AbstractDSIController impleme
         public void requestNightMode(boolean flag) {
             this.this$0.logger.log(1000000, "[%1.requestNightMode] %2", LOGCLASS, Boolean.toString(flag));
             this.this$0.dsiCarplaySafe.requestNightMode(flag);
+            com.luka.carplay.cluster.ClusterVideo.getInstance().setNightMode(flag);
         }
 
         private AppState[] convertAppState2DSI(IDSIAppState[] aidsiappstate) {
@@ -500,6 +502,7 @@ public class CarplayDSILifecycleController extends AbstractDSIController impleme
                  * Keep AppState itself stock so PHONE/SPEECH and outgoing DSI serialization retain
                  * their original semantics. TMState ignores appStateId 0. */
                 if (aappstate[i] != null && aappstate[i].getAppStateID() == 2) {
+                    com.luka.carplay.cluster.MostPresentation.setNavigationOwner(aappstate[i].getOwner());
                     aiappstate[i] = new CarPlayAppState(0, 0, 0);
                     continue;
                 }

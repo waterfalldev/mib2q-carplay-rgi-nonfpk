@@ -21,8 +21,6 @@ static void error_callback(int error, const char *description) {
     fprintf(stderr, "GLFW error %d: %s\n", error, description);
 }
 
-static int g_key_taps[CR_KEY_MAX] = {0};
-
 static void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods) {
     (void)scancode;
     (void)mods;
@@ -30,28 +28,6 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action, 
 
     if (key == GLFW_KEY_ESCAPE)
         glfwSetWindowShouldClose(window, GLFW_TRUE);
-    else if (key == GLFW_KEY_LEFT)
-        g_key_taps[CR_KEY_LEFT] = 1;
-    else if (key == GLFW_KEY_RIGHT)
-        g_key_taps[CR_KEY_RIGHT] = 1;
-    else if (key == GLFW_KEY_UP)
-        g_key_taps[CR_KEY_UP] = 1;
-    else if (key == GLFW_KEY_DOWN)
-        g_key_taps[CR_KEY_DOWN] = 1;
-    else if (key == GLFW_KEY_P)
-        g_key_taps[CR_KEY_P] = 1;
-    else if (key == GLFW_KEY_SPACE)
-        g_key_taps[CR_KEY_SPACE] = 1;
-    else if (key == GLFW_KEY_S)
-        g_key_taps[CR_KEY_S] = 1;
-    else if (key == GLFW_KEY_A)
-        g_key_taps[CR_KEY_A] = 1;
-    else if (key == GLFW_KEY_LEFT_BRACKET)
-        g_key_taps[CR_KEY_LBRACKET] = 1;
-    else if (key == GLFW_KEY_RIGHT_BRACKET)
-        g_key_taps[CR_KEY_RBRACKET] = 1;
-    else if (key == GLFW_KEY_D)
-        g_key_taps[CR_KEY_D] = 1;
 }
 
 int platform_init(int width, int height) {
@@ -69,7 +45,7 @@ int platform_init(int width, int height) {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
     glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
     glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);
-    /* Retina default (TRUE) — gives 2x framebuffer, same as QNX SSAA 2x. */
+    /* Retina default (TRUE) — gives a 2x framebuffer (SSAA_SCALE is 1 here, 1.6 on QNX). */
 
     g_window = glfwCreateWindow(width, height, "maneuver_render", NULL, NULL);
     if (!g_window) {
@@ -121,29 +97,46 @@ void platform_get_framebuffer_size(int *width, int *height) {
 #endif
 }
 
-void platform_get_routing_ids(int *display_id, int *context_id, int *displayable_id) {
-    if (display_id) *display_id = CR_DISPLAY_ID;
-    if (context_id) *context_id = CR_CONTEXT_ID;
-    if (displayable_id) *displayable_id = CR_DISPLAYABLE_ID;
-}
-
-void platform_ensure_focus(void) {
-    /* macOS dev path: no dmdt/display-manager routing. */
-}
-
 void platform_check_and_recover_window(void) {
     /* macOS dev path: no displaymanager binding to lose, no-op. */
+}
+
+void platform_check_output(void) {
+    /* macOS dev path: the window is the content, no MOST stream. */
+}
+
+unsigned platform_get_output(int *win_w, int *win_h, int *x, int *y, int *w, int *h, int *opaque) {
+    int fw = 0, fh = 0;
+    platform_get_framebuffer_size(&fw, &fh);
+    *win_w = fw; *win_h = fh; *x = 0; *y = 0; *w = fw; *h = fh; *opaque = 0;
+    return 0;
+}
+
+int platform_map_window(int *w, int *h, unsigned *window) {
+    /* macOS dev path: no MOST MAP view window. */
+    (void)w; (void)h; (void)window;
+    return 0;
+}
+
+int platform_map_nv12_buffer(unsigned char **y, int *y_stride, unsigned char **uv, int *uv_stride) {
+    (void)y; (void)y_stride; (void)uv; (void)uv_stride;
+    return 0;
+}
+
+int platform_map_nv12_post(void) {
+    return 0;
+}
+
+void platform_map_check(int recover) {
+    (void)recover;
 }
 
 void platform_release_displayable(void) {
     /* macOS dev path: no displaymanager / screen_destroy_window, no-op. */
 }
 
-int platform_key_tap(int key) {
-    if (key < 0 || key >= CR_KEY_MAX) return 0;
-    int v = g_key_taps[key];
-    g_key_taps[key] = 0;
-    return v;
+long platform_free_memory_kb(void) {
+    return -1;   /* macOS dev path: not reported */
 }
 
 #endif /* PLATFORM_MACOS */

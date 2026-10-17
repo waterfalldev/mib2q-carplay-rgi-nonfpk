@@ -34,6 +34,7 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <sys/uio.h>
 
 DEFINE_LOG_MODULE(BUS);
 
@@ -45,7 +46,7 @@ DEFINE_LOG_MODULE(BUS);
 /* Directly indexed events and commands. The highest current command is
  * CMD_UPMIX (0x0119); keep Java CarplayBus.MAX_TYPES in sync. */
 #define MAX_TYPES             0x0120
-#if CMD_ALT_RGI >= MAX_TYPES || CMD_VEHICLE >= MAX_TYPES || CMD_UPMIX >= MAX_TYPES
+#if CMD_ALT_RGI >= MAX_TYPES || CMD_VEHICLE >= MAX_TYPES || CMD_UPMIX >= MAX_TYPES || CMD_MOST_MAP_APPEARANCE >= MAX_TYPES
 #error a bus command is outside the bus dispatch table
 #endif
 
@@ -182,10 +183,11 @@ static hook_result_t frame_dup(frame_t* dst, const frame_t* src) {
 static bool q_is_full(void) { return g_ring_count == SEND_QUEUE_CAPACITY; }
 static bool q_is_empty(void) { return g_ring_count == 0; }
 
-static hook_result_t q_enqueue_nolock(const frame_t* f) {
+/* Takes over f's payload when it succeeds: bus_send already made the one copy. */
+static hook_result_t q_enqueue_nolock(frame_t* f) {
     if (q_is_full()) return HOOK_ERR_BUSY;
-    hook_result_t r = frame_dup(&g_ring[g_ring_tail], f);
-    if (r != HOOK_OK) return r;
+    g_ring[g_ring_tail] = *f;
+    f->payload = NULL;
     g_ring_tail = (g_ring_tail + 1) % SEND_QUEUE_CAPACITY;
     g_ring_count++;
     return HOOK_OK;
@@ -203,21 +205,28 @@ static bool q_dequeue_nolock(frame_t* out) {
 /* ============================================================
  * IO: write full frame to fd, big-endian header
  * ============================================================ */
-static int write_all(int fd, const void* buf, size_t len) {
-    const uint8_t* p = (const uint8_t*)buf;
-    while (len > 0) {
-        /* flags MUST be 0 on QNX 6.5: the io-pkt stack does NOT implement MSG_NOSIGNAL (the macro
-         * is defined in the headers but send() with it returns ENOSYS = "Function not implemented"),
-         * which silently killed the WHOLE bus (RGD + coverart never reached Java).  SIGPIPE is
-         * suppressed process-wide instead (SIG_IGN at bus init). */
-        ssize_t n = send(fd, p, len, 0);
+/* Header and payload in one writev; a short write continues with the rest.  No MSG_NOSIGNAL
+ * (writev takes no flags anyway): QNX 6.5's io-pkt answers it with ENOSYS, which silently
+ * killed the WHOLE bus, so SIGPIPE is ignored process-wide instead (SIG_IGN at bus init). */
+static int write_frame(int fd, const uint8_t* hdr, const uint8_t* payload, size_t len) {
+    struct iovec iov[2];
+    int first = 0, count = (len > 0 && payload) ? 2 : 1;
+    iov[0].iov_base = (void*)hdr;
+    iov[0].iov_len = BUS_HEADER_SIZE;
+    iov[1].iov_base = (void*)payload;
+    iov[1].iov_len = len;
+    while (first < count) {
+        ssize_t n = writev(fd, iov + first, count - first);
         if (n < 0) {
             if (errno == EINTR) continue;
             return -1;
         }
         if (n == 0) return -1;
-        p += n;
-        len -= (size_t)n;
+        while (first < count && (size_t)n >= iov[first].iov_len) n -= (ssize_t)iov[first++].iov_len;
+        if (first < count) {
+            iov[first].iov_base = (uint8_t*)iov[first].iov_base + n;
+            iov[first].iov_len -= (size_t)n;
+        }
     }
     return 0;
 }
@@ -253,16 +262,10 @@ static int send_frame(int fd, uint32_t gen, bool published, const frame_t* f) {
         }
     }
     int rc = 0;
-    if (write_all(fd, hdr, sizeof(hdr)) != 0) {
-        LOG_WARN(LOG_MODULE, "send header failed fd=%d type=0x%04x len=%u err=%s",
+    if (write_frame(fd, hdr, f->payload, f->len) != 0) {
+        LOG_WARN(LOG_MODULE, "send failed fd=%d type=0x%04x len=%u err=%s",
                  fd, f->type, f->len, strerror(errno));
         rc = -1;
-    } else if (f->len > 0 && f->payload) {
-        if (write_all(fd, f->payload, f->len) != 0) {
-            LOG_WARN(LOG_MODULE, "send payload failed fd=%d type=0x%04x len=%u err=%s",
-                     fd, f->type, f->len, strerror(errno));
-            rc = -1;
-        }
     }
     if (rc != 0 && published) {
         /* Retire before another writer can append bytes to a partial frame. */

@@ -36,12 +36,11 @@ final class RgdModule implements Module {
             return false;
         }
 
-        /* Init + subscribe ONCE.  Guard against re-running rg.init() on a retry (it builds a
-         * fresh BAPBridge each call → would re-wrap the gate every retry).  rg.start() is
+        /* Init ONCE: a retry must not rebuild the RouteGuidance/BAPBridge pair.  rg.start() is
          * idempotent (returns early if already running). */
         if (rg == null) {
             RouteGuidance r = new RouteGuidance();
-            if (!r.init(navi)) {                                  /* BAPBridge init (ClusterService) not ready */
+            if (!r.init(navi)) {                                  /* not a CombiBAPServiceNavi */
                 return false;
             }
             rg = r;
@@ -57,7 +56,19 @@ final class RgdModule implements Module {
     }
 
     public void stop() {
-        if (rg != null) { rg.stop(); rg.disengageTakeover(); rg = null; }
-        if (naviHandle != null) { naviHandle.release(); naviHandle = null; }
+        /* the native RG gate must reopen even when the route-guidance teardown
+         * throws; before, a throw from rg.stop() skipped disengageTakeover() and left stock
+         * route guidance blocked on the cluster for the rest of the ignition cycle. */
+        RouteGuidance r = rg;
+        rg = null;
+        try {
+            if (r != null) {
+                try { r.stop(); }
+                catch (Throwable t) { Log.w(TAG, "route guidance stop failed: " + t); }
+                finally { r.disengageTakeover(); }
+            }
+        } finally {
+            if (naviHandle != null) { naviHandle.release(); naviHandle = null; }
+        }
     }
 }

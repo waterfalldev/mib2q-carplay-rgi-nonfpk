@@ -128,6 +128,11 @@ HOOK_EXPORT void *AirPlayCopyServerInfo(void *session, void *qualifier, void *ma
     n = hook_framework_module_count();
     for (i = 0; i < n; i++) {
         const hook_module_def_t *def = hook_framework_module_at(i);
+        if (def && def->airplay.on_server_info_replace) def->airplay.on_server_info_replace(session, &info);
+    }
+    if (!info) return info;
+    for (i = 0; i < n; i++) {
+        const hook_module_def_t *def = hook_framework_module_at(i);
         if (def && def->airplay.on_server_info) def->airplay.on_server_info(session, info);
     }
     for (i = 0; i < n; i++) {
@@ -184,8 +189,16 @@ HOOK_EXPORT int AirPlayReceiverSessionSetup(void *session, void *request, void *
     }
 
     beginMs = seam_now_ms();
-    if (!setup.result) setup.result = real(session, request, respOut, a4);
+    if (!setup.result) setup.result = real(session, setup.request, respOut, a4);
     else if (respOut) *respOut = NULL;
+    if (setup.request != request) {
+        /* A module's replacement request: released once stock is done with it. */
+        void (*release)(const void *) = (void (*)(const void *))dlsym(RTLD_DEFAULT, "CFRelease");
+        LOG_WARN(LOG_MODULE, "SETUP %u with a module's request: stock result %d",
+                 (unsigned)setup.sequence, setup.result);
+        if (release) release(setup.request);
+        setup.request = request;
+    }
     realDoneMs = seam_now_ms();
 
     /* Run even when stock produced no response: recording that stock rejected
@@ -298,6 +311,31 @@ HOOK_EXPORT int AirPlayReceiverSessionTearDown(void *session, void *request, int
         const hook_module_def_t *def = hook_framework_module_at(i);
         if (def && def->airplay.on_teardown_final)
             def->airplay.on_teardown_final(session, full ? NULL : request, reason);
+    }
+    return result;
+}
+
+/* ── AirPlayReceiverSessionSetSecurityInfo ──────────────────────────────────
+ * (session, key[16], iv[16]): the session's master key, from which every
+ * stream's keys are derived.  Modules see it after stock accepted it. */
+typedef int (*fn_set_security_info_t)(void *, const uint8_t *, const uint8_t *);
+
+HOOK_EXPORT int AirPlayReceiverSessionSetSecurityInfo(void *session, const uint8_t *key, const uint8_t *iv)
+{
+    static fn_set_security_info_t real;
+    size_t i, n;
+    int result;
+
+    seam_enter();
+    if (!real) real = (fn_set_security_info_t)dlsym(RTLD_NEXT, "AirPlayReceiverSessionSetSecurityInfo");
+    if (!real) { LOG_ERROR(LOG_MODULE, "SetSecurityInfo real==NULL"); return -6700; }
+
+    result = real(session, key, iv);
+    if (result != 0 || !key || !iv) return result;
+    n = hook_framework_module_count();
+    for (i = 0; i < n; i++) {
+        const hook_module_def_t *def = hook_framework_module_at(i);
+        if (def && def->airplay.on_security_info) def->airplay.on_security_info(session, key, iv);
     }
     return result;
 }

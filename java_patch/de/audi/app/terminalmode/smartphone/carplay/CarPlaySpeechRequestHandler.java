@@ -44,6 +44,10 @@ public class CarPlaySpeechRequestHandler implements ISpeechRequestHandler {
 
     /** Short press released while speech is free: a Siri tap through the stock long-press path. */
     public void cancelPrewarm() {
+        if (!com.luka.carplay.core.Features.SIRI_SHORT_PRESS) {   /* stock */
+            this.dioDSIController.requestSIRIAction(SiriAction.SIRIACTION_STOP);
+            return;
+        }
         if (tapThroughStockLongPress()) return;
         Log.w("Siri", "voice key short press: TerminalMode SDS handler not found, plain Siri tap");
         this.dioDSIController.requestSIRIAction(SiriAction.SIRIACTION_START);

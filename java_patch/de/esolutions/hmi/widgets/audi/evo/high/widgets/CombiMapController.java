@@ -59,10 +59,10 @@ public class CombiMapController extends DisplayControllerEvo implements NaviMoKo
     private static final int LC_MAP_Y = IAnimationTypesEvo.NUM_ANIMATION_TYPES;
 
     /* ---- cluster variant + contexts ---- */
-    private static final int SYSCONST_KOMBI_VARIANT = 541;
-    private static final int KOMBI_KDK_VIA_DISPLAYABLES = 2;   // A5-class: KDK is composed from displayables
-    private static final int MAP_CONTEXT_MIN = 72, MAP_CONTEXT_MAX = 77;   // valid cluster map contexts
-    private static final int CLUSTER_TERMINAL = 1;
+    private static final int SYSCONST_KOMBI_VARIANT = com.luka.carplay.cluster.ClusterPlatform.SYSCONST_KOMBI_MAP_MODE;
+    private static final int KOMBI_KDK_VIA_DISPLAYABLES = com.luka.carplay.cluster.ClusterPlatform.KOMBI_MAP_MODE_FPK;   // A5-class: KDK is composed from displayables
+    private static final int MAP_CONTEXT_MIN = com.luka.carplay.cluster.MostPresentation.CTX_STOCK_MAP, MAP_CONTEXT_MAX = 77;   // valid cluster map contexts
+    private static final int CLUSTER_TERMINAL = com.luka.carplay.core.AltScreenModule.TERMINAL_CLUSTER;
 
     /* ---- frame rates ---- */
     private static final int FPS_FULL = 10, FPS_REDUCED = 1, FPS_OFF = 0;
@@ -149,7 +149,7 @@ public class CombiMapController extends DisplayControllerEvo implements NaviMoKo
         }
         IDisplayManager dm = displayManager(hmiService);
         Layout layout = layoutOf(this.terminal);
-        if (dm == null || layout == null || hmiService == null) {
+        if (dm == null || layout == null) {
             logKDK.log(100000, "CombiMapController#syncViewSize environment not fully initialized");
             return;
         }
@@ -343,14 +343,14 @@ public class CombiMapController extends DisplayControllerEvo implements NaviMoKo
     }
 
     public void switchToTargetContext() {
-        /* CarPlay cluster pin: while CarPlay owns the cluster (AltScreenModule.isConnected()), do NOT
-         * switch terminal 1 to the stock kombi map.  On FPK the View button drives a model update ->
-         * this controller -> switchContext(<stock map>), which is what pulled the cluster off ctx 80
-         * ("View -> stock map").  Pin on isConnected() (true for the whole session from start()), NOT
-         * clusterActive (set only after the first switch settles) — else a View press during the first
-         * ~180ms switch slips the pin and strands the cluster on the stock map.  isConnected() clears
-         * on disconnect, so the stock map returns then. */
-        if (this.kombiTerminal == CLUSTER_TERMINAL && com.luka.carplay.core.AltScreenModule.isConnected()) {
+        /* CarPlay cluster pin: while CarPlay owns the cluster context (AltScreenModule.ownsClusterContext()),
+         * do NOT switch terminal 1 to the stock kombi map.  On FPK the View button drives a model update ->
+         * this controller -> switchContext(<stock map>), which would pull the cluster off ctx 80
+         * ("View -> stock map").  The pin holds for the whole session from start(), not only after the
+         * first switch settles, so a View press during that switch cannot strand the cluster on the stock
+         * map.  It covers only the Virtual Cockpit composition; a MOST cluster keeps stock switching.
+         * The stock map returns when the claim clears. */
+        if (this.kombiTerminal == CLUSTER_TERMINAL && com.luka.carplay.core.AltScreenModule.ownsClusterContext()) {
             logDisplay.log(10000000, "CombiMapController#switchToTargetContext SKIPPED — CarPlay owns cluster (ctx 80)");
             return;
         }

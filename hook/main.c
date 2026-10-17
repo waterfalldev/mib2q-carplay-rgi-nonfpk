@@ -14,8 +14,16 @@
 #include "routeguidance/rgd_hook.h"
 #include "coverart/coverart_hook.h"
 #include "altscreen/altscreen_hook.h"
+#include "mostmap/most_map_hook.h"
+/* HOOK_PHONE_DATA=1 (scripts/build_hook.sh) adds the telephony and vehicle modules:
+ * iAP2 call lists and status for the cluster phone tab, vehicle data to the phone. */
+#ifndef HOOK_PHONE_DATA
+#define HOOK_PHONE_DATA 1
+#endif
+#if HOOK_PHONE_DATA
 #include "telephony/tel_hook.h"
 #include "vehicle/vehicle_hook.h"
+#endif
 #if HOOK_WIRELESS
 #include "wireless/wireless_hook.h"
 #endif
@@ -36,8 +44,11 @@ const hook_module_def_t* const hook_module_table[] = {
     &rgd_module_def,
     &coverart_module_def,
     &altscreen_module_def,
+    &most_map_module_def,   /* instead of altscreen on a map-over-MOST cluster */
+#if HOOK_PHONE_DATA
     &tel_module_def,
     &vehicle_module_def,
+#endif
 #if HOOK_AUDIO
     &audio_module_def,
     &upmix_level_module_def,

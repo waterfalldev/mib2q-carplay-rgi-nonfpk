@@ -43,15 +43,23 @@ typedef struct {
 
 typedef void (*hook_setup_callback_t)(hook_setup_ctx_t* setup);
 typedef void (*hook_server_info_callback_t)(void* session, void* info);
+/* A module that cannot edit stock's /info in place replaces `*info` with its own copy and
+ * releases the one it replaced (the caller releases the final object). */
+typedef void (*hook_server_info_replace_t)(void* session, void** info);
+/* The session's 16-byte master key and IV, as stock just stored them. */
+typedef void (*hook_security_info_callback_t)(void* session, const uint8_t* key, const uint8_t* iv);
 typedef void (*hook_teardown_callback_t)(void* session, void* request, int reason);
 
 typedef struct {
     /* AirPlayReceiverSessionSetup: before stock, after stock, and after every
-     * module has finished merging the response (for capture/diagnostics). */
+     * module has finished merging the response (for capture/diagnostics).  A request
+     * callback may replace `request` with its own CF object: stock gets it, the seam
+     * releases it afterwards, and response callbacks see the original. */
     hook_setup_callback_t on_setup_request;
     hook_setup_callback_t on_setup_response;
     hook_setup_callback_t on_setup_response_final;
     /* AirPlayCopyServerInfo: the /info dictionary stock just built. */
+    hook_server_info_replace_t on_server_info_replace;   /* runs before on_server_info */
     hook_server_info_callback_t on_server_info;
     hook_server_info_callback_t on_server_info_final;
     /* AirPlayReceiverSessionTearDown, before stock frees the session.
@@ -60,6 +68,8 @@ typedef struct {
     hook_teardown_callback_t on_teardown;
     /* After stock has stopped/joined its stream workers. */
     hook_teardown_callback_t on_teardown_final;
+    /* AirPlayReceiverSessionSetSecurityInfo: after stock accepted the key. */
+    hook_security_info_callback_t on_security_info;
 } hook_airplay_seams_t;
 
 /* The 210 HTTP adapter owns the binary ABI. Modules own protocol state.
@@ -91,6 +101,9 @@ typedef struct {
 typedef struct {
     const char* name;
     hook_priority_t priority;
+    /* NULL, or 0 when the module does not apply to this car: it is then never
+     * registered, initialised or called. */
+    int (*enabled)(void);
     const uint16_t* msg_filter;
     size_t msg_filter_count;
     hook_msg_handler_t on_message;
@@ -187,6 +200,12 @@ struct hook_context {
 hook_result_t hook_framework_init(void);
 void hook_framework_shutdown(void);
 hook_result_t hook_framework_register_module(const hook_module_def_t* def);
+
+/* The cluster coding Java published at boot (/tmp/carplay_cluster_platform): 1 for a
+ * map-over-MOST cluster, 0 for anything else or when nothing was published. */
+int hook_cluster_is_most(void);
+/* 1 for an RGI-only cluster (no map display), 0 otherwise. */
+int hook_cluster_is_rgi(void);
 hook_result_t hook_framework_unregister_module(const char* name);
 hook_context_t* hook_framework_get_context(void);
 

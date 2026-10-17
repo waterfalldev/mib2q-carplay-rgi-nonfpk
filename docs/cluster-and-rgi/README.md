@@ -55,6 +55,8 @@ flowchart TB
 | Note | What it covers |
 |---|---|
 | [Cluster Contexts](CLUSTER_CONTEXTS.md) | The DisplayManager context state machine (74 stock / 80 nav / 81 map), why displayable 103 is not creatable, and the single writer `AltScreenModule`. |
+| [MOST Cluster](MOST_CLUSTER.md) | The analogue cluster that takes map and arrows over MOST (sysConst 541 = 1): CarPlay's maneuver in the stock arrows view, KOMO guidance text, the native-size renderer output, and where the Virtual Cockpit paths stay out of the way. |
+| [MOST Map View](MOST_MAP_VIEW.md) | The phone's own cluster map in the MOST cluster's MAP view during CarPlay navigation: the mostmap stream-111 receiver, the frame ring, the renderer's decoder and NV12 window, and how it coexists with the Virtual Cockpit's altScreen. |
 | [RGI and BAP Bridge](RGI_AND_BAP_BRIDGE.md) | The route-guidance path: `BAPBridge` outputs, FSG sync and ExitView, FctID 18/37, slot mapping and LRU, `visible_in_app` vs route-active. |
 | [HUD Renderer](HUD_RENDERER.md) | The three renderers, the procedural arrow, the stock KOMO map pipeline (unused by CarPlay code), and the VC FPK state machine. |
 | [AltScreen Input Commands](../altscreen-and-video/ALTSCREEN_INPUT_COMMANDS.md) | Native roller cadence, priority, immutable selected age, state ACKs and CF ownership; preserves the BAP reply. |

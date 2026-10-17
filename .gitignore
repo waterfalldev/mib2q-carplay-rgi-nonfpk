@@ -76,3 +76,19 @@ install_MoreIncredibleBash/mod/carplay/carplay_child.json
 
 # Obsidian per-user UI state (open panes, last file) — changes on every open
 docs/.obsidian/
+
+# The release wrapper's local folders and firmware inputs. Stock JARs never enter history.
+/Logs/
+/Firmware/
+/Packages/
+/Dependencies/
+/Work/
+/MIB-SD-Card/
+/java_stock/
+**/Firmware.psd1
+**/lsd.jar
+*.jxe
+*.core
+*.log
+**/carplay-rgi-runtime-logs/
+!/tests/fixtures/*.log

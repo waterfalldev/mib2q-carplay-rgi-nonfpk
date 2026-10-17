@@ -69,7 +69,26 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
     private static final int KOMBI_CTX_KDK_ONLY = 9;   // KDK-only cluster
     protected LogChannel logChannel;
     protected final NavigationEnv env;
-    private boolean rgiDataValid = false;
+    private volatile boolean rgiDataValid = false;   /* also read from the CarPlay thread (setCarPlayRgiValidOverride) */
+    /* CarPlay's "RGI valid" claim is kept beside stock's own RGI data instead of being
+     * written into it (updateRGIString), so releasing CarPlay can never forge "no RGI" over a
+     * live native route in ClusterViewMode.  dsiRgActive is the last value the DSI navigation
+     * handler reported, the authority rgActive is handed back to. */
+    private volatile boolean carPlayRgiValidOverride = false;
+    private volatile boolean dsiRgActiveKnown = false;
+    private volatile boolean dsiRgActive = false;
+    /* A DSI rgActive=false that arrived while CarPlay held the RGI claim (updateRgActive),
+     * replayed when the claim is released. */
+    private volatile boolean dsiNoRouteHeld = false;
+    /* cluster view handshake diagnostics and the smartphone-navigation hold. */
+    public static final String VIEW_TAG = "ClusterView";
+    private static final int MODEL_VIEW_MODE = 67;          /* ClusterViewMode's viewMode model */
+    private String lastViewTrace;
+    private int lastKombiContext = -1;
+    private final Object galLock = new Object();
+    private boolean galState;
+    private boolean galStateKnown;
+    private boolean galHeld;
     private final DateMetric etaDateMetric;
     private final DateMetric rttDateMetric;
     private Distance distanceToManeuver = new Distance(0.0F, 1);
@@ -148,7 +167,8 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
         );
         this.clusterViewMode = new ClusterViewMode(navigationenv, this);
         this.clusterKDKHandler = this.initClusterKDKHandler(iviewsizechangehandler);
-        this.komoService = new KOMOService(navigationenv, this, this.clusterKDKHandler);
+        /* stock KOMOService with a CarPlay owner for the MOST guidance text fields. */
+        this.komoService = new CarPlayKOMOService(navigationenv, this, this.clusterKDKHandler);
         this.clusterInputListener = this.createClusterInputListener(navigationenv);
         this.mapScaleHandler = new MapScaleHandler();
         this.mapScaleTimer = new MapScaleTimer(navigationenv, this, this.mapScaleHandler);
@@ -564,6 +584,19 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
 
     public void updateRgActive(boolean flag) {
         this.logChannel.log(100000000, "ClusterService#updateRgActive( %1 )", flag);
+        /* Only AbstractDSINavigationHandler calls this, right after it writes the container. */
+        this.dsiRgActive = flag;
+        this.dsiRgActiveKnown = true;
+        this.dsiNoRouteHeld = !flag && this.carPlayRgiValidOverride;
+        if (this.dsiNoRouteHeld) {
+            /* CarPlay guides: the navigator's "no route" - its first report when it finishes
+             * starting after CarPlay guidance began (map23) - must not end CarPlay's guidance
+             * on the cluster: stock would drop rgiValid, fall to COMPASS and clear the route
+             * text.  setCarPlayRgiValidOverride(false) replays it through here. */
+            this.env.getContainer().setRgActive(true);
+            com.luka.carplay.framework.Log.w(VIEW_TAG, "navigator reports no route guidance; rgActive held for CarPlay");
+            return;
+        }
         this.refreshRGIValid();
         this.clusterViewMode.refreshRGState();
         if (!flag) {
@@ -587,7 +620,7 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
 
     private void refreshRGIValid() {
         boolean flag = this.env.getContainer().isRgActive();
-        boolean flag1 = flag && this.rgiDataValid;
+        boolean flag1 = flag && (this.rgiDataValid || this.carPlayRgiValidOverride);
         this.logChannel
             .log(
                 100000000, "ClusterService#refreshRGIValid() - rgActive: %1, rgiDataValid: %2", flag, this.rgiDataValid
@@ -596,6 +629,20 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
     }
 
     public void refreshViewMode(int i) {
+        /* stock's view decision and its inputs, one WARN line per change, only while CarPlay is
+         * connected: other drives build no trace string and start no log writer.  The connect
+         * dump records the view, and the first change after it is logged afresh. */
+        if (com.luka.carplay.core.AltScreenModule.isConnected()
+                && com.luka.carplay.cluster.ClusterPlatform.leavesContextsToStock()) {
+            String state = ClusterViewMode.viewModeToString(i) + " {"
+                + String.valueOf(this.clusterViewMode).replace('\n', ' ').trim() + "}";
+            if (!state.equals(this.lastViewTrace)) {
+                this.lastViewTrace = state;
+                com.luka.carplay.framework.Log.w(VIEW_TAG, "stock view mode " + state);
+            }
+        } else {
+            this.lastViewTrace = null;
+        }
         this.combiBAPListener.setViewMode(i);
     }
 
@@ -711,6 +758,12 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
 
     public void switchDisplayContextKombi(int i) {
         this.logChannel.log(1000000, "ClusterService#switchDisplayContextKombi( %1 )", i);
+        if (i != this.lastKombiContext) {
+            this.lastKombiContext = i;
+            if (com.luka.carplay.cluster.ClusterPlatform.leavesContextsToStock()) {
+                com.luka.carplay.framework.Log.w(VIEW_TAG, "stock kombi context " + i + (i == KOMBI_CTX_KDK_ONLY ? " (arrows)" : i == KOMBI_CTX_MAP ? " (map)" : ""));
+            }
+        }
         this.mapInterface.switchDisplayContextKombi(i);
     }
 
@@ -1055,7 +1108,32 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
     }
 
     public void updateGALState(boolean flag) {
-        this.combiBAPListener.setGALState(flag);
+        /* "navigation running on the smartphone" (GALHandler, terminal-mode navigation
+         * app).  Stock answers it by putting the cluster on compass (info state 6, ActiveRGType 2).
+         * While CarPlay's own guidance is on a MOST cluster it is recorded, not applied, and handed
+         * over when CarPlay releases the cluster (holdSmartphoneNavigationState). */
+        synchronized (this.galLock) {
+            boolean changed = !this.galStateKnown || flag != this.galState;
+            this.galState = flag;
+            this.galStateKnown = true;
+            if (changed) {
+                com.luka.carplay.framework.Log.w(VIEW_TAG, "navigation on the smartphone=" + flag
+                    + (this.galHeld ? " (held while CarPlay guides the cluster)" : ""));
+            }
+            if (!this.galHeld) this.combiBAPListener.setGALState(flag);
+        }
+    }
+
+    /** MOST CarPlay guidance edge: keep stock's smartphone-navigation reaction off the cluster, or
+     *  hand stock's latest state back. */
+    private void holdSmartphoneNavigationState(boolean hold) {
+        synchronized (this.galLock) {
+            if (this.galHeld == hold) return;
+            this.galHeld = hold;
+            if (this.galState) {
+                this.combiBAPListener.setGALState(!hold);
+            }
+        }
     }
 
     public void updateOnlineConnectionState(boolean flag) {
@@ -1094,15 +1172,11 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
 
     /* ============================================================
      * CarPlay hook accessors (patched-in; avoid reflection in BAPBridge).
-     * env/combiBAPListener/refreshRGIValid are existing stock members.
+     * env/combiBAPListener are existing stock members.
      * ============================================================ */
 
     public DSIResponseContainer getDSIResponseContainer() {
         return this.env.getContainer();
-    }
-
-    public void triggerRefreshRGIValid() {
-        this.refreshRGIValid();
     }
 
     public CombiBAPServiceNavi getCombiBAPListenerCombiService() {
@@ -1114,10 +1188,128 @@ public class ClusterService implements NaviMoKoKDKConstants, PowerEventListener 
         this.combiBAPListener.combiservice = svc;
     }
 
+    /* ---- OEM-state restoration seams ---- */
+
+    /** CarPlay RGI presentation claim.  Feeds refreshRGIValid() without touching the stock
+     *  RGI data (rgiDataValid / data model 68), so the release restores exactly stock truth. */
+    public void setCarPlayRgiValidOverride(boolean active) {
+        this.carPlayRgiValidOverride = active;
+        if (!active && this.dsiNoRouteHeld) {
+            /* The navigator's "no route" held while CarPlay guided: stock's own handling now
+             * (refreshRGIValid included), as if it had just arrived. */
+            this.dsiNoRouteHeld = false;
+            this.env.getContainer().setRgActive(false);
+            this.updateRgActive(false);
+            return;
+        }
+        this.refreshRGIValid();
+    }
+
+    /** The rgActive value the DSI navigation handler last reported, or {@code fallback}. */
+    public boolean getLastDsiRgActive(boolean fallback) {
+        return this.dsiRgActiveKnown ? this.dsiRgActive : fallback;
+    }
+
     /** Restore the authoritative stock INITIALIZING/NORMAL decision after CarPlay releases the
      * cluster.  A deferred-call replay alone is insufficient when no map-ready edge occurred while
      * the takeover was active. */
     public synchronized void refreshInitializingScreenAfterCarPlay() {
         this.combiBAPListener.forceShowInitScreen(this.initScreenNeededOnKombi());
+    }
+
+    /** NavigationJobs only (AltScreenNavStatusGate).  Re-send the complete stock CombiBAPListener
+     *  cache through the now-open gate: the same updateAll() stock runs whenever its CombiBAP
+     *  service appears.  Writes the listener's own service back; no re-wrap, no service edge. */
+    public void replayCombiBAPStateAfterCarPlay() {
+        CombiBAPServiceNavi current = this.combiBAPListener.combiservice;
+        if (current != null) {
+            this.combiBAPListener.setCombiService(current);
+        }
+    }
+
+    /** MOST cluster: give the KOMO guidance text to CarPlay, or back to stock (which replays). */
+    public void setCarPlayKomoOwned(boolean owned) {
+        /* Claim: smartphone-navigation hold first, so stock's view answer is not forced to
+         * compass; then the KOMO text and view visibility, which lets stock select the arrows
+         * view the cluster asked for.  Release in the reverse order. */
+        if (owned) holdSmartphoneNavigationState(true);
+        if (this.komoService instanceof CarPlayKOMOService) {
+            ((CarPlayKOMOService) this.komoService).setCarPlayOwned(owned);
+        }
+        if (!owned) holdSmartphoneNavigationState(false);
+    }
+
+    /** The KOMO service while CarPlay owns its guidance fields, else null. */
+    private CarPlayKOMOService ownedKomo() {
+        if (!(this.komoService instanceof CarPlayKOMOService)) return null;
+        CarPlayKOMOService komo = (CarPlayKOMOService) this.komoService;
+        return komo.isCarPlayOwned() ? komo : null;
+    }
+
+    /** MOST: the BAP ActiveRGType (FctID 39) stock's current view stands for, as
+     *  CombiBAPListener.setViewMode maps it (COMPASS 2, RGI 0, KDK 1, MAP 3).  CarPlay's own
+     *  route-guidance start/stop sends this instead of its Virtual Cockpit value. */
+    public int getStockActiveRGType() {
+        switch (this.env.getChoiceModel(MODEL_VIEW_MODE).getValue()) {
+            case ClusterViewMode.VIEWMODE_RGI: return 0;
+            case ClusterViewMode.VIEWMODE_KDK: return 1;
+            case ClusterViewMode.VIEWMODE_MAP: return 3;
+            default: return 2;
+        }
+    }
+
+    /** MOST cluster: CarPlay's distance to the next maneuver in its KOMO field, sent alongside the
+     *  BAP distance/bargraph so both match, as stock refreshDistanceToNextManeuver does: formatted
+     *  by BAPDistanceFormatter, and the number is valid only while no bargraph is shown. */
+    public void publishCarPlayKomoDistance(int distanceToManeuverM, boolean bargraphShown) {
+        CarPlayKOMOService komo = this.ownedKomo();
+        if (komo == null) return;
+        if (distanceToManeuverM > 0) {
+            BAPDistanceFormatter.BAPDistance d = this.bapDistanceFormatter
+                .formatDistanceToTurn(distanceToManeuverM, Distance.getSystemUnit() == 1);
+            komo.carPlayDistanceToNextManeuver(d.getValue(), this.convertBAP2KOMODistanceUnit(d.getUnit()), !bargraphShown);
+        } else {
+            komo.carPlayDistanceToNextManeuver(-1L, 255, false);
+        }
+    }
+
+    /** MOST cluster: CarPlay's guidance in the other KOMO text fields, formatted exactly as stock
+     *  formats its own (BAPDistanceFormatter -> KOMO unit, KOMOService time and duration
+     *  conversion).  Values <= 0 / < 0 are sent as stock's own "invalid" encodings.  No-op unless
+     *  CarPlay owns the fields. */
+    public void publishCarPlayKomoGuidance(String turnToStreet, String currentStreet, long arrivalLocalMs,
+                                           long remainingMs, int distanceToDestinationM) {
+        CarPlayKOMOService komo = this.ownedKomo();
+        if (komo == null) return;
+        boolean systemUnit = Distance.getSystemUnit() == 1;
+        komo.carPlayTurnToStreet(turnToStreet != null ? turnToStreet : "");
+        komo.carPlayCurrentStreet(currentStreet != null ? currentStreet : "");
+        int timeFormat = KOMOService.convertTimeFormatToKOMO(DateMetric.timeFormat);
+        if (arrivalLocalMs >= 0L) {
+            KOMOTime t = KOMOService.convertTimeToKOMO(arrivalLocalMs);
+            komo.carPlayEta(timeFormat, t.day, t.hour, t.min, true);
+        } else {
+            komo.carPlayEta(timeFormat, (short) 0, (short) 0, (short) 0, false);
+        }
+        KOMOTime rtt = KOMOService.convertDurationToKOMO(remainingMs);
+        komo.carPlayRtt(rtt.hour, rtt.min, remainingMs >= 0L);
+        if (distanceToDestinationM > 0) {
+            BAPDistanceFormatter.BAPDistance d = this.bapDistanceFormatter.formatDistanceToDestination(distanceToDestinationM, systemUnit);
+            komo.carPlayDistanceToDestination(d.getValue(), this.convertBAP2KOMODistanceUnit(d.getUnit()), true);
+        } else {
+            komo.carPlayDistanceToDestination(-1L, -1, false);
+        }
+    }
+
+    /** Read-only cluster state for the bounded diagnostics. */
+    public String describeClusterStateForCarPlay() {
+        Buffer buffer = new Buffer(256);
+        buffer.append("rgActive=").append(this.env.getContainer().isRgActive());
+        buffer.append(" dsiRgActive=").append(this.dsiRgActiveKnown ? String.valueOf(this.dsiRgActive) : "?");
+        buffer.append(" rgiDataValid=").append(this.rgiDataValid);
+        buffer.append(" carPlayRgiOverride=").append(this.carPlayRgiValidOverride);
+        buffer.append(" komoGuidance=").append(this.ownedKomo() != null ? "carplay" : "stock");
+        buffer.append(" view={").append(String.valueOf(this.clusterViewMode).replace('\n', ' ').trim()).append('}');
+        return buffer.toString();
     }
 }

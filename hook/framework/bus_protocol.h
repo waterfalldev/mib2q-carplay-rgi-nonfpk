@@ -86,6 +86,8 @@
                                         /* battery (0-100, -1 unknown) and    */
                                         /* charging (0 off/1 charging/2 full, */
                                         /* -1 unknown) from PowerUpdate 0xAE01 */
+#define EVT_MOST_MAP_VIDEO      0x0050  /* text: live:b stream:n - the phone's */
+                                        /* cluster stream reaches the MOST map  */
 
 /* ============================================================
  * Command types (Java -> Hook)
@@ -132,6 +134,10 @@
                                         /* normal 3 full 4 aggressive], the    */
                                         /* MMI "CarPlay UpMix" row (Java keeps */
                                         /* it; boot value via /tmp file)       */
+#define CMD_MOST_MAP_ZOOM       0x011A  /* binary [int8 signed MapScale step]: */
+                                        /* changeMapZoomLevel for the MOST map  */
+#define CMD_MOST_MAP_APPEARANCE 0x011B  /* binary [u8 night 0/1]: setNightMode  */
+                                        /* for the MOST map's cluster display  */
 /* NOTE: dispatchable inbound types must be < MAX_TYPES in bus.c (grown to      */
 /* cover this 0x11x block).                                                     */
 

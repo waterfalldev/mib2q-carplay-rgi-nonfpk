@@ -15,8 +15,8 @@ FW=$UNPACKED/MHI2Q_US_AUG22_P5087_MU1316/qnx6/MMX2QC/efs-sys/10/default/system
 APP_SI=qnx6/MMX2QC/app/10/default/app/eso/bin/apps/smartphone_integrator
 US_SI=$UNPACKED/MHI2Q_US_AUG22_P5087_MU1316/$APP_SI
 CN_SI=$UNPACKED/MHI2Q_CN_AUG22_K1004_MU1003_4M0906961EG/$APP_SI
-MP=$(command -v micropython || command -v python3)
-SH=$(command -v mksh || command -v ksh)
+MP=$(command -v micropython || command -v python3 || true)
+SH=$(command -v mksh || command -v ksh || true)
 [ -f "$MOD/custom.sh" ] && [ -d "$FW" ] && [ -f "$US_SI" ] && [ -f "$CN_SI" ] ||
     { echo "SKIP (no staged install tree or unpacked P5087/K1004)"; exit 0; }
 T=$(mktemp -d); trap '[ -n "${KEEP:-}" ] && echo "kept $T" || rm -rf "$T"' EXIT

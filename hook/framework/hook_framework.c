@@ -125,12 +125,21 @@ static void ensure_fw_lock_init(void) {
  * constructors reached LOG_INFO, whose lazy logger created a pthread while
  * ldqnx still owned the loader lock.  Register modules only after a real
  * Cinemo call proves that dio_manager and all dependencies are live. */
+/* Which table entries were initialised; on_shutdown runs for those only. */
+#define MAX_TABLE_MODULES 32
+static unsigned char g_module_live[MAX_TABLE_MODULES];
+
 static void init_modules_once(void) {
     size_t i;
-    for (i = 0; i < hook_module_table_count; i++) {
+    for (i = 0; i < hook_module_table_count && i < MAX_TABLE_MODULES; i++) {
         const hook_module_def_t* def = hook_module_table[i];
         if (!def) continue;
+        if (def->enabled && !def->enabled()) {
+            LOG_INFO(LOG_MODULE, "module %s does not apply to this car", def->name);
+            continue;
+        }
         hook_framework_register_module(def);
+        g_module_live[i] = 1;
         if (def->on_init) def->on_init();
     }
 }
@@ -142,6 +151,7 @@ static void shutdown_modules(void) {
     size_t i;
     for (i = hook_module_table_count; i-- > 0;) {
         const hook_module_def_t* def = hook_module_table[i];
+        if (i >= MAX_TABLE_MODULES || !g_module_live[i]) continue;
         if (def && def->on_shutdown) def->on_shutdown();
     }
 }
@@ -931,6 +941,7 @@ HOOK_EXPORT int _ZN14NmeIAP2Message6DecodeEPKhi(void* self, const uint8_t* buf, 
         .offset = 0,
         .frame_len = frame_len,
         .msgid = msgid,
+        .data = buf,
         .payload = (frame_len > 6) ? (buf + 6) : NULL,
         .payload_len = (frame_len > 6) ? (frame_len - 6) : 0
     };
@@ -991,6 +1002,7 @@ HOOK_EXPORT int _ZNK14NmeIAP2Message6EncodeER8NmeArrayIhE(const void* self, void
         .offset = 0,
         .frame_len = read_be16(data + 2),
         .msgid = (uint16_t)msgid,
+        .data = data,
         .payload = (len > 6) ? (data + 6) : NULL,
         .payload_len = (len > 6) ? (len - 6) : 0
     };
@@ -1113,3 +1125,24 @@ __attribute__((destructor))
 static void hook_lib_fini(void) {
     hook_framework_shutdown();
 }
+
+/* Java (ClusterPlatform) writes the coding at boot, long before dio_manager starts for a
+ * phone.  Read once: a file that appears later does not move modules between cars.
+ * 0 nothing published, 1 "most", 2 "rgi", 3 anything else ("vc"). */
+static int cluster_platform(void) {
+    static int cached = -1;
+    char text[8] = {0};
+    int fd;
+    if (cached >= 0) return cached;
+    cached = 0;
+    fd = open("/tmp/carplay_cluster_platform", O_RDONLY);
+    if (fd >= 0) {
+        if (read(fd, text, sizeof(text) - 1) > 0)
+            cached = !strncmp(text, "most", 4) ? 1 : !strncmp(text, "rgi", 3) ? 2 : 3;
+        close(fd);
+    }
+    return cached;
+}
+
+int hook_cluster_is_most(void) { return cluster_platform() == 1; }
+int hook_cluster_is_rgi(void) { return cluster_platform() == 2; }

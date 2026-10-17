@@ -87,6 +87,8 @@ Lifecycle semantics:
   missing renderer is restarted, after a five-second backoff. Cold boot starts
   `altscreen_render`, then gives its EGL initialization a one-second head start
   before `maneuver_render` to avoid a dual Qualcomm `eglInitialize` burst;
+- on a map-over-MOST cluster (`/tmp/carplay_cluster_platform` reads `most`) the monitor never
+  starts `altscreen_render`: `maneuver_render` shows the phone's map in that same window 99;
 - external cleanup is identity-less (smartphone_integrator does not tell it which dio
   generation it runs for), so it does NOT create the global stop marker and does NOT
   stop renderers by the shared PID files — either could damage an already-started

@@ -17,6 +17,7 @@ static pthread_mutex_t pause_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pause_cond = PTHREAD_COND_INITIALIZER;
 static int pause_encode, reached_encode, resume_encode;
 static int notifications, interrupt_write, write_calls;
+static int block_write, write_blocked, release_write;
 static uint8_t jpeg[4096];
 static size_t jpeg_len;
 static uint32_t decode_generation;
@@ -69,6 +70,12 @@ static int test_compress(Bytef *out, uLongf *out_len, const Bytef *in, uLong len
 static ssize_t short_write(int fd, const void *data, size_t len)
 {
     ++write_calls;
+    if (block_write) {
+        pthread_mutex_lock(&pause_mutex);
+        write_blocked = 1; pthread_cond_signal(&pause_cond);
+        while (!release_write) pthread_cond_wait(&pause_cond, &pause_mutex);
+        pthread_mutex_unlock(&pause_mutex);
+    }
     if (interrupt_write) { interrupt_write = 0; errno = EINTR; return -1; }
     return write(fd, data, len > 17 ? 17 : len);
 }
@@ -125,6 +132,25 @@ int main(void)
     assert(rgb && width == 256 && height == 256);
     assert(abs((int)rgb[0] - 120) <= 3 && abs((int)rgb[1] - 70) <= 3 && abs((int)rgb[2] - 20) <= 3);
     stbi_image_free(rgb);
+    /* A write stuck in the filesystem must not hold up the iAP2 threads: reset
+     * (Decode thread) and enqueue (Recv thread) both take worker_mutex. */
+    {
+        uint32_t saved_crc = g_coverart.last_crc;
+        g_coverart.last_crc = 0; block_write = 1; decode_generation = recv_generation;
+        assert(!pthread_create(&decoder, NULL, decode_thread, NULL));
+        pthread_mutex_lock(&pause_mutex);
+        while (!write_blocked) pthread_cond_wait(&pause_cond, &pause_mutex);
+        pthread_mutex_unlock(&pause_mutex);
+        coverart_reset_recv_stream();
+        enqueue_image_async(malloc(8), 8, decode_generation);
+        block_write = 0;
+        pthread_mutex_lock(&pause_mutex);
+        release_write = 1; pthread_cond_signal(&pause_cond);
+        pthread_mutex_unlock(&pause_mutex);
+        assert(!pthread_join(decoder, NULL));
+        assert(!decode_result && notifications == 1 && !pending_data);
+        g_coverart.last_crc = saved_crc;
+    }
     assert(maybe_handle_image(jpeg, jpeg_len, recv_generation));
     assert(notifications == 1); /* CRC dedup after successful publication */
     coverart_runtime_shutdown();

@@ -82,7 +82,7 @@ E2P_READ=${E2P_READ:-"on -f rcc /usr/apps/modifyE2P r 3A0 19"}
 read_train() {
     TRAIN=
     for b in $(e2p_bytes "$E2P_READ"); do
-        d=$((16#$b))
+        d=$((0x$b))
         [ $d -ge 32 ] && [ $d -lt 127 ] || continue
         TRAIN=$TRAIN$(printf "\\$((d/64))$((d/8%8))$((d%8))")
     done

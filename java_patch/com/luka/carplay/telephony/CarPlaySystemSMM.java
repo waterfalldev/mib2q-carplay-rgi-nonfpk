@@ -24,7 +24,7 @@ public class CarPlaySystemSMM extends SystemSMM {
 
     public boolean checkGuard(int transition, int branch) {
         boolean taken = super.checkGuard(transition, branch);
-        if (taken && branch == 0 && transition == TEL_ENTRY_TRANSITION)
+        if (taken && branch == 0 && com.luka.carplay.core.Features.CARPLAY_POPUP_SKIP && transition == TEL_ENTRY_TRANSITION)
             CarPlayDisclaimerSkip.press(getFramework(), "system transition " + transition);
         return taken;
     }

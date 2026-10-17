@@ -1,6 +1,6 @@
 # MHI2Q CarPlay cluster integration
 
-_CarPlay for the Audi MHI2Q head unit: the map and route guidance in the Virtual Cockpit, calls on the cluster, and 5.1 sound._
+_CarPlay for the Audi MHI2Q head unit: the phone's cluster map on map-over-MOST clusters (this fork), and upstream's map and route guidance in the Virtual Cockpit, calls on the cluster, and 5.1 sound._
 
 > [!WARNING]
 > **Please update the head unit to the latest firmware available for your region first, and only
@@ -15,6 +15,15 @@ _CarPlay for the Audi MHI2Q head unit: the map and route guidance in the Virtual
 > [recovery guide](https://github.com/luka-dev/mib2q-carplay-rgi/issues/24#issuecomment-5849641990).
 
 ---
+
+> **Fork of [luka-dev/mib2q-carplay-rgi](https://github.com/luka-dev/mib2q-carplay-rgi).**
+> Everything described below for the Virtual Cockpit, route guidance, calls, sound, cover art,
+> parking, input, the hook framework and the toolchain is Luka's work. This fork adds CarPlay on
+> map-over-MOST clusters (analogue clusters with a colour centre display): the phone's own cluster
+> map in the MAP view and CarPlay's maneuver in the arrows view, plus a Windows build and packaging
+> workflow. Its packages are built for MU1329 and do not yet ship upstream's calls, 5.1 sound,
+> vehicle data or wireless features. Thanks to [Luka](https://github.com/luka-dev) for the project
+> this is built on.
 
 Production implementation for Audi MHI2Q (MU1316, QNX 6.5 ARMv7):
 
@@ -33,59 +42,11 @@ configuration on your infotainment unit. The installer keeps a `.carplay-stock` 
 file it replaces, but back up anything you change by hand as well. The authors are not
 responsible for any damage, bricked units or warranty issues resulting from their use.
 
-<a id="gallery"></a>
-
-## 🎨 Gallery
-
-**Virtual Cockpit: CarPlay map on the cluster, route guidance beside it**
-
-<p align="center">
-  <img src="assets/gallery/vc_rs4_night_nav.jpeg" width="39%" />
-  <img src="assets/gallery/maneuver_demo.gif" width="52%" />
-</p>
-<p align="center">
-  <img src="assets/gallery/vc_day_nav.jpeg" width="45%" />
-  <img src="assets/gallery/vc_night_nav.jpeg" width="45%" />
-</p>
-<p align="center">
-  <img src="assets/gallery/vc_full_map.jpeg" width="52%" />
-  <img src="assets/gallery/vc_lane_guidance.jpeg" width="39%" />
-</p>
-
-**Audi front PDC no longer hides CarPlay** · **Cover art on the cluster**
-
-<p align="center">
-  <img src="assets/gallery/pdc_over_carplay.jpeg" width="45%" />
-  <img src="assets/gallery/cover_art.jpeg" width="45%" />
-</p>
-
-**CarPlay calls on the cluster phone tab**
-
-<p align="center">
-  <img src="assets/gallery/vc_incoming_call.jpeg" width="31%" />
-  <img src="assets/gallery/vc_call_list.jpeg" width="28%" />
-  <img src="assets/gallery/vc_phone_favorites.jpeg" width="33%" />
-</p>
-
-**5.1 sound: CarPlay UpMix level in the MMI · Spatial Audio from Apple Music**
-
-<p align="center">
-  <img src="assets/gallery/upmix_mmi_level.jpeg" width="55%" />
-  <img src="assets/gallery/spatial_audio_now_playing.jpeg" width="31%" />
-</p>
-
-**Head-up display**
-
-<p align="center">
-  <img src="assets/gallery/IMG_6302.jpeg" width="45%" />
-  <img src="assets/gallery/IMG_0599.jpeg" width="45%" />
-</p>
-
 <a id="contents"></a>
 
 ## 📍 Contents
 
-- [Gallery](#gallery) · [Features](#features)
+- [Features](#features)
 - [Repository layout](#repository-layout) · [Build](#build)
 - [Deployment](#deployment): [install with M.I.B.](#install-with-mib) · [manual install](#manual-install) · [reboot and check](#reboot-and-check) · [uninstall](#uninstall)
 - [Logging](#logging) · [Documentation](#documentation) · [Help wanted](#help-wanted) · [License](#license) · [References](#references)
@@ -96,6 +57,22 @@ responsible for any damage, bricked units or warranty issues resulting from thei
 
 There is nothing to switch on: plug in the iPhone and CarPlay starts as usual; the cluster
 features below follow it automatically.
+
+### MOST clusters (this fork)
+
+- **The phone's CarPlay map on the cluster.** On an analogue cluster with a colour centre
+  display coded for map-over-MOST (coding 541=1), the stock MAP view shows the iPhone's own
+  CarPlay cluster map while any CarPlay navigation runs, including apps that send no route
+  guidance, such as Waze. The head unit offers the phone a second, cluster-map CarPlay
+  display; its stream is received, decrypted and decoded by the head unit's hardware decoder.
+  The map sits between the dials, the steering-wheel roller zooms it, and it follows the
+  cluster's Light / Dark / Automatic map setting. Verified on MU1329; the Audi map returns when
+  navigation ends ([status and limits](docs/cluster-and-rgi/MOST_MAP_VIEW.md)).
+- **Turn-by-turn on MOST clusters.** CarPlay's maneuver appears in the stock arrows view,
+  rendered at the view's native size. Stock view selection stays in charge, and Audi guidance
+  returns on disconnect ([details](docs/cluster-and-rgi/MOST_CLUSTER.md)).
+
+### Virtual Cockpit and everything else (upstream)
 
 - **CarPlay map in the Virtual Cockpit.** The phone streams its own map to the cluster (Apple's
   second-screen "altScreen" stream). It shows while CarPlay is connected, even without an active
@@ -175,8 +152,7 @@ features below follow it automatically.
 | `deploy/` | On-unit runtime scripts, SI child config, patched firmware and PF/deva recipes |
 | `scripts/` | Host build and test entry points |
 | `install_MoreIncredibleBash/`, `uninstall_MoreIncredibleBash/`, `logging_MoreIncredibleBash/` | M.I.B. SD install / remove / log-collection scripts |
-| `tools/` | Host tools (upmix renderer and benches, QSA emulator, amp model, …) |
-| `assets/` | RE working sets (`soundamp/`, `vc-fonts/`) and visual references |
+| `tools/` | Host tools (state-trace analyser, VC text data, upmix renderer, QSA emulator, previews) |
 | `toolchain/qnx65-abi/` | QNX Screen/OpenMAX ABI headers used only for cross-compilation |
 | `docs/` | The documentation (GitHub-rendered; also opens as an Obsidian vault) |
 | `build/` | Build outputs (untracked, empty in git) |
@@ -206,8 +182,27 @@ Then run from this repository's root:
 ./scripts/build_renderers.sh
 ```
 
-The Java patch needs a JDK 8 (set `JAVA8_HOME`, see `scripts/java_env.sh`) and compiles against the
-stock HMI jars in `java_stock/`. Native builds run in the `qnx65-armv7-toolchain` Docker image; `:latest` (the default) is GCC 8.5,
+The Java patch builds in a pinned `eclipse-temurin:8-jdk-jammy` container, so no host JDK is needed. By
+default it compiles `java_patch/` against `java_stock/US_MU1316_lsd.jar` and the OSGi jars in
+`toolchain/java/`, and also builds `build/carplay_hook_cn.jar` when `java_stock/CN_MU1003_lsd.jar` is
+present. Other inputs are environment variables, so no script needs editing:
+
+| Variable | Meaning |
+| --- | --- |
+| `STOCK_JAR` | the firmware `lsd.jar` to compile and test against (default `java_stock/US_MU1316_lsd.jar`) |
+| `STOCK_CN_JAR` | a CN `lsd.jar`; builds `carplay_hook_cn.jar` too. An explicit `STOCK_JAR` builds only the main jar unless this is set |
+| `STOCK_EU_JAR` | a second firmware for the per-variant tests and the linkage audit (default `java_stock/EU_MU1329_lsd.jar`) |
+| `CARPLAY_DEPENDENCIES` | directory with `org.osgi.framework-1.10.0.jar` and `org.osgi.util.tracker-1.5.4.jar` (default `toolchain/java/`) |
+| `STOCK_BOOT_JAR` | the car's class library (`jcl.jar`); optional. The patch compiles against it, or against the stock jar's own `java/` classes if present, else JDK 8 |
+| `ASM_JAR`, `ASM_TREE_JAR` | ASM jars for the linkage audit and the PDC tests (default: the ones in the dependencies directory) |
+| `JAVA_OUTPUT` | output directory (default `build/`) |
+| `CARPLAY_BUILD_ID` | build ID written into the jar (default `git describe --always --dirty`) |
+
+For example `STOCK_JAR=/fw/lsd.jar JAVA_OUTPUT=/tmp/java bash scripts/java/docker.sh build`. The jar is
+reproducible (sorted entries, fixed timestamps) and the build rejects non-1.4 class files and missing or
+colliding resources. `CARPLAY_TOOLS_DIR` (or `JXE2JAR`) relocates `../../Tools/jxe2jar`, which only the
+stock-source audit needs. `CARPLAY_JAVA_IMAGE` and `QNX_TOOLCHAIN_IMAGE` accept immutable image IDs.
+Native builds run in the `qnx65-armv7-toolchain` Docker image; `:latest` (the default) is GCC 8.5,
 `QNX_TOOLCHAIN_VARIANT=4.9` selects GCC 4.9.4. Renderer import libraries are generated during the
 build; the resulting ELFs resolve the real Screen/EGL/GLES/OpenMAX libraries on the unit.
 
@@ -232,6 +227,20 @@ renderer's fine mask net c, with its manifest and the knob settings it was measu
 
 Tests: `./scripts/run_tests.sh`.
 
+The Java suites use the same Docker image and inputs: `bash scripts/java/docker.sh test [group]` with
+`route`, `transports`, `pdc`, `partial360`, `fuzz`, `maneuvers`, `contract` or `linkage` (default `all`,
+which leaves out `fuzz` and `maneuvers`). `test_route_info.sh`, `test_java_transports.sh`, `test_pdc.sh`,
+`test_partial360_preflight.sh`, `test_route_context_fuzz.sh` and `audit_*.sh` are wrappers over them.
+`JAVA_TEST_JOBS` sets how many JVMs run at once (default 2); `./scripts/check_java.sh` runs `all`
+with the native RGI contract (the C half needs Python 3 and a host C compiler);
+`./scripts/test_java_build.sh` checks reproducibility, build failure cases and the default input layout.
+
+Checked SD-card packages for this fork are prepared by the separate
+[mib2q-rgi-tooling](https://github.com/waterfalldev/mib2q-rgi-tooling) repository on Windows. It
+runs the commands above in Docker against a pinned firmware's stock JAR, records the source and
+tooling commits, and keeps firmware and packages outside Git. Host tests there run in the image
+built from `tests/Dockerfile.host`. Component builds and tests do not need it or PowerShell.
+
 AltScreen pacing offline checks (ASan/UBSan, fault injection, Clang analysis and libFuzzer):
 `bash scripts/test_altscreen_pacing.sh`; the report lands in `build/altscreen-pacing-validation/`
 and `FUZZ_SECONDS` sets the budget per target. Contracts and limits:
@@ -252,14 +261,19 @@ P5092, MU1017 P1017) get `carplay_hook.jar`, CN (verified on MU1003 K1004) gets
 `carplay_hook_cn.jar`. Any other region installs CarPlay without the Java part (no cluster/HUD
 features) until it is added. Also needed:
 
-- a fully digital instrument cluster (Audi virtual cockpit); cars with an analog cluster are not
-  supported;
+- cluster coding: Virtual Cockpit (sysConst 541=2) retains its existing presentation;
+  map-over-MOST analogue clusters (541=1) can show CarPlay maneuvers in the stock arrows view
+  with guidance text; RGI-only clusters (541=0) retain stock context ownership;
 - preferably, the latest firmware available for the unit, flashed before installing the patch;
 - for 5.1 sound, an external amplifier (B&O, verified; Bose untested). With the head unit's own
   amplifier everything else installs and CarPlay audio stays stock stereo.
 
 With these in place it should almost certainly work, as long as nothing went wrong during the
 install itself.
+
+MOST behavior has been exercised on one MU1329 unit and still needs vehicle validation,
+including regression checks on a Virtual Cockpit car. See
+[MOST cluster](docs/cluster-and-rgi/MOST_CLUSTER.md).
 
 **What gets installed.** Everything the installer replaces or edits keeps a `.carplay-stock`
 backup; files it adds have none and are simply removed on uninstall.
@@ -412,13 +426,11 @@ mindmap
 | AltScreen and video (stream 111, OMX pipeline, loader) | [`docs/altscreen-and-video/README.md`](<docs/altscreen-and-video/README.md>) |
 | Connect and USB (NCM, replug recovery, PF, session lifecycle) | [`docs/connect-and-usb/README.md`](<docs/connect-and-usb/README.md>) |
 | Wireless CarPlay (stock210 hook, btstack graft, iAP2/MFi; parked) | [`docs/wireless-carplay/README.md`](<docs/wireless-carplay/README.md>) |
-| CarPlay laboratory (vphone sender, native video, QNX timing) | [`docs/carplay-lab/README.md`](<docs/carplay-lab/README.md>) |
 | Build and deploy (toolchain, release map) | [`docs/build-and-deploy/README.md`](<docs/build-and-deploy/README.md>) |
 | Architecture overview | [`docs/reference/ARCHITECTURE.md`](docs/reference/ARCHITECTURE.md) |
 
 Read [`docs/LANDMINES.md`](docs/LANDMINES.md) before touching a subsystem. Long-form white papers
-are in `docs/research/`; primary evidence (papers, manuals, data files, decompiled stock Java) is in
-`docs/sources/`.
+are in `docs/research/`.
 
 <a id="help-wanted"></a>
 

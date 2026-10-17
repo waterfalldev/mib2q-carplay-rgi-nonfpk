@@ -87,7 +87,7 @@ int coverart_jpeg_orientation(const uint8_t *data, size_t len)
 
                 ifd_offset = read_u32(tiff + 4, little_endian);
                 /* Subtraction form is intentional: ifd_offset is attacker-
-                 * controlled and adding two to UINT32_MAX used to wrap. */
+                 * controlled and adding two to UINT32_MAX would wrap. */
                 if ((size_t)ifd_offset > tiff_size ||
                     tiff_size - (size_t)ifd_offset < 2)
                     goto next_segment;

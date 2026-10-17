@@ -4,8 +4,8 @@
 #
 # The caller sets, then calls carplay_build_hook:
 #   OUTDIR_REL   (required)  output dir relative to the repo root, e.g. build/unprotected
-# It also honors: QNX_TOOLCHAIN_VARIANT,
-# HOOK_AUDIO, AUDIO_STATE_TRACE, ALTSCREEN_PACE_TRACE, LOG_RGD_PACKET_RAW.
+# It also honors: QNX_TOOLCHAIN_VARIANT, QNX_TOOLCHAIN_IMAGE (overrides the image),
+# HOOK_AUDIO, HOOK_PHONE_DATA, AUDIO_STATE_TRACE, ALTSCREEN_PACE_TRACE, LOG_RGD_PACKET_RAW.
 # On success it sets OUT and APAC_OUT (absolute paths) for the caller.
 #
 # THE APAC DECODER ships as optional <OUTDIR>/libcarplay_apac.so, dlopen'd only
@@ -18,8 +18,14 @@
 _BHC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 carplay_build_hook() {
-  local PROJECT_DIR OUTDIR_REL IMG
+  local PROJECT_DIR DOCKER_SRC OUTDIR_REL IMG
   PROJECT_DIR="$(cd "$_BHC_DIR/.." && pwd)"
+  DOCKER_SRC="$PROJECT_DIR"
+  # Under Git for Windows hand Docker a Windows path and stop MSYS rewriting the
+  # container paths in docker's arguments.
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) DOCKER_SRC="$(cygpath -m "$PROJECT_DIR")"; export MSYS_NO_PATHCONV=1 ;;
+  esac
 
   OUTDIR_REL="${OUTDIR_REL:?carplay_build_hook: OUTDIR_REL must be set}"
 
@@ -28,7 +34,7 @@ carplay_build_hook() {
     latest|4.9|8.5) ;;
     *) echo "Invalid QNX_TOOLCHAIN_VARIANT=$QNX_TOOLCHAIN_VARIANT (latest|4.9|8.5)"; return 1 ;;
   esac
-  IMG="qnx65-armv7-toolchain:$QNX_TOOLCHAIN_VARIANT"
+  IMG="${QNX_TOOLCHAIN_IMAGE:-qnx65-armv7-toolchain:$QNX_TOOLCHAIN_VARIANT}"
   OUT="$PROJECT_DIR/$OUTDIR_REL/libcarplay_hook.so"
   APAC_OUT="$PROJECT_DIR/$OUTDIR_REL/libcarplay_apac.so"
   mkdir -p "$PROJECT_DIR/$OUTDIR_REL"
@@ -36,9 +42,12 @@ carplay_build_hook() {
   local LOG_RGD_PACKET_RAW="${LOG_RGD_PACKET_RAW:-0}"
   local AUDIO_STATE_TRACE="${AUDIO_STATE_TRACE:-0}"
   local ALTSCREEN_PACE_TRACE="${ALTSCREEN_PACE_TRACE:-0}"
-  # HOOK_AUDIO=0 builds the hook without the type-103 audio module (stock CarPlay
-  # audio; no QSA/AirPlay audio interposers, no libcarplay_apac.so).
-  local HOOK_AUDIO="${HOOK_AUDIO:-1}"
+  # HOOK_AUDIO=1 adds upstream's type-103 audio module (QSA/AirPlay audio interposers,
+  # libcarplay_apac.so). This fork ships stock CarPlay audio: off unless asked for.
+  local HOOK_AUDIO="${HOOK_AUDIO:-0}"
+  # HOOK_PHONE_DATA=1 adds upstream's telephony and vehicle modules (iAP2 call lists,
+  # vehicle status and speed). Not shipped in this fork: off unless asked for.
+  local HOOK_PHONE_DATA="${HOOK_PHONE_DATA:-0}"
   local HOOK_WIRELESS="${HOOK_WIRELESS:-0}"
   local WIRELESS_ALT_QEMU="${WIRELESS_ALT_QEMU:-0}"
   # There is one production image: logging compiled in, WARN only, and every runtime
@@ -48,6 +57,7 @@ carplay_build_hook() {
   [[ "$AUDIO_STATE_TRACE" == "0" || "$AUDIO_STATE_TRACE" == "1" ]] || { echo "Invalid AUDIO_STATE_TRACE=$AUDIO_STATE_TRACE (0|1)"; return 1; }
   [[ "$ALTSCREEN_PACE_TRACE" == "0" || "$ALTSCREEN_PACE_TRACE" == "1" ]] || { echo "Invalid ALTSCREEN_PACE_TRACE=$ALTSCREEN_PACE_TRACE (0|1)"; return 1; }
   [[ "$HOOK_AUDIO" == "0" || "$HOOK_AUDIO" == "1" ]] || { echo "Invalid HOOK_AUDIO=$HOOK_AUDIO (0|1)"; return 1; }
+  [[ "$HOOK_PHONE_DATA" == "0" || "$HOOK_PHONE_DATA" == "1" ]] || { echo "Invalid HOOK_PHONE_DATA=$HOOK_PHONE_DATA (0|1)"; return 1; }
   [[ "$HOOK_WIRELESS" == "0" || "$HOOK_WIRELESS" == "1" ]] || { echo "Invalid HOOK_WIRELESS=$HOOK_WIRELESS (0|1)"; return 1; }
   [[ "$WIRELESS_ALT_QEMU" == "0" || "$WIRELESS_ALT_QEMU" == "1" ]] || { echo "Invalid WIRELESS_ALT_QEMU (0|1)"; return 1; }
   if [ "$WIRELESS_ALT_QEMU" = "1" ]; then
@@ -61,6 +71,8 @@ carplay_build_hook() {
 
   local CFLAGS_EXTRA="-D__QNX__ -mfpu=neon -mfloat-abi=softfp"
   CFLAGS_EXTRA="$CFLAGS_EXTRA -DHOOK_WIRELESS=$HOOK_WIRELESS"
+  CFLAGS_EXTRA="$CFLAGS_EXTRA -DHOOK_PHONE_DATA=$HOOK_PHONE_DATA"
+  [ "$HOOK_PHONE_DATA" = "1" ] || echo "Telephony and vehicle modules EXCLUDED"
   [ "$WIRELESS_ALT_QEMU" = "1" ] && CFLAGS_EXTRA="$CFLAGS_EXTRA -DMHI2Q_WIRELESS_ALT_QEMU=1"
   if [ "$HOOK_WIRELESS" = "1" ]; then
       QNX_TOOLCHAIN_VARIANT="$QNX_TOOLCHAIN_VARIANT" python3 "$PROJECT_DIR/hook/wireless/build_pairing.py" || return 1
@@ -89,8 +101,13 @@ carplay_build_hook() {
 
   echo "=== CarPlay Hook Build (Docker $IMG) -> $OUTDIR_REL ==="
 
-  docker run --rm --platform=linux/amd64 -v "$PROJECT_DIR":/src "$IMG" bash -c '
+  docker run --rm --platform=linux/amd64 -v "$DOCKER_SRC":/host "$IMG" bash -c '
     set -e
+    # Build from a copy inside the container: a Docker Desktop (Windows) bind mount
+    # reports 64-bit inode numbers that the 32-bit QNX binutils reject (EOVERFLOW).
+    mkdir -p /src/build
+    cp -a /host/hook /host/common /host/apac_decoder /src/
+    [ ! -d /host/build/wireless-sdk ] || cp -a /host/build/wireless-sdk /src/build/
     export PATH=/opt/qnx650/host/linux/x86/usr/bin:$PATH
     export QNX_HOST=/opt/qnx650/host/linux/x86 QNX_TARGET=/opt/qnx650/target/qnx6
     CC=arm-unknown-nto-qnx6.5.0eabi-gcc
@@ -106,6 +123,7 @@ carplay_build_hook() {
 
     HOOK_AUDIO='"$HOOK_AUDIO"'
     HOOK_WIRELESS='"$HOOK_WIRELESS"'
+    HOOK_PHONE_DATA='"$HOOK_PHONE_DATA"'
     EXTRA_OBJS=""; EXTRA_CC=""
 
     if [ "$HOOK_AUDIO" = "1" ]; then
@@ -131,7 +149,9 @@ carplay_build_hook() {
           framework/airplay_seams.c \
           routeguidance/rgd_tlv.c routeguidance/rgd_hook.c \
           coverart/jpeg_safety.c coverart/coverart_stream.c coverart/coverart_hook.c \
-          altscreen/altscreen_av.c altscreen/altscreen_hook.c telephony/tel_hook.c vehicle/vehicle_hook.c main.c"
+          altscreen/altscreen_av.c altscreen/altscreen_hook.c mostmap/most_map_hook.c mostmap/cflite.c \
+          main.c"
+    [ "$HOOK_PHONE_DATA" = "0" ] || SRCS="$SRCS telephony/tel_hook.c vehicle/vehicle_hook.c"
     AUDIO_SRCS="audio/spatial_downmix.c audio/apap_crypto.c audio/apap_lifecycle.c \
           audio/apac_codec_loader.c audio/aac_bridge.c audio/audio_hook.c audio/upmix_level.c"
     HOOK_CFLAGS="-fPIC -O2 -std=gnu99 -fvisibility=hidden -fdata-sections -ffunction-sections '"$CFLAGS_EXTRA"' $EXTRA_CC -I. -I/src/apac_decoder/include"
@@ -240,6 +260,7 @@ carplay_build_hook() {
     if [ "$HOOK_AUDIO" = "0" ]; then
         echo "  undefined:$($NM -D --undefined-only $SO | sed "s/^ *//" | awk "\$1 == \"U\" { printf \" %s\", \$2 }" | head -c 400)"
         echo "  built $OUTDIR_REL/libcarplay_hook.so (AUDIO=excluded, emutls=0 init_array=compiler-only)"
+        mkdir -p /host/$OUTDIR_REL && cp $SO /host/$OUTDIR_REL/
         exit 0
     fi
     # Validate the optional decoder independently: dlopen must not reintroduce
@@ -261,6 +282,7 @@ carplay_build_hook() {
     echo "  undefined:$($NM -D --undefined-only $SO | sed "s/^ *//" | awk "\$1 == \"U\" { printf \" %s\", \$2 }" | head -c 400)"
     echo "  built $OUTDIR_REL/libcarplay_apac.so (ABI v1, emutls=0 exceptions=0 rtti=0 stl=0 libstdc++=0)"
     echo "  built $OUTDIR_REL/libcarplay_hook.so (APAC=dlopen, emutls=0 init_array=compiler-only)"
+    mkdir -p /host/$OUTDIR_REL && cp $SO $APAC_SO /host/$OUTDIR_REL/
   ' || return 1
 
   if [ "$AUDIO_STATE_TRACE" = "1" ]; then

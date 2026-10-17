@@ -2740,6 +2740,11 @@ static void altscreen_shutdown(void)
     altav_shutdown();
 }
 
+/* A map-over-MOST cluster takes the phone's map through hook/mostmap instead. */
+/* Upstream's altScreen is the Virtual Cockpit's: a MOST cluster takes the mostmap module, an
+ * RGI-only cluster has no map display.  Unknown coding keeps it, so a VC never loses it. */
+static int altscreen_enabled(void) { return !hook_cluster_is_most() && !hook_cluster_is_rgi(); }
+
 /* altScreen lives entirely on the AirPlay side: it negotiates the feature in
  * the SETUP response, publishes the two-display contract in /info, and owns the
  * type-111 receiver that TearDown must stop.  It reads no iAP2 message.
@@ -2748,6 +2753,7 @@ static void altscreen_shutdown(void)
 const hook_module_def_t altscreen_module_def = {
     .name = "altscreen",
     .priority = HOOK_PRIORITY_NORMAL,
+    .enabled = altscreen_enabled,
     .on_init = altscreen_init,
     .on_shutdown = altscreen_shutdown,
     .airplay = {

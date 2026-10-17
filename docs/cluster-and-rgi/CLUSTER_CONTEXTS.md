@@ -18,6 +18,8 @@ Displayables: `98` is our `maneuver_render` window (Software, 328×181), `99` is
 
 On G24 (`kombiType == 4`) there is no ctx 80/81. `AltScreenModule.start()` disables itself there. `[code]` (`java_patch/com/luka/carplay/core/AltScreenModule.java:119-122`, `:386-390`)
 
+The contexts above are the Virtual Cockpit (`sysConst(541) == 2`) design. On a map-over-MOST cluster (`541 == 1`) `AltScreenModule` leaves terminal 1 to stock, and `dc[81]` is built as `{98}`, the stock arrows view with CarPlay's maneuver, instead of `{99}`. See [MOST Cluster](MOST_CLUSTER.md).
+
 ## ⚠️ Displayable 103 is not creatable, so reuse 101/102
 
 `103` is an unregistered DSI id. `createImageDisplayable(103)` silently does nothing, and only pre-registered ids exist in the DM. So we never invent displayable ids. We reuse the two stock KDK backings `101` and `102`. `[car]`, `[code]` (`DisplayManagerMIB2High.java:174-176`)

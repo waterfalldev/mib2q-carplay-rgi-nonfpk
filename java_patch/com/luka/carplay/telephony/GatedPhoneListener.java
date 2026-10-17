@@ -21,6 +21,7 @@ public class GatedPhoneListener implements CombiBAPServicePhoneListener {
 
     /** Wraps once; null stays null (listener removed). */
     public static CombiBAPServicePhoneListener wrap(CombiBAPServicePhoneListener l) {
+        if (!com.luka.carplay.core.Features.PHONE_DATA) return l;
         if (l == null || l instanceof GatedPhoneListener) return l;
         return new GatedPhoneListener(l);
     }

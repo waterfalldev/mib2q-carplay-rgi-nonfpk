@@ -51,6 +51,12 @@ start_renderer()
     MON_NAME=$1
     MON_REASON=$2
     monitor_current || return 0
+    # A map-over-MOST cluster shows the phone's map through maneuver_render: altscreen_render
+    # would post its loader in the same window 99.  An RGI-only cluster has no map display,
+    # and the hook leaves its altScreen out there too.  Java publishes the coding at boot.
+    if [ "$MON_NAME" = altscreen_render ]; then
+        case "$(cat /tmp/carplay_cluster_platform 2>/dev/null)" in most|rgi) return 0 ;; esac
+    fi
 
     if cp_renderer_running "$MON_NAME"; then
         if [ "$MON_REASON" = initial ] && ! cp_renderer_healthy "$MON_NAME"; then

@@ -1,0 +1,6 @@
+# Reuse the native build image; add what the host tests need: Linux headers, g++ for the
+# C++ suites and Python 3 for the protocol and contract checks.
+FROM qnx65-armv7-toolchain:latest
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends zlib1g-dev g++ python3 \
+    && rm -rf /var/lib/apt/lists/*

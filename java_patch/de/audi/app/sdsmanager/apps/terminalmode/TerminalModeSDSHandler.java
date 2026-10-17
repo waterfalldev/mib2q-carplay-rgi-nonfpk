@@ -64,6 +64,7 @@ public class TerminalModeSDSHandler extends DefaultTerminalModeUpdateListener im
     /** Stock: the phone's speech app is running.  Here also: any CarPlay connection, so the
      *  short voice-key press goes to Siri (see the class comment). */
     public boolean isTerminalModeSpeechActive() {
-        return this.terminalModeDeviceActive && (this.terminalModeSpeechActive || this.carPlayActive);
+        return this.terminalModeDeviceActive
+            && (this.terminalModeSpeechActive || (com.luka.carplay.core.Features.SIRI_SHORT_PRESS && this.carPlayActive));
     }
 }

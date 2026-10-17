@@ -1,7 +1,8 @@
 /*
  * OpenGL rendering -- single-FBO painter's algorithm architecture.
  *
- * 2 mask FBOs (flat 2D, no lighting):
+ * 2 mask FBOs per set (flat 2D, no lighting); set 0 is the current maneuver, set 1 the
+ * next one during a push (FBO_ROAD_NEXT, FBO_ROUTE_NEXT):
  *   FBO_ROAD  -- combined road: white outline drawn first, grey fill on top
  *               (painter's algorithm -- fill overwrites interior, border remains)
  *   FBO_ROUTE -- blue active route
@@ -211,11 +212,17 @@ float render_frame_step(void) { return g_frame_step; }
 static int g_raised = 1;
 static int g_fb_w = 640, g_fb_h = 400;
 static int g_win_w = 640, g_win_h = 400;  /* actual window buffer size (pre-SSAA) */
+/* presentation window + content rectangle (render_set_output); 0 = fill g_win. */
+static int g_out_win_w = 0, g_out_win_h = 0, g_out_x = 0, g_out_y = 0, g_out_w = 0, g_out_h = 0;
+static int g_out_opaque = 0;
+/* the platform's framebuffer size (the 328x181 layout).  On an opaque MOST output
+ * Pass 1 renders at the output's content size instead, so Pass 2 resolves the supersampled
+ * frame exactly 2:1 into it, as on a Virtual Cockpit.  A size whose render targets could
+ * not be allocated is refused and not retried. */
+static int g_base_w = 0, g_base_h = 0;
+static int g_refused_w = 0, g_refused_h = 0;
 float g_3d_offset_adjust = -0.10f;  /* extra Y offset in 3D mode (tuned) */
 static float g_z_bias = 0.0f;
-
-/* Mask cache dirty flag */
-static int g_masks_dirty = 1;
 
 /* Camera pan offset (maneuver space) -- shifts entire scene to follow arrow */
 static float g_cam_pan_x = 0.0f;
@@ -254,12 +261,33 @@ static float g_mvp_ortho_2d[16];   /* pure orthographic for mask rendering */
  * Multi-FBO system
  * ================================================================ */
 
-enum { FBO_ROAD = 0, FBO_ROUTE = 1, FBO_COUNT = 2 };
+/* The transition masks come in two sets of road + route.  Set 0 holds the current maneuver;
+ * set 1 holds the next one while a push crossfades between them.  A set is painted once
+ * after an invalidation and then only composited, so a push does not clear and repaint
+ * one shared pair twice a frame.  A set is ROAD + 2 * set, ROUTE + 2 * set. */
+enum { FBO_ROAD = 0, FBO_ROUTE = 1, FBO_ROAD_NEXT = 2, FBO_ROUTE_NEXT = 3, FBO_COUNT = 4 };
+#define MASK_SETS 2
 static GLuint g_fbos[FBO_COUNT];
 static GLuint g_fbo_texs[FBO_COUNT];
 static int g_fbo_w = 0, g_fbo_h = 0;
 static GLint g_default_fbo = 0;  /* saved at init -- may not be 0 on macOS */
-static int g_route_mask_ready = 0;
+static int g_mask_set;                           /* set painted and composited */
+static int g_set_dirty[MASK_SETS] = { 1, 1 };    /* to be painted before its next composite */
+static int g_set_road[MASK_SETS];                /* painted a road mask since invalidated */
+static int g_set_route[MASK_SETS];               /* painted a route mask since invalidated */
+static int g_mask_skip;          /* between begin/end_mask of a clean set: replay, no GPU work */
+static int g_mask_hold;          /* the selected set paints in a later frame: render_hold_mask_set */
+static unsigned g_mask_paints;   /* mask clears (painted layers), for the pacing log */
+
+static void invalidate_mask_set(int set) {
+    g_set_dirty[set] = 1;
+    g_set_road[set] = g_set_route[set] = 0;
+}
+
+static void invalidate_mask_sets(void) {
+    int i;
+    for (i = 0; i < MASK_SETS; i++) invalidate_mask_set(i);
+}
 
 /* Supersample FBO — render above window resolution, blit down with GL_LINEAR.
  * QNX uses 1.6x (= 8/5).  The floor comes from the transition masks, which are
@@ -277,7 +305,12 @@ static int g_route_mask_ready = 0;
 #define SSAA_SCALE 1.6f  /* QNX: explicit 1.6x supersample */
 #endif
 #endif
-#define FXAA_ENABLED 1 /* FXAA on both platforms */
+/* An opaque MOST output (KVS_Most, 457x252 on the MU1329 non-VC cluster) renders at its
+ * content size with no supersampling: FXAA alone smooths the edges, and pass 2 is a 1:1
+ * copy.  The masks keep MASK_MIN_SCALE density from the content size, not the frame's:
+ * below ~1.51 the arrow shows dark notches (see SSAA_SCALE). */
+#define MOST_RENDER_SCALE 1.0f
+#define MASK_MIN_SCALE    1.6f
 static GLuint g_ss_fbo = 0;
 static GLuint g_ss_tex = 0;
 static GLuint g_ss_depth = 0;
@@ -292,6 +325,7 @@ static GLint  g_fxaa_uni_tex = -1;
 static GLint  g_fxaa_uni_rcp = -1;  /* 1/width, 1/height */
 static float g_mask_half_w = 1.6f;
 static float g_mask_half_h = 1.0f;
+static int   g_lit_static_dirty = 1; /* constant lit-program uniforms (light colours, mask scale) need uploading */
 
 
 static const material_preset_t k_material_presets[RENDER_MAT_COUNT] = {
@@ -554,7 +588,7 @@ void vb_route_v(float x,float y,float z,float nx,float ny,float nz,float progres
 }
 
 /* Push a quad as 2 triangles with flat normal */
-void vb_quad(float x0, float y0, float z0,
+static void vb_quad(float x0, float y0, float z0,
                     float x1, float y1, float z1,
                     float x2, float y2, float z2,
                     float x3, float y3, float z3,
@@ -612,6 +646,10 @@ void vb_flush(float r, float g, float b, float a) {
     const material_preset_t *preset;
 
     if (g_vcount == 0) return;
+    if (g_active_pass==PASS_FLAT && g_mask_skip) {
+        g_z_bias+=Z_BIAS_STEP;                  /* as the draw below would */
+        return;
+    }
     if (g_active_pass==PASS_FLAT) {
         glUniform4f(g_flat_color,r,g,b,a);
         glUniform1f(g_flat_zbias,g_z_bias);
@@ -755,6 +793,7 @@ static int build_program(void) {
     g_uni_tex      = glGetUniformLocation(g_program, "u_tex");
     g_uni_mask_scale = glGetUniformLocation(g_program, "u_mask_scale");
     g_uni_global_alpha = glGetUniformLocation(g_program, "u_global_alpha");
+    g_lit_static_dirty = 1;
     return 0;
 }
 
@@ -929,15 +968,16 @@ static int build_fxaa_program(void) {
  * Multi-FBO management
  * ================================================================ */
 
+/* Mask FBO extent for a framebuffer dimension: the transition envelope, never smaller. */
+static int mask_extent(int n) {
+    int alloc = (int)ceilf((float)n * g_mask_half_h);
+    return alloc < n ? n : alloc;
+}
+
 static void fbos_init(int w, int h) {
     int i;
-    int alloc_w = (int)ceilf((float)w * g_mask_half_h);
-    int alloc_h = (int)ceilf((float)h * g_mask_half_h);
-
-    if (alloc_w < w) alloc_w = w;
-    if (alloc_h < h) alloc_h = h;
-    g_fbo_w = alloc_w;
-    g_fbo_h = alloc_h;
+    g_fbo_w = mask_extent(w);
+    g_fbo_h = mask_extent(h);
 
     /* Masks draw flat 2D with depth off (begin_mask), so they get no depth
      * buffer: at 2267x1251 each, its clear alone was 2x2.8 Mpx per re-render. */
@@ -969,7 +1009,7 @@ static void fbos_init(int w, int h) {
 
     glBindTexture(GL_TEXTURE_2D, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    g_route_mask_ready = 0;
+    invalidate_mask_sets();
     fprintf(stderr, "render: %d FBOs init %dx%d (mask half extents %.2f x %.2f)\n",
             FBO_COUNT, g_fbo_w, g_fbo_h, g_mask_half_w, g_mask_half_h);
 }
@@ -978,20 +1018,15 @@ static void fbos_shutdown(void) {
     if (g_fbos[0]) { glDeleteFramebuffers(FBO_COUNT, g_fbos); memset(g_fbos, 0, sizeof(g_fbos)); }
     if (g_fbo_texs[0]) { glDeleteTextures(FBO_COUNT, g_fbo_texs); memset(g_fbo_texs, 0, sizeof(g_fbo_texs)); }
     g_fbo_w = g_fbo_h = 0;
-    g_route_mask_ready = 0;
+    invalidate_mask_sets();
 }
 
 
 static void fbos_resize(int w, int h) {
-    int alloc_w = (int)ceilf((float)w * g_mask_half_h);
-    int alloc_h = (int)ceilf((float)h * g_mask_half_h);
-
-    if (alloc_w < w) alloc_w = w;
-    if (alloc_h < h) alloc_h = h;
-    if (alloc_w == g_fbo_w && alloc_h == g_fbo_h) return;
+    if (mask_extent(w) == g_fbo_w && mask_extent(h) == g_fbo_h) return;
     fbos_shutdown();
     fbos_init(w, h);
-    g_masks_dirty = 1;
+    invalidate_mask_sets();
 }
 
 /* Bind a specific FBO, clear it, set flat overwrite mode */
@@ -1020,6 +1055,23 @@ static void update_mask_config(int fb_width, int fb_height) {
     if (required_x / aspect > g_mask_half_h)
         g_mask_half_h = required_x / aspect;
     g_mask_half_w = g_mask_half_h * aspect;
+
+    /* Pure 2D orthographic MVP for mask rendering.
+     * Same top-down view as ortho mode but with no perspective blend. */
+    {
+        float proj[16], view[16];
+        mat4_ortho(proj, -g_mask_half_w, g_mask_half_w,
+                   -g_mask_half_h, g_mask_half_h, 0.1f, 20.0f);
+        mat4_zero(view);
+        view[0]  =  1.0f;   /* x -> x */
+        view[9]  =  1.0f;   /* z -> y_screen */
+        view[13] =  0.0f;
+        view[6]  =  1.0f;   /* y -> z_depth */
+        view[14] = -5.0f;   /* push into view */
+        view[15] =  1.0f;
+        mat4_mul(g_mvp_ortho_2d, proj, view);
+    }
+    g_lit_static_dirty = 1;
 }
 
 /* ================================================================
@@ -1042,15 +1094,15 @@ int render_init(int fb_width, int fb_height) {
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
     glDisable(GL_DITHER);
-    /* MSAA removed — replaced by FXAA post-process for better edge smoothing */
+    /* No MSAA: an FXAA post-process smooths the edges. */
     glEnable(GL_BLEND);
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
     /* Save default framebuffer -- may not be 0 on macOS with MSAA */
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &g_default_fbo);
 
-    /* 2x supersample: create SS FBO, then override g_fb_w/g_fb_h to 2x
-     * so the entire pipeline renders at double resolution. */
+    /* Supersample FBO (SSAA_SCALE); g_fb_w/g_fb_h are overridden to its size
+     * below so the entire pipeline renders at that resolution. */
     g_ss_w = (int)(fb_width * SSAA_SCALE + 0.5f);
     g_ss_h = (int)(fb_height * SSAA_SCALE + 0.5f);
     glGenTextures(1, &g_ss_tex);
@@ -1073,8 +1125,7 @@ int render_init(int fb_width, int fb_height) {
     glBindTexture(GL_TEXTURE_2D, 0);
     fprintf(stderr, "render: SSAA %dx%d -> %dx%d\n", g_ss_w, g_ss_h, fb_width, fb_height);
 
-    /* FXAA intermediate FBO (same resolution as SSAA) — QNX only */
-#if FXAA_ENABLED
+    /* FXAA intermediate FBO (same resolution as SSAA) */
     glGenTextures(1, &g_fxaa_tex);
     glBindTexture(GL_TEXTURE_2D, g_fxaa_tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_ss_w, g_ss_h, 0,
@@ -1094,11 +1145,12 @@ int render_init(int fb_width, int fb_height) {
         fprintf(stderr, "render: FXAA FBO %dx%d tex=%u fbo=%u attr=%d\n",
                 g_ss_w, g_ss_h, g_fxaa_tex, g_fxaa_fbo, g_fxaa_attr_pos);
     }
-#endif
 
-    /* Save actual window size for final blit, then override to 2x for pipeline */
+    /* Save actual window size for final blit, then override to the supersampled size for the pipeline */
     g_win_w = fb_width;
     g_win_h = fb_height;
+    g_base_w = fb_width;
+    g_base_h = fb_height;
     g_fb_w = g_ss_w;
     g_fb_h = g_ss_h;
 
@@ -1115,13 +1167,61 @@ int render_init(int fb_width, int fb_height) {
     return 0;
 }
 
-void render_set_viewport(int fb_width, int fb_height) {
+/* every render target is complete and nothing failed since resize_targets drained
+ * the GL error queue (an out-of-memory allocation reports GL_OUT_OF_MEMORY there). */
+static int targets_complete(void) {
+    GLuint fbos[2 + FBO_COUNT];
+    int n = 0, ok = 1, i;
+    fbos[n++] = g_ss_fbo;
+    if (g_fxaa_prog) fbos[n++] = g_fxaa_fbo;
+    for (i = 0; i < FBO_COUNT; i++) fbos[n++] = g_fbos[i];
+    for (i = 0; i < n; i++) {
+        if (!fbos[i]) { ok = 0; continue; }
+        glBindFramebuffer(GL_FRAMEBUFFER, fbos[i]);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) ok = 0;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, g_default_fbo);
+    for (i = 0; i < 16; i++) {
+        if (glGetError() == GL_NO_ERROR) break;
+        ok = 0;
+    }
+    return ok;
+}
+
+/* Offscreen bytes at the current size: SSAA colour + depth16, FXAA colour, masks. */
+static double targets_mb(void) {
+    double ss = (double)g_ss_w * g_ss_h, masks = (double)g_fbo_w * g_fbo_h * FBO_COUNT;
+    return (ss * 6.0 + ss * 4.0 + masks * 4.0) / (1024.0 * 1024.0);
+}
+
+/* Resize every render target for a framebuffer of fb_width x fb_height (pre-SSAA): the
+ * frame at scale, the masks at mask_scale around the same content.
+ * Returns 0 when all of them are complete at that size. */
+static int resize_targets(int fb_width, int fb_height, float scale, float mask_scale) {
+    GLint max_tex = 0, max_rb = 0;
+    int limit, i, mask_w, mask_h;
+
     g_win_w = fb_width;
     g_win_h = fb_height;
-    g_ss_w = (int)(fb_width * SSAA_SCALE + 0.5f);
-    g_ss_h = (int)(fb_height * SSAA_SCALE + 0.5f);
+    g_ss_w = (int)(fb_width * scale + 0.5f);
+    g_ss_h = (int)(fb_height * scale + 0.5f);
     g_fb_w = g_ss_w;
     g_fb_h = g_ss_h;
+    mask_w = (int)(fb_width * mask_scale + 0.5f);
+    mask_h = (int)(fb_height * mask_scale + 0.5f);
+
+    /* refuse, before allocating anything, a size the GL cannot hold (the masks are
+     * several times the frame).  An unreported limit is not a refusal. */
+    update_mask_config(g_fb_w, g_fb_h);
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_tex);
+    glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &max_rb);
+    limit = max_tex < max_rb ? max_tex : max_rb;
+    if (limit > 0 && (mask_extent(mask_w) > limit || mask_extent(mask_h) > limit)) {
+        fprintf(stderr, "render: %dx%d needs %dx%d masks, over the GL limit %d\n",
+                fb_width, fb_height, mask_extent(mask_w), mask_extent(mask_h), limit);
+        return -1;
+    }
+    for (i = 0; i < 16 && glGetError() != GL_NO_ERROR; i++) {}
 
     /* Resize SSAA texture + depth to match new supersample resolution */
     if (g_ss_tex) {
@@ -1135,21 +1235,70 @@ void render_set_viewport(int fb_width, int fb_height) {
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_FBO, g_ss_w, g_ss_h);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
     }
-#if FXAA_ENABLED
     if (g_fxaa_tex) {
         glBindTexture(GL_TEXTURE_2D, g_fxaa_tex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_ss_w, g_ss_h, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, NULL);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
-#endif
 
-    update_mask_config(g_fb_w, g_fb_h);
     glViewport(0, 0, g_fb_w, g_fb_h);
-    fbos_resize(g_fb_w, g_fb_h);
+    fbos_resize(mask_w, mask_h);
+    return targets_complete() ? 0 : -1;
 }
 
-static void build_camera_mvp(float *mvp, float aspect, float pan_x, float pan_z,
+/* bring the render targets to the size the output wants: its content size on an
+ * opaque MOST output, else the platform framebuffer.  A size that fails falls back to the
+ * platform framebuffer and is refused from then on.  Returns 1 when the targets changed. */
+static int apply_render_size(void) {
+    int w = g_base_w, h = g_base_h;
+    int most = g_out_win_w > 0 && g_out_opaque;
+    int refused = most && g_out_w == g_refused_w && g_out_h == g_refused_h;
+    /* A refused content size equal to the platform framebuffer fell back to the platform
+     * scale (the only other targets at that size). */
+    int platform = !most || (refused && g_out_w == g_base_w && g_out_h == g_base_h);
+    float scale = platform ? SSAA_SCALE : MOST_RENDER_SCALE;
+    float mask_scale = !platform && scale < MASK_MIN_SCALE ? MASK_MIN_SCALE : scale;
+    if (most && !refused) {
+        w = g_out_w;
+        h = g_out_h;
+    }
+    if (w == g_win_w && h == g_win_h &&
+        g_ss_w == (int)(w * scale + 0.5f) && g_ss_h == (int)(h * scale + 0.5f)) return 0;
+    if (resize_targets(w, h, scale, mask_scale) == 0) {
+        fprintf(stderr, "render: rendering %dx%d (frame %dx%d, masks %dx%d, %.1f MB offscreen)\n",
+                g_win_w, g_win_h, g_ss_w, g_ss_h, g_fbo_w, g_fbo_h, targets_mb());
+        return 1;
+    }
+    if (w != g_base_w || h != g_base_h || scale != SSAA_SCALE) {
+        int same = w == g_base_w && h == g_base_h;
+        g_refused_w = w;
+        g_refused_h = h;
+        fprintf(stderr, "render: %dx%d render targets failed; falling back to %dx%d\n",
+                w, h, g_base_w, g_base_h);
+        if (resize_targets(g_base_w, g_base_h, same ? SSAA_SCALE : scale,
+                           same ? SSAA_SCALE : mask_scale) == 0) {
+            fprintf(stderr, "render: rendering %dx%d (frame %dx%d, masks %dx%d, %.1f MB offscreen)\n",
+                    g_win_w, g_win_h, g_ss_w, g_ss_h, g_fbo_w, g_fbo_h, targets_mb());
+            return 1;
+        }
+    }
+    fprintf(stderr, "render: %dx%d render targets incomplete\n", g_win_w, g_win_h);
+    return 1;
+}
+
+void render_set_viewport(int fb_width, int fb_height) {
+    g_base_w = fb_width;
+    g_base_h = fb_height;
+    apply_render_size();
+}
+
+void render_get_render_size(int *w, int *h) {
+    *w = g_win_w;
+    *h = g_win_h;
+}
+
+static void build_camera_mvp(float *mvp, float *eye_out, float aspect, float pan_x, float pan_z,
                               float rotation, float ts,float dolly) {
     float cam_cos = cosf(rotation);
     float cam_sin = sinf(rotation);
@@ -1164,6 +1313,7 @@ static void build_camera_mvp(float *mvp, float aspect, float pan_x, float pan_z,
         eye_z=ctr_z+(eye_z-ctr_z)*distance;
         eye_y=CAM_CTR_Y+(CAM_EYE_Y-CAM_CTR_Y)*distance;
     }
+    if(eye_out) { eye_out[0]=eye_x; eye_out[1]=eye_y; eye_out[2]=eye_z; }
 
     /* Compute both MVPs and lerp */
     float mvp_persp[16], mvp_ortho[16];
@@ -1212,9 +1362,8 @@ static void build_camera_mvp(float *mvp, float aspect, float pan_x, float pan_z,
         const float popup_cy = CR_POPUP_Y + CR_POPUP_H * 0.5f;     /* 103.5 */
         const float content_cy = content_h * 0.5f;                   /* 90 */
         const float full_offset = -(popup_cy - content_cy) / content_cy; /* -0.15 */
-        /* 2D: full offset (centers junction in popup crop).
-         * 3D: half offset (compromise — centers between junction and road top). */
-        /* 2D: full offset (-0.15). 3D: adjustable extra offset. */
+        /* 2D: full offset (-0.15, centers junction in popup crop).
+         * 3D: that plus the adjustable extra offset. */
         const float offset_y = full_offset + ts * g_3d_offset_adjust;
         int c;
         for (c = 0; c < 4; c++) {
@@ -1225,69 +1374,36 @@ static void build_camera_mvp(float *mvp, float aspect, float pan_x, float pan_z,
 }
 
 void render_get_layout_matrix(float out[16]) {
-    render_build_layout_matrix(out,(float)g_fb_w/g_fb_h);
-}
-
-void render_build_layout_matrix(float out[16],float aspect) {
-    if(out)build_camera_mvp(out,aspect,0,0,0,1,0);
+    if(out)build_camera_mvp(out,NULL,(float)g_fb_w/g_fb_h,0,0,0,1,0);
 }
 
 void render_build_framing_matrix(float out[16],float aspect,float dolly) {
-    if(out)build_camera_mvp(out,aspect,0,0,0,1,dolly);
+    if(out)build_camera_mvp(out,NULL,aspect,0,0,0,1,dolly);
+}
+
+static void uniform3(GLint location, const float v[3]) {
+    glUniform3f(location, v[0], v[1], v[2]);
 }
 
 static void sync_camera_uniforms(void) {
-    /* Animate g_persp_t toward target with ease-in-out */
-    {
-        float target = (float)g_perspective;
-        float diff = target - g_persp_t;
-        if (fabsf(diff) < 0.001f) {
-            g_persp_t = target;
-        } else {
-            g_persp_t += (diff > 0 ? 1.0f : -1.0f) * PERSP_ANIM_SPEED * g_frame_step;
-            if ((diff > 0 && g_persp_t > target) ||
-                (diff < 0 && g_persp_t < target))
-                g_persp_t = target;
-        }
-    }
-
     /* Quintic ease-in-out (smootherstep) */
     float t = g_persp_t;
     float ts = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
-
-    float cam_cos=cosf(g_cam_rot), cam_sin=sinf(g_cam_rot);
-    float eye_x=g_cam_pan_x+cam_cos*CAM_EYE_X-cam_sin*CAM_EYE_Z;
-    float eye_z=g_cam_pan_z+cam_sin*CAM_EYE_X+cam_cos*CAM_EYE_Z;
-    float eye_y=CAM_EYE_Y;
-    if(g_content_offset.current.w!=0) {
-        float distance=1+g_content_offset.current.w;
-        float ctr_x=g_cam_pan_x+cam_cos*CAM_CTR_X-cam_sin*CAM_CTR_Z;
-        float ctr_z=g_cam_pan_z+cam_sin*CAM_CTR_X+cam_cos*CAM_CTR_Z;
-        eye_x=ctr_x+(eye_x-ctr_x)*distance;eye_z=ctr_z+(eye_z-ctr_z)*distance;
-        eye_y=CAM_CTR_Y+(CAM_EYE_Y-CAM_CTR_Y)*distance;
-    }
-    build_camera_mvp(g_mvp_current,(float)g_fb_w/g_fb_h,
+    float eye[3];
+    build_camera_mvp(g_mvp_current,eye,(float)g_fb_w/g_fb_h,
                      g_cam_pan_x,g_cam_pan_z,g_cam_rot,ts,g_content_offset.current.w);
     for(int c=0;c<4;++c) {
         g_mvp_current[c*4]+=g_mvp_current[c*4+3]*2*g_content_offset.current.x/CR_DEFAULT_WIDTH;
         g_mvp_current[c*4+1]-=g_mvp_current[c*4+3]*2*g_content_offset.current.y/CR_DEFAULT_HEIGHT;
     }
 
-    /* Pure 2D orthographic MVP for mask rendering.
-     * Same top-down view as ortho mode but with no perspective blend. */
-    {
-        float proj[16], view[16];
-        mat4_ortho(proj, -g_mask_half_w, g_mask_half_w,
-                   -g_mask_half_h, g_mask_half_h, 0.1f, 20.0f);
-        mat4_zero(view);
-        view[0]  =  1.0f;   /* x -> x */
-        view[9]  =  1.0f;   /* z -> y_screen */
-        view[13] =  0.0f;
-        view[6]  =  1.0f;   /* y -> z_depth */
-        view[14] = -5.0f;   /* push into view */
-        view[15] =  1.0f;
-        mat4_mul(g_mvp_ortho_2d, proj, view);
-
+    if (g_lit_static_dirty) {
+        g_lit_static_dirty = 0;
+        uniform3(g_uni_light_key_color, k_lighting_state.key_color);
+        uniform3(g_uni_light_fill_color, k_lighting_state.fill_color);
+        uniform3(g_uni_light_sky_color, k_lighting_state.sky_color);
+        uniform3(g_uni_light_ground_color, k_lighting_state.ground_color);
+        uniform3(g_uni_light_spec_color, k_lighting_state.spec_color);
         /* mask_scale: maps world (x,z) -> mask UV (0..1).
          * UV = world_coord * scale + 0.5 */
         glUniform2f(g_uni_mask_scale, 0.5f / g_mask_half_w, 0.5f / g_mask_half_h);
@@ -1308,41 +1424,36 @@ static void sync_camera_uniforms(void) {
     g_light_vector[1]=ly/ll;
     g_light_vector[2]=lz/ll;
     glUniform3f(g_uni_light, lx/ll, ly/ll, lz/ll);
-    glUniform3f(g_uni_light_key_color,
-                k_lighting_state.key_color[0],
-                k_lighting_state.key_color[1],
-                k_lighting_state.key_color[2]);
-    glUniform3f(g_uni_light_fill_color,
-                k_lighting_state.fill_color[0],
-                k_lighting_state.fill_color[1],
-                k_lighting_state.fill_color[2]);
-    glUniform3f(g_uni_light_sky_color,
-                k_lighting_state.sky_color[0],
-                k_lighting_state.sky_color[1],
-                k_lighting_state.sky_color[2]);
-    glUniform3f(g_uni_light_ground_color,
-                k_lighting_state.ground_color[0],
-                k_lighting_state.ground_color[1],
-                k_lighting_state.ground_color[2]);
-    glUniform3f(g_uni_light_spec_color,
-                k_lighting_state.spec_color[0],
-                k_lighting_state.spec_color[1],
-                k_lighting_state.spec_color[2]);
 
     /* Camera eye position for specular/rim -- lerp between modes */
     glUniform3f(g_uni_eye,
-                eye_x * ts + 0.0f * (1.0f - ts),
-                eye_y * ts + 5.0f * (1.0f - ts),
-                eye_z * ts + 0.0f * (1.0f - ts));
+                eye[0] * ts + 0.0f * (1.0f - ts),
+                eye[1] * ts + 5.0f * (1.0f - ts),
+                eye[2] * ts + 0.0f * (1.0f - ts));
 
     g_z_bias = 0.0f;
 }
 
 void render_begin_frame(void) {
     double now=viewport_now();
+    /* The 2D/3D blend steps once a frame; the camera syncs several times a frame. */
+    {
+        float target = (float)g_perspective;
+        float diff = target - g_persp_t;
+        if (fabsf(diff) < 0.001f) {
+            g_persp_t = target;
+        } else {
+            g_persp_t += (diff > 0 ? 1.0f : -1.0f) * PERSP_ANIM_SPEED * g_frame_step;
+            if ((diff > 0 && g_persp_t > target) ||
+                (diff < 0 && g_persp_t < target))
+                g_persp_t = target;
+        }
+    }
+    g_mask_skip = 0;                  /* a mask painting that never ended must not skip more */
+    g_mask_hold = 0;                  /* a hold lasts one frame at most */
     cr_rect_animate(&g_visible_area,now);
     cr_rect_animate(&g_content_offset,now);
-    /* Render into 2x supersample FBO */
+    /* Render into the supersample FBO */
     glBindFramebuffer(GL_FRAMEBUFFER, g_ss_fbo);
     glViewport(0, 0, g_ss_w, g_ss_h);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -1379,14 +1490,10 @@ void render_set_content_framing(float x,float y,float dolly) {
     cr_rect_retarget(&g_content_offset,offset,viewport_now());
 }
 void render_reset_content_offset(void) {memset(&g_content_offset,0,sizeof(g_content_offset));}
-void render_get_content_framing(float *x,float *y,float *dolly) {
-    if(x)*x=g_content_offset.current.x;
-    if(y)*y=g_content_offset.current.y;
-    if(dolly)*dolly=g_content_offset.current.w;
-}
 
 void render_begin_overlay(cr_rect_t clip) {
     float identity[16]={0};
+    g_mask_skip = 0;                  /* overlays are never mask painting */
     identity[0]=identity[5]=identity[10]=identity[15]=1;
     use_flat_program(3.0f);
     render_set_mask_entry_fade(0,0);
@@ -1449,37 +1556,11 @@ void render_overlay_cutout(cr_rect_t area,float fx,float fy,float alpha) {
 /* Debug grid: draw colored checkerboard over the full 328x180 content area.
  * Each cell is labeled by position so you can see which cells are visible
  * in sidescreen vs popup modes on the VC.
- * Enable with: ./maneuver_render --grid   or   CR_DEBUG_GRID=1 ./maneuver_render */
+ * Enabled by building with -DCR_DEBUG_GRID (build_renderers.sh grid) or toggled
+ * by the debug command. */
 static int g_debug_grid = 0;
 
 void render_set_debug_grid(int on) { g_debug_grid = on; }
-
-static void debug_area(cr_rect_t r) {
-    float identity[16]={0}, rects[4][4];
-    int i;
-    identity[0]=identity[5]=identity[10]=identity[15]=1;
-    rects[0][0]=r.x;rects[0][1]=r.y;rects[0][2]=r.x+r.w;rects[0][3]=r.y+1;
-    rects[1][0]=r.x;rects[1][1]=r.y+r.h-1;rects[1][2]=r.x+r.w;rects[1][3]=r.y+r.h;
-    rects[2][0]=r.x;rects[2][1]=r.y;rects[2][2]=r.x+1;rects[2][3]=r.y+r.h;
-    rects[3][0]=r.x+r.w-1;rects[3][1]=r.y;rects[3][2]=r.x+r.w;rects[3][3]=r.y+r.h;
-    glDisable(GL_DEPTH_TEST);
-    use_flat_program(3.0f);
-    glUniformMatrix4fv(g_flat_mvp,1,GL_FALSE,identity);
-    for(i=0;i<4;++i) {
-        float x0=2*rects[i][0]/CR_DEFAULT_WIDTH-1,x1=2*rects[i][2]/CR_DEFAULT_WIDTH-1;
-        float y0=1-2*rects[i][1]/CR_DEFAULT_HEIGHT,y1=1-2*rects[i][3]/CR_DEFAULT_HEIGHT;
-        vb_reset();vb_quad(x0,y0,0,x1,y0,0,x1,y1,0,x0,y1,0,0,0,1);
-        vb_flush(1,.04f,.08f,1);
-    }
-    use_lit_program();
-    glEnable(GL_DEPTH_TEST);
-}
-
-void render_debug_visible_area(void) {debug_area(g_visible_area.current);}
-void render_debug_small_area(void) {
-    cr_rect_t small={CR_POPUP_X,CR_POPUP_Y,CR_POPUP_W,CR_POPUP_H};
-    debug_area(small);
-}
 
 void render_debug_grid(void) {
     if (!g_debug_grid) return;
@@ -1553,9 +1634,9 @@ void render_sync_camera(void) {
 
 void render_end_frame(void) {
     static const float quad[] = { -1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1 };
+    g_mask_skip = 0;                  /* pass 2's blit is a flat draw, never mask painting */
 
     /* Pass 1: FXAA on SSAA FBO → FXAA FBO (same resolution, smoothed edges) */
-#if FXAA_ENABLED
     if (g_fxaa_prog) {
         glBindFramebuffer(GL_FRAMEBUFFER, g_fxaa_fbo);
         glViewport(0, 0, g_ss_w, g_ss_h);
@@ -1573,18 +1654,26 @@ void render_end_frame(void) {
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glDisableVertexAttribArray(g_fxaa_attr_pos);
     }
-#endif
 
-    /* Pass 2: Downsample (FXAA result on QNX / SSAA on macOS) → window */
+    /* Pass 2: Downsample the FXAA result (the SSAA frame if the FXAA program failed) → window.
+     * on a MOST KOMO stream the window is larger than the content; clear all
+     * of it (opaque black) and draw the content into its fitted rectangle. */
     glBindFramebuffer(GL_FRAMEBUFFER, g_default_fbo);
-    glViewport(0, 0, g_win_w, g_win_h);
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    if (g_out_win_w > 0) {
+        glViewport(0, 0, g_out_win_w, g_out_win_h);
+        glClearColor(0.0f, 0.0f, 0.0f, g_out_opaque ? 1.0f : 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glViewport(g_out_x, g_out_y, g_out_w, g_out_h);
+    } else {
+        glViewport(0, 0, g_win_w, g_win_h);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    }
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
     use_flat_program(1.0f);  /* fullscreen blit passthrough */
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, (FXAA_ENABLED && g_fxaa_prog) ? g_fxaa_tex : g_ss_tex);
+    glBindTexture(GL_TEXTURE_2D, g_fxaa_prog ? g_fxaa_tex : g_ss_tex);
     glUniform1i(g_flat_tex, 0);
     vb_reset();
     vb_v(-1, -1, 0, 0,0,1);
@@ -1594,9 +1683,84 @@ void render_end_frame(void) {
     vb_v( 1,  1, 0, 0,0,1);
     vb_v(-1,  1, 0, 0,0,1);
     vb_flush(1, 1, 1, 1);
+    if (g_out_win_w > 0 && g_out_opaque) {
+        /* The MOST encoder streams the buffer as-is: make every pixel opaque. */
+        glViewport(0, 0, g_out_win_w, g_out_win_h);
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    }
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     use_lit_program();
+}
+
+int render_set_output(int win_w, int win_h, int x, int y, int w, int h, int opaque) {
+    if (win_w <= 0 || win_h <= 0 || w <= 0 || h <= 0) {
+        g_out_win_w = g_out_win_h = g_out_x = g_out_y = g_out_w = g_out_h = 0;
+        g_out_opaque = 0;
+        return apply_render_size();
+    }
+    g_out_win_w = win_w;
+    g_out_win_h = win_h;
+    g_out_x = x;
+    g_out_y = y;
+    g_out_w = w;
+    g_out_h = h;
+    g_out_opaque = opaque;
+    return apply_render_size();
+}
+
+int render_output_is_opaque(void) {
+    return g_out_win_w > 0 && g_out_opaque;
+}
+
+/* Output diagnostics: write the frame just drawn to the window (call before the swap) as a
+ * binary PPM, top row first.  Written in place: /tmp is procnto shared memory, no rename. */
+int render_capture_output(const char *path) {
+    static unsigned char *rgba = NULL, *ppm = NULL;
+    static size_t rgba_cap = 0, ppm_cap = 0;
+    int w = g_out_win_w > 0 ? g_out_win_w : g_win_w;
+    int h = g_out_win_w > 0 ? g_out_win_h : g_win_h;
+    char header[32];
+    int header_len, row, col, ok;
+    size_t need_rgba, need_ppm;
+    FILE *f;
+
+    if (w <= 0 || h <= 0) return -1;
+    header_len = snprintf(header, sizeof(header), "P6\n%d %d\n255\n", w, h);
+    need_rgba = (size_t)w * (size_t)h * 4;
+    need_ppm = (size_t)header_len + (size_t)w * (size_t)h * 3;
+    if (need_rgba > rgba_cap) {
+        unsigned char *grown = (unsigned char *)realloc(rgba, need_rgba);
+        if (!grown) return -1;
+        rgba = grown;
+        rgba_cap = need_rgba;
+    }
+    if (need_ppm > ppm_cap) {
+        unsigned char *grown = (unsigned char *)realloc(ppm, need_ppm);
+        if (!grown) return -1;
+        ppm = grown;
+        ppm_cap = need_ppm;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, g_default_fbo);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    memcpy(ppm, header, (size_t)header_len);
+    for (row = 0; row < h; row++) {
+        const unsigned char *src = rgba + (size_t)(h - 1 - row) * (size_t)w * 4;   /* GL: bottom row first */
+        unsigned char *dst = ppm + header_len + (size_t)row * (size_t)w * 3;
+        for (col = 0; col < w; col++) {
+            dst[col * 3 + 0] = src[col * 4 + 0];
+            dst[col * 3 + 1] = src[col * 4 + 1];
+            dst[col * 3 + 2] = src[col * 4 + 2];
+        }
+    }
+    f = fopen(path, "wb");
+    if (!f) return -1;
+    ok = fwrite(ppm, 1, need_ppm, f) == need_ppm;
+    if (fclose(f) != 0) ok = 0;
+    return ok ? 0 : -1;
 }
 
 void render_set_perspective(int enabled) {
@@ -1615,9 +1779,6 @@ void render_set_camera_pan(float x, float y) {
     g_cam_pan_x = x;
     g_cam_pan_z = y;  /* maneuver y -> 3D z */
 }
-void render_get_camera_pose(float *x,float *y,float *rotation) {
-    *x=g_cam_pan_x;*y=g_cam_pan_z;*rotation=g_cam_rot;
-}
 
 void render_set_camera_rotation(float angle_rad) {
     g_cam_rot = angle_rad;
@@ -1632,12 +1793,28 @@ void render_set_material(render_material_t material) {
 }
 
 void render_invalidate_masks(void) {
-    g_masks_dirty = 1;
-    g_route_mask_ready = 0;
+    invalidate_mask_sets();
+}
+
+void render_invalidate_next_masks(void) {
+    invalidate_mask_set(1);
 }
 
 int render_masks_dirty(void) {
-    return g_masks_dirty;
+    return g_set_dirty[0];
+}
+
+void render_select_mask_set(int set) {
+    g_mask_set = set == 1 ? 1 : 0;
+    g_mask_hold = 0;
+}
+
+void render_hold_mask_set(void) {
+    g_mask_hold = 1;
+}
+
+unsigned render_mask_paint_count(void) {
+    return g_mask_paints;
 }
 
 /* ================================================================
@@ -1692,7 +1869,7 @@ int render_get_flag_frame_count(void) {
     return g_flag_frame_count;
 }
 
-void render_sprite_flag_ex(float x, float y, float size, int frame, int flip_x) {
+void render_sprite_flag(float x, float y, float size, int frame) {
     /* Camera-facing billboard quad anchored at pole base.
      * Pole base in sprite UV: u=0.22, v=0.88 (from top).
      * Quad = full sprite (size*2 x size*2), offset so pole base = (x, 0, y).
@@ -1702,8 +1879,7 @@ void render_sprite_flag_ex(float x, float y, float size, int frame, int flip_x) 
     float sprite_h = size * 2.0f;
     float pole_u = 0.22f;     /* pole base X fraction in sprite */
     float pole_v_top = 0.88f; /* pole base Y fraction from top */
-    float anchor_u = flip_x ? (1.0f - pole_u) : pole_u;
-    float local_l = -anchor_u * sprite_w;
+    float local_l = -pole_u * sprite_w;
     float local_r = local_l + sprite_w;
     float right_x = cosf(g_cam_rot);
     float right_z = sinf(g_cam_rot);
@@ -1739,7 +1915,6 @@ void render_sprite_flag_ex(float x, float y, float size, int frame, int flip_x) 
     float rz1 = rz0 + up_z * flat_top;
 
     glDisable(GL_DEPTH_TEST);
-    glUniformMatrix4fv(g_uni_mvp, 1, GL_FALSE, g_mvp_current);
 
     if (g_flag_tex && g_flag_frame_count > 0) {
         if (frame < 0) frame = 0;
@@ -1747,8 +1922,6 @@ void render_sprite_flag_ex(float x, float y, float size, int frame, int flip_x) 
 
         float u0 = (float)frame / (float)g_flag_frame_count;
         float u1 = (float)(frame + 1) / (float)g_flag_frame_count;
-        float ul = flip_x ? u1 : u0;
-        float ur = flip_x ? u0 : u1;
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, g_flag_tex);
@@ -1758,12 +1931,12 @@ void render_sprite_flag_ex(float x, float y, float size, int frame, int flip_x) 
         glUniform1i(g_flat_tex,0);
 
         vb_reset();
-        vb_v(lx0, bot_y, lz0,  ul, 1.0f, 0);
-        vb_v(rx0, bot_y, rz0,  ur, 1.0f, 0);
-        vb_v(rx1, top_y, rz1,  ur, 0.0f, 0);
-        vb_v(lx0, bot_y, lz0,  ul, 1.0f, 0);
-        vb_v(rx1, top_y, rz1,  ur, 0.0f, 0);
-        vb_v(lx1, top_y, lz1,  ul, 0.0f, 0);
+        vb_v(lx0, bot_y, lz0,  u0, 1.0f, 0);
+        vb_v(rx0, bot_y, rz0,  u1, 1.0f, 0);
+        vb_v(rx1, top_y, rz1,  u1, 0.0f, 0);
+        vb_v(lx0, bot_y, lz0,  u0, 1.0f, 0);
+        vb_v(rx1, top_y, rz1,  u1, 0.0f, 0);
+        vb_v(lx1, top_y, lz1,  u0, 0.0f, 0);
 
         glVertexAttribPointer(g_flat_attr_pos,3,GL_FLOAT,GL_FALSE,24,g_vbuf);
         glVertexAttribPointer(g_flat_attr_uv,3,GL_FLOAT,GL_FALSE,24,g_vbuf+3);
@@ -1785,10 +1958,6 @@ void render_sprite_flag_ex(float x, float y, float size, int frame, int flip_x) 
     }
 
     glEnable(GL_DEPTH_TEST);
-}
-
-void render_sprite_flag(float x, float y, float size, int frame) {
-    render_sprite_flag_ex(x, y, size, frame, 0);
 }
 
 void render_shutdown(void) {
@@ -1822,7 +1991,16 @@ void render_shutdown(void) {
  * ================================================================ */
 
 static void begin_mask(int fbo_idx) {
-    fbo_bind(fbo_idx);
+    /* A clean set keeps its layers: the caller's painting replays without GPU work (vb_flush
+     * only advances the depth bias, as the composite that follows reads it).  So does a held
+     * set, which stays dirty and is painted in a later frame. */
+    g_mask_skip = !g_set_dirty[g_mask_set] || g_mask_hold;
+    if (!g_mask_skip) {
+        fbo_bind(fbo_idx + 2 * g_mask_set);
+        g_mask_paints++;
+        if (fbo_idx == FBO_ROAD) g_set_road[g_mask_set] = 1;
+        else g_set_route[g_mask_set] = 1;
+    }
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
@@ -1832,6 +2010,7 @@ static void begin_mask(int fbo_idx) {
 }
 
 static void end_mask(void) {
+    g_mask_skip = 0;
     fbo_unbind();
     glEnable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -1875,7 +2054,6 @@ void render_begin_outline_mask(void) { begin_mask(FBO_ROAD); }
 void render_end_outline_mask(void)   { end_mask(); }
 
 void render_begin_route_mask(void) {
-    g_route_mask_ready = 1;
     begin_mask(FBO_ROUTE);
 }
 
@@ -1887,12 +2065,21 @@ void render_begin_route_mask(void) {
  * No subtraction needed -- border/fill distinction is baked into FBO colors.
  * ================================================================ */
 
+/* The layer a set composites.  Set 1 falls back to set 0's layer when the next maneuver
+ * painted none: with one shared pair, that texture still held the current maneuver's. */
+static int composite_layer(int layer, const int *painted) {
+    int set = g_mask_set;
+    if (!painted[set] && set == 1 && painted[0]) set = 0;
+    return painted[set] ? layer + 2 * set : -1;
+}
+
 /* The road FBO supplies fill and border RGB for one lit ground-plane quad. */
 static void composite_road_layer(void) {
     const material_preset_t *preset = material_preset(RENDER_MAT_ROAD_ASPHALT);
+    int road = composite_layer(FBO_ROAD, g_set_road);
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_fbo_texs[FBO_ROAD]);
+    glBindTexture(GL_TEXTURE_2D, g_fbo_texs[road >= 0 ? road : FBO_ROAD + 2 * g_mask_set]);
     glUniform1i(g_uni_tex, 0);
     glUniform1f(g_uni_tex_mode, 7.0f);
 
@@ -1939,10 +2126,11 @@ void render_composite(void) {
     /* Layer 2: Route shadow on road surface. Only sample the route mask when it
      * was actually rendered; otherwise skip the pass instead of reading an
      * uninitialized texture. */
-    if (g_route_mask_ready) {
+    int route = composite_layer(FBO_ROUTE, g_set_route);
+    if (route >= 0) {
         float gx = g_mask_half_w * 3.0f, gz = g_mask_half_h * 3.0f;
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, g_fbo_texs[FBO_ROUTE]);
+        glBindTexture(GL_TEXTURE_2D, g_fbo_texs[route]);
         use_shadow_program(9.0f);
         glUniform1f(g_shadow_zbias, g_z_bias);
         g_z_bias += Z_BIAS_STEP;
@@ -1963,7 +2151,7 @@ void render_composite(void) {
 
     use_lit_program();
 
-    g_masks_dirty = 0;
+    if (!g_mask_hold) g_set_dirty[g_mask_set] = 0;
 }
 
 void render_reset_depth(void) {

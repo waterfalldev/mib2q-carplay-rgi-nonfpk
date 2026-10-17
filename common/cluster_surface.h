@@ -6,7 +6,8 @@
 #define CLUSTER_SURFACE_H
 /*
  * cluster_surface — shared managed-window primitive for the MHI2Q cluster
- * renderers (maneuver_render = GL overlay, altscreen_render = OMX video).
+ * renderers (maneuver_render: the GL overlay and, on a MOST cluster, the decoded map;
+ * altscreen_render: the Virtual Cockpit's OMX video).
  *
  * Both open ONE QNX Screen window and hand it to the DisplayManager as a managed
  * client (screen_manage_window into the "How are you gentlemen?" group) under a
@@ -51,6 +52,11 @@ int  cluster_surface_lost(cluster_surface_t *s);
 /* Destroy the window and open a fresh managed one (same cfg).  Caller rebinds its
  * surface to the new cluster_surface_window() afterwards.  100 ms backoff. 0=ok. */
 int  cluster_surface_recreate(cluster_surface_t *s);
+
+/* change the window size (and overlay transparency) through the same recreate,
+ * keeping the screen context the EGL display was created with.  Same 100 ms backoff;
+ * on -1 the new size stays configured and the next recreate uses it. */
+int  cluster_surface_resize(cluster_surface_t *s, int width, int height, int transparent);
 
 /* Destroy window + context and free the handle. */
 void cluster_surface_destroy(cluster_surface_t *s);

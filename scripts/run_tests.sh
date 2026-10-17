@@ -9,6 +9,20 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
+# Linux hosts: expose the GNU extensions macOS has by default, link libdl, and keep
+# gcc's C99 -pedantic array-qualifier rule (gone in C2x, never in clang) a warning,
+# for this script and every test script it runs.
+if [ "$(uname)" != Darwin ]; then
+    REAL_CC=$(command -v cc)
+    mkdir -p "$OUT/bin"
+    cat > "$OUT/bin/cc" <<EOF_CC
+#!/bin/sh
+case " \$* " in *" -c "*|*" -E "*|*" -S "*) exec $REAL_CC -D_GNU_SOURCE= -Wno-error=pedantic "\$@" ;; esac
+exec $REAL_CC -D_GNU_SOURCE= -Wno-error=pedantic "\$@" -ldl
+EOF_CC
+    chmod +x "$OUT/bin/cc"
+    PATH="$OUT/bin:$PATH"; export PATH
+fi
 
 printf '%-32s ' spatial_downmix_test
 cc -std=c99 -O2 -Wall -Wextra -Werror -Ihook \
@@ -177,6 +191,16 @@ cc -std=gnu99 -O1 -Wall -Wextra -Werror -Wno-unused-function \
     tests/maneuver_surface_test.c "$ALT_DEAD_STRIP" -lpthread -lm -o "$OUT/maneuver_surface"
 "$OUT/maneuver_surface"
 
+printf '%-32s ' frame_pacer_test
+cc -std=c99 -O1 -Wall -Wextra -Werror -pedantic -Wno-unused-function \
+    -Imaneuver_render tests/frame_pacer_test.c -o "$OUT/frame_pacer"
+"$OUT/frame_pacer"
+
+printf '%-32s ' frame_profile_test
+cc -std=c99 -O1 -Wall -Wextra -Werror -pedantic -Wno-unused-function \
+    -Imaneuver_render tests/frame_profile_test.c -o "$OUT/frame_profile"
+"$OUT/frame_profile"
+
 printf '%-32s ' maneuver_reroute_clear
 bash scripts/test_maneuver_reroute.sh
 
@@ -188,6 +212,38 @@ cc -std=c99 -O1 -Wall -Wextra -Werror -Wno-unused-variable -Wno-unused-function 
     -DENABLE_LOGGING=0 -Ihook tests/rgd_tlv_test.c hook/routeguidance/rgd_tlv.c \
     -o "$OUT/rgd_tlv"
 "$OUT/rgd_tlv"
+
+printf '%-32s ' rgd_start_burst_test
+cc -std=gnu99 -O1 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter \
+    -Wno-unused-variable -Wno-unused-but-set-variable -DENABLE_LOGGING=0 -Ihook -Ihook/framework -Itests \
+    tests/rgd_start_burst_test.c hook/routeguidance/rgd_tlv.c hook/framework/iap2_protocol.c \
+    -lpthread -o "$OUT/rgd_start_burst"
+"$OUT/rgd_start_burst"
+
+# The MOST map: its stream-111 receiver and the frame ring to the renderer's decoder.
+if [ "$(uname)" = Darwin ]; then RT_LIB=; else RT_LIB=-lrt; fi
+printf '%-32s ' most_map_hook_test
+cc -std=gnu99 -O1 -Wall -Wextra -Werror -DENABLE_LOGGING=0 \
+    -DALT_SHOW_UI_DELAY_MS=10 -DALT_NIGHT_TOGGLE_MS=10 -DALT_HOLD_CONNECT_MS=400 "-DCVR_SHM_NAME=\"/cr_cluster_video_test$$\"" \
+    -Ihook -Icommon tests/most_map_hook_test.c hook/mostmap/most_map_hook.c hook/mostmap/cflite.c \
+    -rdynamic -lpthread $RT_LIB -o "$OUT/most_map_hook"
+"$OUT/most_map_hook"
+
+printf '%-32s ' cluster_video_ring_test
+cc -std=gnu99 -O2 -Wall -Wextra -Werror -DCVR_DATA_BYTES='(1u << 16)' \
+    "-DCVR_SHM_NAME=\"/cr_cluster_video_ring$$\"" -Icommon -Itests tests/cluster_video_ring_test.c \
+    -lpthread $RT_LIB -o "$OUT/cluster_video_ring"
+"$OUT/cluster_video_ring"
+
+printf '%-32s ' cluster_video_test
+cc -std=gnu99 -O1 -Wall -Wextra -Werror "-DCVR_SHM_NAME=\"/cr_cluster_video_reader$$\"" \
+    -Icommon -Itests tests/cluster_video_test.c -lpthread $RT_LIB -o "$OUT/cluster_video"
+"$OUT/cluster_video"
+
+printf '%-32s ' cluster_decoder_test
+cc -std=gnu99 -O1 -Wall -Wextra -Werror -Itests -Icommon tests/cluster_decoder_test.c \
+    -rdynamic -lpthread $RT_LIB -o "$OUT/cluster_decoder"
+"$OUT/cluster_decoder"
 
 printf '%-32s ' tel_hook_test
 cc -std=c99 -O1 -Wall -Wextra -Werror -Wno-unused-function \
@@ -365,7 +421,7 @@ printf '%-32s ' install_java_gate_test
 sh scripts/test_install_java_gate.sh
 
 printf '%-32s ' java_variants_link_test
-bash scripts/build_java.sh > /dev/null && bash scripts/audit_java_variants.sh
+bash scripts/audit_java_variants.sh
 
 printf '%-32s ' binpatch_test
 bash scripts/test_binpatch.sh

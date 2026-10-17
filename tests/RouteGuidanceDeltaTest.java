@@ -124,6 +124,17 @@ public final class RouteGuidanceDeltaTest {
             "new route reused old slot version and inherited route/lane data");
         check(state.dirtyMask!=0 && state.mVer[0]==2 && state.routeGeneration==101,"new generation failed to publish");
         staleGenerations(parse, rg, state);
-        System.out.println("RouteGuidanceDeltaTest: delta retention, lifecycle, slot reuse, stale/equal/64-bit generations, disconnect reset, independent lanes and +/-1000 sentinels PASS");
+        feed(parse,rg,"lg3_index:n:80\nlg3_lane_count:n:2\nlg5_index:n:81\nlg5_lane_count:n:3\nlane_slots:n:40\n");
+        check(state.lgIndex[3]==80 && state.lgIndex[5]==81,"lane_slots dropped published lanes");
+        state.clearDirty();
+        feed(parse,rg,"lg3_index:n:80\nlg3_lane_count:n:2\nlane_slots:n:8\n");
+        check(state.lgIndex[3]==80 && state.lgIndex[5]==-1 && state.lgLaneCount[5]==-1
+            && (state.dirtyMask & RouteGuidance.State.DIRTY_LANE_GUIDANCE)!=0,"slot outside lane_slots kept stale lanes");
+        state.clearDirty();
+        feed(parse,rg,"lane_slots:n:8\n");
+        check(state.lgIndex[3]==80 && (state.dirtyMask & RouteGuidance.State.DIRTY_LANE_GUIDANCE)==0,"unchanged lane_slots marked lanes dirty");
+        feed(parse,rg,"lane_slots:n:0\n");
+        check(state.lgIndex[3]==-1,"empty lane_slots kept lanes");
+        System.out.println("RouteGuidanceDeltaTest: delta retention, lifecycle, slot reuse, stale/equal/64-bit generations, disconnect reset, independent lanes, lane_slots and +/-1000 sentinels PASS");
     }
 }

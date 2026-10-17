@@ -109,11 +109,15 @@ void platform_poll(void) {}
 int platform_should_close(void) { return t_iter >= t_nb; }
 void platform_shutdown(void) {}
 void platform_get_framebuffer_size(int *w, int *h) { *w = CR_DEFAULT_WIDTH; *h = CR_DEFAULT_HEIGHT; }
-void platform_get_routing_ids(int *d, int *c, int *o) { *d = CR_DISPLAY_ID; *c = CR_CONTEXT_ID; *o = CR_DISPLAYABLE_ID; }
-void platform_ensure_focus(void) {}
 void platform_check_and_recover_window(void) {}
 void platform_release_displayable(void) {}
-int platform_key_tap(int key) { (void)key; return 0; }
+/* a MOST output window is not exercised here: generation 0 never changes, so apply_output() is idle */
+void platform_check_output(void) {}
+unsigned platform_get_output(int *ww, int *wh, int *x, int *y, int *w, int *h, int *opaque) {
+    *ww = CR_DEFAULT_WIDTH; *wh = CR_DEFAULT_HEIGHT; *x = 0; *y = 0; *w = CR_DEFAULT_WIDTH; *h = CR_DEFAULT_HEIGHT; *opaque = 0;
+    return 0;
+}
+long platform_free_memory_kb(void) { return -1; }
 
 /* render */
 int render_init(int w, int h) { (void)w; (void)h; return 0; }
@@ -147,6 +151,18 @@ void render_set_viewport(int w, int h) { (void)w; (void)h; }
 void render_begin_frame(void) {}
 void render_end_frame(void) {}
 void render_shutdown(void) {}
+int render_set_output(int ww, int wh, int x, int y, int w, int h, int opaque) {
+    (void)ww; (void)wh; (void)x; (void)y; (void)w; (void)h; (void)opaque; return 0;
+}
+int render_output_is_opaque(void) { return 0; }
+void render_get_render_size(int *w, int *h) { *w = CR_DEFAULT_WIDTH; *h = CR_DEFAULT_HEIGHT; }
+int render_capture_output(const char *path) { (void)path; return -1; }
+void render_invalidate_next_masks(void) {}
+unsigned render_mask_paint_count(void) { return 0; }
+void map_layer_start(void) {}
+void map_layer_stop(void) {}
+void cluster_video_start(void) {}
+void cluster_video_stop(void) {}
 
 /* maneuver (drawing/animation engine): instantaneous transitions */
 void maneuver_commit_pushed_state(const maneuver_state_t *s) { (void)s; }

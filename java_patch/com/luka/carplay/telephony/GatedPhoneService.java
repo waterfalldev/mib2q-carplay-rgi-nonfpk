@@ -150,6 +150,7 @@ public class GatedPhoneService implements CombiBAPServicePhone {
 
     /** Wraps once: a second registration must not stack wrappers. */
     public static Object wrap(Object service) {
+        if (!com.luka.carplay.core.Features.PHONE_DATA) return service;
         if (service instanceof GatedPhoneService || !(service instanceof CombiBAPServicePhone)) return service;
         return new GatedPhoneService((CombiBAPServicePhone)service);
     }

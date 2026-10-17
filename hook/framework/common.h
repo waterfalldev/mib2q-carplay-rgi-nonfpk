@@ -144,6 +144,26 @@ static inline uint64_t get_timestamp_ms(void) {
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
 
+/* Absolute CLOCK_REALTIME deadline `ms` from now, for pthread_cond_timedwait. */
+static inline void deadline_after_ms(struct timespec* deadline, long ms) {
+    clock_gettime(CLOCK_REALTIME, deadline);
+    deadline->tv_sec += ms / 1000L;
+    deadline->tv_nsec += (ms % 1000L) * 1000000L;
+    if (deadline->tv_nsec >= 1000000000L) {
+        deadline->tv_sec++;
+        deadline->tv_nsec -= 1000000000L;
+    }
+}
+
+/* Bounded wait: with `lock` held, block on `cond` until `pred` holds or `ms` elapse. */
+#define COND_WAIT_MS(cond, lock, ms, pred) do { \
+    struct timespec dl_; \
+    int rc_ = 0; \
+    deadline_after_ms(&dl_, (ms)); \
+    while (!(pred) && rc_ != ETIMEDOUT) \
+        rc_ = pthread_cond_timedwait((cond), (lock), &dl_); \
+} while (0)
+
 /* Raw transport-receive seam (cover art).
  * The framework interposes NmeTransport::Recv(NmeArray<uchar>&) — the symmetric
  * pair to NmeTransport::Send — and hands each freshly received link buffer to

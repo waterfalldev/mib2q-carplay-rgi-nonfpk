@@ -64,6 +64,7 @@ typedef struct {
     uint16_t msgid;             /* Message ID */
     uint16_t frame_len;         /* Frame length (from header) */
     size_t offset;              /* Offset to frame start in buffer */
+    const uint8_t* data;        /* Frame start (the 0x4040 sync); set by the Decode/Encode taps only */
     const uint8_t* payload;     /* Pointer to payload (after msgid) */
     size_t payload_len;         /* Payload length */
 } iap2_frame_t;

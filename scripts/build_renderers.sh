@@ -20,9 +20,16 @@ set -e
 [ "$#" -le 1 ] || { echo "usage: ./scripts/build_renderers.sh [grid]"; exit 2; }
 [ "$#" -eq 0 ] || [ "$1" = "grid" ] || { echo "usage: ./scripts/build_renderers.sh [grid]"; exit 2; }
 
-IMG="qnx65-armv7-toolchain:${QNX_TOOLCHAIN_VARIANT:-latest}"   # QNX_TOOLCHAIN_VARIANT as in build_hook_common.sh
+# QNX_TOOLCHAIN_VARIANT as in build_hook_common.sh; QNX_TOOLCHAIN_IMAGE overrides the image.
+IMG="${QNX_TOOLCHAIN_IMAGE:-qnx65-armv7-toolchain:${QNX_TOOLCHAIN_VARIANT:-latest}}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# under Git for Windows hand Docker a Windows path (MSYS maps /tmp to the user's
+# temp directory, which Docker would read as its own /tmp) and stop MSYS rewriting the
+# container paths in docker's arguments.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) PROJECT_DIR="$(cygpath -m "$PROJECT_DIR")"; export MSYS_NO_PATHCONV=1 ;;
+esac
 GRID=""
 [ "$1" = "grid" ] && GRID="-DCR_DEBUG_GRID"
 
@@ -34,10 +41,13 @@ fi
 
 echo "=== Cluster Renderer Build (Docker $IMG) ==="
 
-docker run --rm --platform=linux/amd64 -v "$PROJECT_DIR":/src "$IMG" bash -c '
+docker run --rm --platform=linux/amd64 -v "$PROJECT_DIR":/host "$IMG" bash -c '
   set -e
   export PATH=/opt/qnx650/host/linux/x86/usr/bin:$PATH
   export QNX_HOST=/opt/qnx650/host/linux/x86 QNX_TARGET=/opt/qnx650/target/qnx6
+  # build inside the container at the same /src paths.  A Docker Desktop (Windows)
+  # bind mount reports 64-bit inode numbers that the 32-bit QNX binutils reject (EOVERFLOW).
+  mkdir -p /src && cp -a /host/common /host/hook /host/maneuver_render /host/altscreen_render /host/toolchain /src/
   CC=arm-unknown-nto-qnx6.5.0eabi-gcc
   CXX=arm-unknown-nto-qnx6.5.0eabi-g++
   AR=arm-unknown-nto-qnx6.5.0eabi-ar
@@ -53,7 +63,7 @@ docker run --rm --platform=linux/amd64 -v "$PROJECT_DIR":/src "$IMG" bash -c '
 
   echo "--- maneuver_render ---"
   cd /src/maneuver_render
-  MR_SRCS="main.c render.c maneuver.c route_path.c server.c platform_qnx.c ../common/cluster_surface.c"
+  MR_SRCS="main.c render.c maneuver.c route_path.c server.c map_layer.c cluster_video.c cluster_decoder.c h264_sps.c platform_qnx.c ../common/cluster_surface.c"
   gen_stub libscreen.so.1  "\bscreen_[a-z_]+"      $MR_SRCS
   gen_stub libEGL.so.1     "\begl[A-Z][A-Za-z0-9]+" $MR_SRCS
   gen_stub libGLESv2.so.1  "\bgl[A-Z][A-Za-z0-9]+"  $MR_SRCS
@@ -100,6 +110,7 @@ docker run --rm --platform=linux/amd64 -v "$PROJECT_DIR":/src "$IMG" bash -c '
     echo "  $b: machine=$m emutls=$e"
     [ "$m" = ARM ] && [ "$e" = 0 ] || exit 1
   done
+  mkdir -p /host/build && cp /src/build/maneuver_render /src/build/libmaneuver_scene.a /src/build/altscreen_render /host/build/
 '
 
 echo ""

@@ -94,22 +94,52 @@ typedef struct {
  * max is 60=HUD_MAP_VIEW, below the KDK ids 100-102, so still inside the DM's
  * supported id range).  We open a managed screen window with ID_STRING="98" (via
  * screen_manage_window into the DisplayManager group).  98 has no stock owner →
- * no collision war with native nav (the old id-20 takeover / flapping is gone).
+ * no collision war with native nav.
  *
  * Context routing is NO LONGER done here.  The Java patch declares cluster
  * contexts dc[80]={98,101,102,99} (nav: maneuver over the KDK backings + CarPlay
  * map) / dc[81]={99} (map only) in DisplayManagerMIB2High and switches between them
  * (AltScreenModule).  This renderer only creates the managed window + draws; it
  * runs NO dmdt.  (altscreen_render draws the CarPlay map on id 99.)
+ * On a MOST cluster the Java patch uses dc[81]={98} (arrows) and dc[82]={99} (the
+ * phone's map, drawn here by the map thread); altscreen_render does not run there.
  *
  * On shutdown screen_destroy_window vacates m_surfaceSources[98]; Java switches
  * the cluster back to the stock context (dc[74]). */
 #define CR_DISPLAYABLE_ID   98  /* our own cluster displayable (managed window, ID_STRING="98") */
-#define CR_CONTEXT_ID       80  /* Java-declared cluster context {98,102,101} (informational) */
-#define CR_DISPLAY_ID       1   /* 0=main (LVDS1), 1=cluster (LVDS2) */
 #define CR_DEFAULT_WIDTH    328
 #define CR_DEFAULT_HEIGHT   181 /* 180px content + 1px ECC annotation row */
-#define CR_TARGET_FPS       30
+
+/* MOST (KOMO video) cluster output.  The MOST encoder streams the leading
+ * displayable of the active cluster context as-is (CASIMostEncoder::setActiveDisplayable,
+ * no compositing), at the coding's KOMO view size: KVS_Most 800x252 on the tested MOST cluster, not the
+ * Virtual Cockpit's KVS_FPK 328x181.  On a MOST cluster Java writes "<width> <height>\n"
+ * here, in place (this unit's /tmp cannot rename), with stock KDK's measured size; the
+ * renderer then presents an opaque window of that size with its 328x181 content
+ * aspect-fitted in the centre.  No file: unchanged behaviour. */
+#define CR_MOST_OUTPUT_PATH "/tmp/carplay_most_output"
+#define CR_OUTPUT_MIN       64
+#define CR_OUTPUT_MAX       2048
+/* Once a MOST request exists, the renderer writes the window it now presents here after
+ * every successful window creation: "%04d %04d %010d.%010u\n" - size, then a token (pid and
+ * window serial) that is new for every window.  Java composes ctx 81 only once the size
+ * matches the request, and re-composes (a real 73 -> 81 switch, re-pointing the MOST
+ * encoder) whenever the token changes.  Java writes the request fixed-width too, so a
+ * rewrite is whole even without truncation. */
+#define CR_MOST_OUTPUT_READY_PATH "/tmp/carplay_most_output_ready"
+#define CR_OUTPUT_READY_LENGTH    32
+/* The MOST MAP view (MostPresentation.MAP): the same request/ready format for window 99,
+ * which Java composes as ctx 82 = {99} in place of stock map 33 (ctx 72).  Unlike 98, the
+ * window exists only while the request does: no file means no window. */
+#define CR_MAP_DISPLAYABLE_ID          99
+#define CR_MOST_MAP_OUTPUT_PATH        "/tmp/carplay_most_map_output"
+#define CR_MOST_MAP_OUTPUT_READY_PATH  "/tmp/carplay_most_map_output_ready"
+/* Window 99 is a CPU-written NV12 video window, reported ready once its first frame is posted. */
+/* Diagnostics for the log collector: once per settled maneuver on a MOST output, and at most
+ * every CR_MOST_FRAME_INTERVAL_S seconds, the window's frame exactly as the encoder gets it,
+ * as a binary PPM. */
+#define CR_MOST_FRAME_PATH        "/tmp/carplay_most_frame.ppm"
+#define CR_MOST_FRAME_INTERVAL_S  10
 
 /* Big-screen popup crop within the 328x180 content area (excludes ECC row).
  * Also the safe default until Java sends the active stage's visible area. */
