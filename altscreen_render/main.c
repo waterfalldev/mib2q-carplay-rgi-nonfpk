@@ -44,6 +44,17 @@ static volatile sig_atomic_t g_client_fd = -1;
 static volatile int g_startup_complete;
 static volatile int g_teardown_complete;
 
+/* Append the sink's teardown-helper stage (if any) to a watchdog reason, so
+ * the death marker names the exact OMX step ("worker_stuck:free_handle").
+ * No stage means the hang is outside the OMX teardown (Screen/EGL side). */
+static void watchdog_reason(char *buf, size_t n, const char *base) {
+    const char *st = av_sink_omx_stage();
+    if (st && *st)
+        snprintf(buf, n, "%s:%s", base, st);
+    else
+        snprintf(buf, n, "%s", base);
+}
+
 /* av_sink_open creates Screen/EGL before :19831 starts listening. A Qualcomm
  * driver hang there otherwise leaves a live PID forever; the supervisor's
  * recurring check intentionally avoids netstat churn and would adopt it. */
@@ -75,8 +86,10 @@ static void *teardown_watchdog_main(void *unused) {
     if (!g_teardown_complete) {
         static const char msg[] =
             "altscreen_render: OMX/EGL teardown watchdog TIMEOUT; exiting isolated renderer\n";
+        char reason[96];
         (void)write(STDERR_FILENO, msg, sizeof(msg) - 1);
-        _exit(93);
+        watchdog_reason(reason, sizeof(reason), "shutdown_teardown_timeout");
+        av_sink_fatal_exit(93, reason);
     }
     return NULL;
 }
@@ -485,9 +498,11 @@ static int decode_queue_frame_ex(uint32_t generation, const uint8_t *data, uint3
     if (result < 0)
         decode_queue_fail(generation);
     if (workerStuck) {
+        char reason[96];
         fprintf(stderr,
                 "altscreen_render: decoder worker made no progress for 20s; exiting isolated renderer\n");
-        _exit(90);
+        watchdog_reason(reason, sizeof(reason), "worker_stuck");
+        av_sink_fatal_exit(90, reason);
     }
     return result;
 }
@@ -596,9 +611,11 @@ static void decode_worker_stop(void) {
         waited += 10;
     }
     if (!__atomic_load_n(&g_decode_thread_exited, __ATOMIC_ACQUIRE)) {
+        char reason[96];
         fprintf(stderr,
                 "altscreen_render: decoder worker stop TIMEOUT; exiting isolated renderer\n");
-        _exit(88);
+        watchdog_reason(reason, sizeof(reason), "worker_stop_timeout");
+        av_sink_fatal_exit(88, reason);
     }
     pthread_join(g_decode_thread, NULL);
     g_decode_thread_started = 0;

@@ -1,6 +1,8 @@
 #include <assert.h>
 #define main renderer_program_main
 #include "../altscreen_render/main.c"
+static int last_fatal_code;
+static const char *last_fatal_reason;
 #undef main
 int av_sink_open(void) { return 0; }
 int av_sink_frame(const uint8_t *b, uint32_t n, uint64_t t) {
@@ -15,6 +17,12 @@ int av_sink_frame_ex(const uint8_t *b, uint32_t n, uint64_t t, const alt_frame_m
 }
 void av_sink_session_end(void) {}
 int av_sink_video_ready(void) { return 1; }
+const char *av_sink_omx_stage(void) { return 0; }
+void av_sink_fatal_exit(int code, const char *reason) {
+    /* test seam: remember the last watchdog death instead of exiting */
+    last_fatal_code = code;
+    last_fatal_reason = reason;
+}
 void av_sink_close(void) {}
 void av_sink_set_layout(int a, int b, int c) {
     (void)a;

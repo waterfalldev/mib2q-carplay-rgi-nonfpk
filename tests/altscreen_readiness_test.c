@@ -11,6 +11,8 @@ static int test_control_port;
 #define main renderer_program_main
 #define av_read_frame_mode observed_read_frame
 #include "../altscreen_render/main.c"
+static int last_fatal_code;
+static const char *last_fatal_reason;
 #undef av_read_frame_mode
 #undef main
 #include "../altscreen_render/altctl.c"
@@ -57,6 +59,12 @@ int av_sink_video_ready(void) {
     int r;
     pthread_mutex_lock(&test_lock); r = ready; pthread_mutex_unlock(&test_lock);
     return r;
+}
+const char *av_sink_omx_stage(void) { return 0; }
+void av_sink_fatal_exit(int code, const char *reason) {
+    /* test seam: remember the last watchdog death instead of exiting */
+    last_fatal_code = code;
+    last_fatal_reason = reason;
 }
 void av_sink_close(void) { }
 void av_sink_set_layout(int a, int b, int c) { (void)a; (void)b; (void)c; }

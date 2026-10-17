@@ -4,6 +4,8 @@
 #include <poll.h>
 #define main renderer_program_main
 #include "../altscreen_render/main.c"
+static int last_fatal_code;
+static const char *last_fatal_reason;
 #undef main
 
 static pthread_mutex_t test_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -32,6 +34,12 @@ int av_sink_frame_ex(const uint8_t *b, uint32_t n, uint64_t stamp, const alt_fra
 }
 void av_sink_session_end(void) { }
 int av_sink_video_ready(void) { return 0; }
+const char *av_sink_omx_stage(void) { return 0; }
+void av_sink_fatal_exit(int code, const char *reason) {
+    /* test seam: remember the last watchdog death instead of exiting */
+    last_fatal_code = code;
+    last_fatal_reason = reason;
+}
 void av_sink_close(void) { }
 void av_sink_set_layout(int m, int s, int raw) { (void)m; (void)s; (void)raw; }
 void altctl_start(int (*video_ready)(void)) { (void)video_ready; }

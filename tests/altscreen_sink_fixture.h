@@ -41,6 +41,23 @@ OMX_ERRORTYPE OMX_FreeHandle(OMX_HANDLETYPE h) {
     return OMX_ErrorUndefined;
 }
 
+/* ---- wedged-core teardown harness ---------------------------------------- */
+static volatile int block_send_command;
+static unsigned teardown_freebufs;
+static OMX_ERRORTYPE stub_send(OMX_HANDLETYPE h, OMX_COMMANDTYPE c, OMX_U32 p, OMX_PTR ed) {
+    (void)h; (void)c; (void)p; (void)ed;
+    while (block_send_command) {
+        struct timespec pause = { 0, 50L * 1000000L };
+        nanosleep(&pause, NULL);
+    }
+    return OMX_ErrorNone;
+}
+static OMX_ERRORTYPE stub_freebuf(OMX_HANDLETYPE h, OMX_U32 port, OMX_BUFFERHEADERTYPE *b) {
+    (void)h; (void)port; (void)b;
+    ++teardown_freebufs;
+    return OMX_ErrorNone;
+}
+
 screen_egl_present_t *screen_egl_present_create_output(int w, int h, volatile int *m,
                                                        volatile int *s) {
     (void)w;

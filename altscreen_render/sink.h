@@ -47,4 +47,20 @@ void av_sink_session_end(void);
 /* Called once before process exit. */
 void av_sink_close(void);
 
+/* Wedged-video-core exit path, shared by the sink and main.c's watchdogs
+ * (88/90/93).  One-shot guarded: the first caller writes the death marker
+ * (deaths/backoff, /tmp — RAM, reset by the reboot that fixes the core),
+ * captures a bounded sloginfo snapshot, then _exit(exit_code).  Later callers
+ * park forever; the first caller's exit is guaranteed (evidence is
+ * deadline-bounded).  Never call from a signal handler; never hold sink or
+ * queue locks across it.  exit 92 (Screen/EGL startup) deliberately does NOT
+ * come through here: it cannot be gated by the marker and must not consume
+ * the video-core death budget. */
+void av_sink_fatal_exit(int exit_code, const char *reason);
+
+/* Current teardown-helper stage ("idle_stop"/"loaded_release"/"free_buffers"/
+ * "free_handle"/"deinit") or NULL when no teardown is in flight.  Watchdogs
+ * append it to their reason ("worker_stuck:free_handle"). */
+const char *av_sink_omx_stage(void);
+
 #endif /* ALTSCREEN_RENDER_SINK_H */

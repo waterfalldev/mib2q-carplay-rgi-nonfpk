@@ -44,6 +44,13 @@
 #include <time.h>
 #include <errno.h>
 #include <stddef.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#if defined(__QNX__)
+#include <sys/neutrino.h>   /* setprio() */
+#endif
 
 #define kOMXDecoderName   "OMX.qcom.video.decoder.avc"
 #define kInPortIndex      0
@@ -78,6 +85,10 @@ typedef struct {
     volatile OMX_STATETYPE   state;
     volatile int             stateReached;
     volatile int             omxError;
+    /* Vendor Timeout(0x80001011)/Hardware(0x80001009)/Invalid(0x8000100A)
+     * while starting or decoding: the core itself reported, teardown is
+     * pointless and every further OMX call risks the wedged-CS hang. */
+    volatile int             coreFatal;
     volatile int             running;
     int                      callbacksClosing;
     unsigned int             callbacksActive;
@@ -130,6 +141,7 @@ typedef struct {
 static ScreenSink g_ss;
 static unsigned long long _NowMs(void);
 static void _AbsTimeoutMs(struct timespec *ts, long ms);
+static void _FatalNotePresented(void); /* first presented frame resets deaths */
 
 /* Data callbacks dereference OMX/Screen arrays which teardown frees.  Close the
  * callback gate first, then join the presenter before changing OMX state or
@@ -166,7 +178,22 @@ static OMX_ERRORTYPE _OnEvent(OMX_HANDLETYPE c, OMX_PTR app, OMX_EVENTTYPE ev,
         fprintf(stderr, "altscreen_render[qnx]: PortSettingsChanged(out) ignored (stock-210 parity)\n");
     } else if (ev == OMX_EventError) {
         me->omxError = 1;
-        fprintf(stderr, "altscreen_render[qnx]: OMX_EventError 0x%x\n", (unsigned)d1);
+        /* Vendor codes only while starting/decoding.  During OUR teardown the
+         * component legitimately reports InvalidState etc. as it is forced
+         * down — that is renderer-local, never "core is dead".  The teardown
+         * helper deadline is the wedge detector on that path. */
+        if (!me->callbacksClosing &&
+            (d1 == 0x80001011u /* vendor Timeout */ ||
+             d1 == 0x80001009u /* Hardware */ ||
+             d1 == 0x8000100Au /* Invalid */)) {
+            me->coreFatal = 1;
+            fprintf(stderr,
+                    "altscreen_render[qnx]: OMX_EventError 0x%x -> CORE FATAL\n",
+                    (unsigned)d1);
+        } else {
+            fprintf(stderr, "altscreen_render[qnx]: OMX_EventError 0x%x\n",
+                    (unsigned)d1);
+        }
     }
     pthread_cond_broadcast(&me->cond);
     pthread_mutex_unlock(&me->lock);
@@ -246,6 +273,7 @@ static int _PresentGpu(ScreenSink *me, OMX_BUFFERHEADERTYPE *b) {
             me->presentRecoveryAttempts = 0;
             me->presentRecoveryAfterMs = 0;
             pthread_mutex_unlock(&me->lock);
+            _FatalNotePresented(); /* presented frame: the core is alive again */
             return 0;
         }
         me->outputPostFailed++;
@@ -477,21 +505,227 @@ static unsigned long long _NowMs(void) {
         + (unsigned long long)ts.tv_nsec / 1000000ULL;
 }
 
+/* ---- wedged-video-core fatal path ----------------------------------------
+ * Field reports + QEMU run of this exact stack: once the core stops answering
+ * (Timeout 0x80001011 / Hardware 0x80001009 / Invalid 0x8000100A, or a hung
+ * lazy VCD_Init inside the first GetHandle), client-side OMX calls block
+ * forever and each abandoned client burns one of ~4 system decoder slots.
+ * Process exit is the only clean abandon, so every abnormal death goes
+ * through one guarded path: marker -> slog evidence -> _exit.  The marker
+ * lives in /tmp (RAM): it survives renderer restarts and is wiped by the
+ * reboot that is the only real cure.  Evidence is RAM-only too: the slog ring
+ * dies at reboot, while vidc*.dat are the firmware's own job (tpm video_fatal
+ * archives them to /var/log/ana_dumps/ramdumps before cleaning). */
+#define ALT_FATAL_DEATHS_MAX   2u
+#define ALT_FATAL_BACKOFF_MS   60000ULL
+#define ALT_FATAL_SLOG_CAP     (256u * 1024u)
+#define ALT_FATAL_SLOG_WAIT_MS 3000L
+#define ALT_REASON_MAX         96
+
+static const char *g_omx_stage; /* teardown helper stage; NULL when idle */
+
+static pthread_mutex_t _FatalGuardLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  _FatalGuardCond = PTHREAD_COND_INITIALIZER;
+static int             _FatalGuardTaken;
+
+static const char *_FatalStatePath(void) {
+    const char *p = getenv("ALT_FATAL_STATE");
+    return (p && *p) ? p : "/tmp/carplay_altscreen_fatal.txt";
+}
+
+static const char *_FatalSlogPath(void) {
+    const char *p = getenv("ALT_FATAL_SLOG");
+    return (p && *p) ? p : "/tmp/carplay_altscreen_slog.txt";
+}
+
+/* Parse "v1 <last_death_ms> <deaths> <reason>"; tolerant of garbage. */
+static int _FatalRead(unsigned *deaths, unsigned long long *last_ms,
+                      char *reason, size_t rsz) {
+    FILE *f = fopen(_FatalStatePath(), "r");
+    unsigned long long last = 0;
+    unsigned d = 0;
+    char tag[8] = {0}, why[ALT_REASON_MAX] = {0};
+    int ok;
+    if (!f) return -1;
+    ok = fscanf(f, "%7s %llu %u %95s", tag, &last, &d, why) == 4
+        && strcmp(tag, "v1") == 0;
+    fclose(f);
+    if (!ok) return -1;
+    *deaths = d;
+    *last_ms = last;
+    if (reason && rsz) snprintf(reason, rsz, "%s", why);
+    return 0;
+}
+
+static void _FatalWrite(unsigned deaths, unsigned long long last_ms,
+                        const char *reason) {
+    FILE *f;
+    const char *path = _FatalStatePath();
+    if (!reason) reason = "unspecified";
+    f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "altscreen_render[qnx]: fatal marker write FAILED %s\n",
+                path);
+        return;
+    }
+    fprintf(f, "v1 %llu %u %s\n", last_ms, deaths, reason);
+    fclose(f);
+}
+
+const char *av_sink_omx_stage(void) {
+    return g_omx_stage;
+}
+
+/* Copy the tail of src into dst, capped.  RAM-only files, best effort. */
+static void _FatalCopyTail(const char *src, const char *dst, size_t cap) {
+    char buf[4096];
+    ssize_t n;
+    off_t sz, off;
+    int in = open(src, O_RDONLY);
+    int out;
+    size_t total = 0;
+    if (in < 0) return;
+    sz = lseek(in, 0, SEEK_END);
+    off = (sz > 0 && (size_t)sz > cap) ? (off_t)(sz - (off_t)cap) : 0;
+    if (lseek(in, off, SEEK_SET) < 0) { close(in); return; }
+    out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (out < 0) { close(in); return; }
+    while (total < cap && (n = read(in, buf, sizeof(buf))) > 0) {
+        size_t take = (size_t)n;
+        if (total + take > cap) take = cap - total;
+        if (write(out, buf, take) != (ssize_t)take) break;
+        total += take;
+    }
+    close(in);
+    close(out);
+}
+
+/* One sloginfo snapshot, hard-bounded: fork+exec, wait with deadline, SIGKILL,
+ * then tail-copy into the RAM file the collector picks up.  Never blocks the
+ * exit: on any overrun we proceed with partial/absent evidence. */
+static void _FatalSlogSnapshot(void) {
+    char tmp[256];
+    pid_t pid;
+    int waited_ms = 0, st;
+    snprintf(tmp, sizeof(tmp), "%s.tmp", _FatalSlogPath());
+    fflush(NULL);
+    pid = fork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); close(fd); }
+#if defined(__QNX__)
+        /* Not at the renderer's 15: a full slog dump froze playback on a busy
+         * unit (docs/LANDMINES.md, "Never pull a full sloginfo"). */
+        setprio(0, 10);
+#endif
+        execl("/proc/boot/sloginfo", "sloginfo", (char *)0);
+        execlp("sloginfo", "sloginfo", (char *)0);
+        _exit(127);
+    }
+    while (waitpid(pid, &st, WNOHANG) == 0 && waited_ms < ALT_FATAL_SLOG_WAIT_MS) {
+        struct timespec pause = { 0, 20L * 1000000L };
+        nanosleep(&pause, NULL);
+        waited_ms += 20;
+    }
+    if (waited_ms >= ALT_FATAL_SLOG_WAIT_MS) {
+        kill(pid, SIGKILL);
+        waitpid(pid, &st, 0);
+        fprintf(stderr, "altscreen_render[qnx]: slog snapshot timed out; "
+                        "keeping partial evidence\n");
+    }
+    _FatalCopyTail(tmp, _FatalSlogPath(), ALT_FATAL_SLOG_CAP);
+    unlink(tmp);
+}
+
+void av_sink_fatal_exit(int exit_code, const char *reason) {
+    pthread_mutex_lock(&_FatalGuardLock);
+    if (_FatalGuardTaken) {
+        /* Another thread already owns marker/evidence/_exit.  Park forever —
+         * the first entrant is guaranteed to reach _exit (evidence is
+         * deadline-bounded), and the process dies with this thread. */
+        for (;;)
+            pthread_cond_wait(&_FatalGuardCond, &_FatalGuardLock);
+    }
+    _FatalGuardTaken = 1;
+    pthread_mutex_unlock(&_FatalGuardLock);
+
+    if (!reason || !*reason) reason = "unspecified";
+    fprintf(stderr, "altscreen_render[qnx]: FATAL %s -> marker/evidence/_exit(%d)\n",
+            reason, exit_code);
+
+    {
+        unsigned deaths = 0;
+        unsigned long long last = 0;
+        _FatalRead(&deaths, &last, NULL, 0);
+        _FatalWrite(deaths + 1, _NowMs(), reason);
+    }
+    _FatalSlogSnapshot();
+    _exit(exit_code);
+}
+
+/* Gate verdicts for new decoder starts.  Returns 0 = go, 1 = backoff (swallow
+ * frames, transport stays up), 2 = degraded until reboot.  A marker whose
+ * last-death timestamp lies in the future means CLOCK_MONOTONIC restarted —
+ * the unit rebooted, the cure happened, the budget is fresh again. */
+static unsigned g_fatal_degraded; /* deaths at degrade; the host test re-arms it */
+static int _FatalGate(unsigned long long now, unsigned *deaths_out,
+                      unsigned long long *retry_in_ms) {
+    unsigned deaths = 0;
+    unsigned long long last = 0;
+    *deaths_out = g_fatal_degraded;
+    *retry_in_ms = 0;
+    if (g_fatal_degraded) return 2;
+    if (_FatalRead(&deaths, &last, NULL, 0) != 0) return 0;
+    if (now && last && now < last) {
+        _FatalWrite(0, 0, "reset_reboot");
+        return 0;
+    }
+    if (deaths >= ALT_FATAL_DEATHS_MAX) {
+        *deaths_out = g_fatal_degraded = deaths;
+        return 2;
+    }
+    if (deaths > 0 && now && last && now - last < ALT_FATAL_BACKOFF_MS) {
+        *deaths_out = deaths;
+        *retry_in_ms = ALT_FATAL_BACKOFF_MS - (now - last);
+        return 1;
+    }
+    return 0;
+}
+
+/* A presented frame proves the core recovered: give the boot its full death
+ * budget back.  Once per process is enough — after the reset nothing re-fills
+ * the counter except a fresh fatal.  (File-scope flag: the host test suite
+ * re-arms it.) */
+static unsigned char g_fatal_present_reset_done;
+static void _FatalNotePresented(void) {
+    unsigned deaths = 0;
+    unsigned long long last = 0;
+    if (g_fatal_present_reset_done) return;
+    g_fatal_present_reset_done = 1;
+    if (_FatalRead(&deaths, &last, NULL, 0) == 0 && deaths != 0) {
+        _FatalWrite(0, last, "reset_presented");
+        fprintf(stderr, "altscreen_render[qnx]: presented after %u prior "
+                        "death(s); decoder budget reset\n", deaths);
+    }
+}
+
 /* ignoreError: a teardown must still wait for the state edge after an error
  * was latched, otherwise StateLoaded and FreeBuffer land on a component that
  * is still leaving Executing (OMX_ErrorIncorrectStateTransition 0x80001017,
  * OMX_ErrorPortUnpopulated 0x8000101C in the 2026-10-09 car log). */
+/* Returns 0, -1 on a latched error event, -2 when the edge never came. */
 static int _WaitStateEx(ScreenSink *me, OMX_STATETYPE want, long timeoutMs, int ignoreError) {
-    struct timespec ts; int err = 0;
+    struct timespec ts; int err = 0, timedOut = 0;
     _AbsTimeoutMs(&ts, timeoutMs);
     pthread_mutex_lock(&me->lock);
     while (!(me->stateReached && me->state == want) && (ignoreError || !me->omxError)) {
         if (pthread_cond_timedwait(&me->cond, &me->lock, &ts) == ETIMEDOUT) {
             fprintf(stderr, "altscreen_render[qnx]: _WaitState TIMEOUT (want=%d)\n", (int)want);
-            me->omxError = 1; break;
+            me->omxError = 1; timedOut = 1; break;
         }
     }
-    if (me->omxError) err = -1;
+    if (me->omxError) err = timedOut ? -2 : -1;
     me->stateReached = 0;
     pthread_mutex_unlock(&me->lock);
     return err;
@@ -769,7 +1003,7 @@ static void _DrainCallbacksAndPresenter(ScreenSink *me) {
              * either block forever or free buffers under the worker/callback. Exit the
              * isolated renderer; the persistent supervisor restarts it after
              * backoff, while dio_manager and the HMI remain alive. */
-            _exit(86);
+            av_sink_fatal_exit(86, "drain_timeout");
         }
     }
     pthread_mutex_unlock(&me->lock);
@@ -783,29 +1017,130 @@ static void _DrainCallbacksAndPresenter(ScreenSink *me) {
     me->presentQueuedUs = NULL;
 }
 
-static void _Teardown(ScreenSink *me, int destroyPresent) {
+/* The whole OMX teardown section, executed on a helper thread so a wedged
+ * core cannot take the caller with it.  Every step publishes its stage for the
+ * watchdog reason strings; the global is cleared when the section completes.
+ * Per QNX/Qualcomm stack (verified in IDA and live in QEMU): Idle->Idle edge
+ * issues a sync MMI_CMD_STOP ioctl, Loaded edge a sync MMI_CMD_RELEASE_RESOURCES,
+ * FreeHandle ends in QVD_Close + thread-join — all plain MsgSends with no
+ * client-side timeout. */
+static void _TeardownOmxSection(ScreenSink *me) {
     OMX_U32 i;
-    if (!me->decoder && (!destroyPresent || !me->present) && !me->omxInitialized) return;
-    _DrainCallbacksAndPresenter(me);
     if (me->decoder) {
+        g_omx_stage = "idle_stop";
         OMX_SendCommand(me->decoder, OMX_CommandStateSet, OMX_StateIdle, NULL);
         _WaitStateEx(me, OMX_StateIdle, kOmxStopWaitMs, 1);
+        g_omx_stage = "loaded_release";
         OMX_SendCommand(me->decoder, OMX_CommandStateSet, OMX_StateLoaded, NULL);
+        g_omx_stage = "free_buffers";
         for (i = 0; i < me->nInBufs;  ++i) OMX_FreeBuffer(me->decoder, kInPortIndex,  me->inBufs[i]);
         for (i = 0; i < me->nOutBufs; ++i) OMX_FreeBuffer(me->decoder, kOutPortIndex, me->outBufs[i]);
         _WaitStateEx(me, OMX_StateLoaded, kOmxStopWaitMs, 1);
+        g_omx_stage = "free_handle";
         OMX_FreeHandle(me->decoder); me->decoder = NULL;
     }
     if (me->omxInitialized) {
+        g_omx_stage = "deinit";
         OMX_Deinit();
         me->omxInitialized = 0;
+    }
+    g_omx_stage = NULL;
+}
+
+typedef struct {
+    ScreenSink *me;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    int done;
+} _TeardownJob;
+
+static void *_TeardownHelper(void *arg) {
+    _TeardownJob *job = (_TeardownJob *)arg;
+    _TeardownOmxSection(job->me);
+    pthread_mutex_lock(&job->lock);
+    job->done = 1;
+    pthread_cond_broadcast(&job->cond);
+    pthread_mutex_unlock(&job->lock);
+    return NULL;
+}
+
+static long _TeardownDeadlineMs(void) {
+    const char *e = getenv("ALT_TEARDOWN_DEADLINE_MS");
+    long v;
+    if (e && (v = atol(e)) > 0) return v;
+    return 4000L; /* server-side waits are 3 s bounded; 4 s covers one + slack */
+}
+
+/* Runs the OMX section on a helper under a hard deadline.  Returns 1 when the
+ * section completed, 0 when it wedged (the helper thread is abandoned — it
+ * dies with the process when the caller exits through the fatal path). */
+static int _TeardownOmxJoined(ScreenSink *me) {
+    /* Heap, not stack: an abandoned helper still signals the job when its OMX
+     * call returns late, while the caller is already in the fatal path. */
+    _TeardownJob *job = (_TeardownJob *)calloc(1, sizeof(*job));
+    pthread_t th;
+    struct timespec ts;
+    int rc = 0, done;
+    if (!job) {
+        _TeardownOmxSection(me);
+        return 1;
+    }
+    job->me = me;
+    pthread_mutex_init(&job->lock, NULL);
+    _CondInit(&job->cond);
+    if (pthread_create(&th, NULL, _TeardownHelper, job) != 0) {
+        /* No helper available: inline is the historical behavior. */
+        _TeardownOmxSection(me);
+        done = 1;
+    } else {
+        _AbsTimeoutMs(&ts, _TeardownDeadlineMs());
+        pthread_mutex_lock(&job->lock);
+        while (!job->done && rc != ETIMEDOUT)
+            rc = pthread_cond_timedwait(&job->cond, &job->lock, &ts);
+        done = job->done;
+        pthread_mutex_unlock(&job->lock);
+        if (!done)
+            return 0; /* ponytail: job leaks on purpose, the caller exits */
+        pthread_join(th, NULL);
+    }
+    pthread_cond_destroy(&job->cond);
+    pthread_mutex_destroy(&job->lock);
+    free(job);
+    return 1;
+}
+
+static void _Teardown(ScreenSink *me, int destroyPresent) {
+    if (!me->decoder && (!destroyPresent || !me->present) && !me->omxInitialized) return;
+    if (me->coreFatal) {
+        /* The core reported Timeout/Hardware/Invalid while starting or
+         * decoding: every further OMX call risks the wedged hang and the core
+         * stays dead until reboot.  Start failure, session end, frame error
+         * and close all reach here; mark, leave evidence, exit. */
+        fprintf(stderr,
+                "altscreen_render[qnx]: core-fatal latched -> no OMX teardown, marker/evidence/exit\n");
+        av_sink_fatal_exit(86, "core_fatal");
+    }
+    _DrainCallbacksAndPresenter(me);
+    if (me->decoder || me->omxInitialized) {
+        if (!_TeardownOmxJoined(me)) {
+            char reason[ALT_REASON_MAX];
+            const char *stage = g_omx_stage ? g_omx_stage : "unknown";
+            /* Never touch that component again: Idle->Loaded, FreeBuffer and
+             * FreeHandle are MsgSends into the wedged core and block forever.
+             * Snapshot the stage while it is still valid, then exit. */
+            snprintf(reason, sizeof(reason), "teardown_deadline:%s", stage);
+            fprintf(stderr,
+                    "altscreen_render[qnx]: teardown OMX stage '%s' exceeded deadline; abandoning component\n",
+                    stage);
+            av_sink_fatal_exit(86, reason);
+        }
     }
     if (destroyPresent) _DestroyPresent(me);
     free(me->inBufs);        me->inBufs = NULL;        me->nInBufs = 0;
     free(me->outBufs);       me->outBufs = NULL;       me->nOutBufs = 0;
     free(me->freeIn);        me->freeIn = NULL;
     me->winReady = 0; me->started = 0; me->fedConfig = 0; me->needsIDR = 1;
-    me->stateReached = 0; me->omxError = 0;
+    me->stateReached = 0; me->omxError = 0; me->coreFatal = 0;
     me->inputSubmitted = me->inputReturned = 0;
     me->outputFilled = me->outputPosted = me->outputPostFailed = 0;
     me->outputSuperseded = 0;
@@ -836,6 +1171,7 @@ static void _Teardown(ScreenSink *me, int destroyPresent) {
 /* Bring up native 32m OMX output + post-decode EGL external-image conversion. */
 static int _StartDecoder(ScreenSink *me) {
     OMX_U32 i, outCount;
+    int waitRc;
     uint64_t begin = _NowMs(), sourcesReady;
     fprintf(stderr, "altscreen_render[qnx]: decoder start begin at %llu ms\n",
             (unsigned long long)begin);
@@ -860,7 +1196,13 @@ static int _StartDecoder(ScreenSink *me) {
     if (OMX_SendCommand(me->decoder, OMX_CommandStateSet, OMX_StateIdle, NULL)) goto fail;
     if (_AllocInput(me)) goto fail;
     if (_UseScreenBuffers(me, outCount)) goto fail;
-    if (_WaitState(me, OMX_StateIdle, kOmxStartIdleWaitMs)) goto fail;
+    /* A start-phase state edge that never completes is core-class: the core
+     * accepted the session but cannot run it (field: "never reaches
+     * Executing").  An ordinary error event is not; _Teardown exits on it. */
+    if ((waitRc = _WaitState(me, OMX_StateIdle, kOmxStartIdleWaitMs)) != 0) {
+        if (waitRc == -2) me->coreFatal = 1;
+        goto fail;
+    }
 
     me->freeIn = (OMX_U32 *)calloc(me->nInBufs, sizeof(OMX_U32));
     if (!me->freeIn) goto fail;
@@ -868,7 +1210,10 @@ static int _StartDecoder(ScreenSink *me) {
     me->freeInHead = 0; me->freeInTail = me->nInBufs;
 
     if (OMX_SendCommand(me->decoder, OMX_CommandStateSet, OMX_StateExecuting, NULL)) goto fail;
-    if (_WaitState(me, OMX_StateExecuting, kOmxStartExecWaitMs)) goto fail;
+    if ((waitRc = _WaitState(me, OMX_StateExecuting, kOmxStartExecWaitMs)) != 0) {
+        if (waitRc == -2) me->coreFatal = 1;
+        goto fail;
+    }
     me->running = 1;
     if (_StartPresentThread(me)) goto fail;
     for (i = 0; i < me->nOutBufs; ++i) {
@@ -1130,6 +1475,9 @@ int av_sink_frame(const uint8_t *annexb, uint32_t len, uint64_t received_ms) {
         return -1;
     }
     if (!g_ss.started) {
+        unsigned gate_deaths = 0;
+        unsigned long long gate_retry = 0;
+        int gate;
         /* FAIL-SAFE: a repeatedly-failing decoder start must NOT loop — each failed OMX GetHandle can
          * hold a hardware decoder slot, and starving the pool made dio's own decoder fail
          * (kBadReferenceErr) → CarPlay crash-loop.  Cap at 3 attempts, then go idle (black, but the
@@ -1140,6 +1488,25 @@ int av_sink_frame(const uint8_t *annexb, uint32_t len, uint64_t received_ms) {
             fprintf(stderr,
                     "altscreen_render[qnx]: decoder retry cooldown expired; allowing a new bounded attempt set\n");
             g_ss.startFails = 0;
+        }
+        /* Wedged-core memory (marker survives renderer restarts, /tmp = RAM:
+         * reboot clears it).  Swallow frames with 0 — the transport, hook IDR
+         * requests and STATUS 0 stay alive; only the decoder start waits. */
+        gate = _FatalGate(nowMs, &gate_deaths, &gate_retry);
+        if (gate != 0) {
+            static unsigned long long last_gate_log;
+            if (nowMs - last_gate_log >= 10000ULL || last_gate_log == 0) {
+                last_gate_log = nowMs;
+                if (gate == 2)
+                    fprintf(stderr,
+                            "altscreen_render[qnx]: video core fatal x%u this boot; degraded to stock map until reboot\n",
+                            gate_deaths);
+                else
+                    fprintf(stderr,
+                            "altscreen_render[qnx]: video core fatal backoff; decoder retry in %llu ms\n",
+                            gate_retry);
+            }
+            return 0;
         }
         if (_StartDecoder(&g_ss) != 0) {
             if (++g_ss.startFails == 3) {
