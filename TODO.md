@@ -69,6 +69,46 @@ carries `displayUUID` = the main screen UUID. Read as an iOS beta bug in Music.
 is back (built, tests pass, not yet in the car). Next: check Music on a newer iOS build,
 then flip back. [Details](docs/reference/ARCHITECTURE.md#mmi-touchpad).
 
+### Open (parked): weak trunk subwoofer and a dead MMI Subwoofer knob on the 5.1 path
+
+Owner, 2026-10-17: before the patch (the stock stereo path) the trunk subwoofer played and the MMI
+Subwoofer knob worked. With the 6-channel CarPlay path the sub is barely audible, the knob does almost
+nothing from min to max, and MMI UpMix Off vs Normal sounds the same. Bass (door woofers) and Subwoofer
+(one sub in the trunk) are separate to the owner; the September 18 "+9.5 dB LFE" complaint was door bass.
+
+Static RE of the J525 V850 CodeFlash (IDA, gp = `0x3FF8870`):
+- **FBlock table.** The AudioAmplifier function table sits at `0x95A28`.
+- **Subwoofer level.** FktID `0x450` (−9..+9) steps through the ROM table `0x102C52`, −11..+9 dB. In
+  `sub_A80AC` it lands on lane 3 (the LFE bus) right after the first pair mixer, and on the 16-channel
+  output stages through the output map. The code does not depend on bank 0/1, so the knob scales the
+  whole sub, L/R bass included.
+- **Subwoofer on/off.** FktID `0xD19` is stored in amp EEPROM; off forces lane 3 to −100 dB.
+- **Bass and treble.** Bass is `0x203` and treble `0x402`. The 90 Hz shelf is GALA (speed), not the knob.
+
+HU side:
+- `requestSetSubwoofer` sends setting type 13 per connection to RCC `AudioProcess`.
+- `CAudioMixer::verifySoundMode` sends FktID 0x450 only when the connection has the setting and the
+  amp channel's capability flag allows it.
+- The audio table (CN RCC image, v238) gives `LC_ENT_AMP_DIO_MEDIA.MULTICHANNEL`
+  `SUBACTIVITY_ON`, `SUB = SUBWOOFER_MEDIA_1` (shared with stereo media).
+
+Real 2.0 vs 5.1 differences in the amp:
+- L/R → LFE bus is −6 vs −8 dB.
+- The first-B mode is 2 vs 5 (B never writes the C/LFE slots).
+- The ASAD trims apply at `0xC0` only.
+- **The level-selected loudness EQ `C4AB7`** (0..+20.5 dB at 55 Hz on the input lanes) picks its bank
+  from the active source's level, sink `0x21` → index 0 vs `0x26` → index 5. This is the main suspect
+  for "stock has sub, ours barely". The Virtual Cabin model (B = 0, C4D17 identity, level EQ not
+  modelled) predicts only −2..−3 dB, so it cannot show this.
+- Our LFE assist is −18 dB below the front low band and LR4-rotated, so raising `AUDIO_STEREO_LFE_GAIN`
+  is not the fix by itself.
+
+Next, in the car:
+- (A) Knob delivery: Subwoofer at max during CarPlay → switch to radio → back. Does the sub change?
+- (B) Loudness: the same bass track over Bluetooth vs CarPlay at the same and at a lower volume.
+
+Then statically: the lane → source → bank selection of `C4AB7` for sink `0x26`.
+
 ### Closed: CarPlay telephony on the cluster tab
 
 Working on the car, confirmed by the owner on 2026-09-23 on the first try:
