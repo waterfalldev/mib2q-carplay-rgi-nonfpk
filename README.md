@@ -2,6 +2,18 @@
 
 _CarPlay for the Audi MHI2Q head unit: the map and route guidance in the Virtual Cockpit, calls on the cluster, and 5.1 sound._
 
+> [!WARNING]
+> **Please update the head unit to the latest firmware available for your region first, and only
+> then install the patch.** Much older firmware may not be compatible: the MMI can stay on the Audi
+> logo after the first reboot. Latest versions:
+>
+> - `MHI2Q_US_AUG22_P5087` (MU1316)
+> - `MHI2Q_ER_AUG22_P5092` (MU1329)
+> - `MHI2Q_CN_AUG22_K1004` (MU1003)
+>
+> Already stuck on the logo? Follow the
+> [recovery guide](https://github.com/luka-dev/mib2q-carplay-rgi/issues/24#issuecomment-5849641990).
+
 ---
 
 Production implementation for Audi MHI2Q (MU1316, QNX 6.5 ARMv7):
@@ -232,7 +244,9 @@ and `FUZZ_SECONDS` sets the budget per target. Contracts and limits:
 ## 🚀 Deployment
 
 **Compatibility.** Audi MHI2Q only: the installer reads the firmware version from E2P and stops on
-anything else. The Java part replaces whole stock HMI classes, so it ships per firmware family and
+anything else. On a firmware other than the verified ones (US P5087, ER P5092, CN K1004, JP P1017)
+it stops once with a warning and changes nothing; running it again before the next reboot installs
+anyway. The Java part replaces whole stock HMI classes, so it ships per firmware family and
 is chosen by the region in that version string: US, ER and JP (verified on MU1316 P5087, MU1329
 P5092, MU1017 P1017) get `carplay_hook.jar`, CN (verified on MU1003 K1004) gets
 `carplay_hook_cn.jar`. Any other region installs CarPlay without the Java part (no cluster/HUD

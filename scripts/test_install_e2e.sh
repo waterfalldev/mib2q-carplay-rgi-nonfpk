@@ -2,7 +2,8 @@
 # The whole M.I.B. installer (the staged mod/custom.sh) on a fake unit built from the real
 # MU1316 P5087 system files, with /mnt and /tmp redirected into a temp dir and the
 # E2P train fed through E2P_READ.  Checks: the firmware gate (only Audi MHI2Q proceeds,
-# nothing is touched otherwise, also when E2P cannot be read), exactly one Java variant
+# nothing is touched otherwise, also when E2P cannot be read; an unverified train is refused once,
+# untouched, and installed on the second run), exactly one Java variant
 # stays per E2P region (the other is removed), and the 6-channel audio path stays on only
 # when the amplifier coding (E2P 0xFC, fed through E2P_AMP_READ) says external.  Needs the staged install tree
 # (scripts/prepare_install.sh) and the unpacked firmware; skips without them.
@@ -22,8 +23,8 @@ T=$(mktemp -d); trap '[ -n "${KEEP:-}" ] && echo "kept $T" || rm -rf "$T"' EXIT
 JARS=mnt/app/eso/hmi/lsd/jars
 fail() { echo "FAIL ($1): $2"; sed -n '1,60p' "$T/log"; exit 1; }
 
-# E2P dumps as modifyE2P prints them (19 bytes, as M.I.B. reads 0x3A0)
-e2p() { printf '0x000003a0 '; printf '%s' "${1:0:19}" | od -An -tx1 | tr -s ' \n' ' '; echo; }
+# E2P dumps as modifyE2P prints them (0x19 = 25 bytes, as M.I.B. reads 0x3A0: the train, NUL-padded)
+e2p() { printf '0x000003a0 '; { printf '%s' "$1"; head -c $((25 - ${#1})) /dev/zero; } | od -An -tx1 | tr -s ' \n' ' '; echo; }
 
 unit() {   # unit [stock SI file] [stock deva size]: a fresh fake unit, BOTH jars left over from an older install
     U=$T/u; rm -rf "$U" "$T/mod"; mkdir -p "$U/$JARS" "$U/mnt/app/eso/bin/apps" "$U/mnt/app/armle/lib/dll" \
@@ -49,10 +50,10 @@ has() { [ -f "$U/$JARS/$1" ] && ! grep -qx old "$U/$JARS/$1"; }
 
 e2p MHI2Q_US_AUG22_P5087 > "$T/us"; e2p MHI2Q_CN_AUG22_K1004 > "$T/cn"
 e2p MHI2Q_JP_AUG22_P1017 > "$T/jp"; e2p MHI2Q_KR_AUG22_P5000 > "$T/kr"
-e2p MHI2_ER_VWG13_P4521 > "$T/vw"; e2p MHI2Q_ER_POG24_P5000 > "$T/po"
+e2p MHI2_ER_VWG13_P4521 > "$T/vw"; e2p MHI2Q_ER_POG24_P5000 > "$T/po"; e2p MHI2Q_US_AUG22_P4246 > "$T/old"
 
 unit; run "cat $T/us" || fail us "install failed"
-grep -q 'Firmware: MHI2Q_US_AUG22_P508 (platform MHI2Q, region US, brand AU)' "$T/log" || fail us "train not read"
+grep -q 'Firmware: MHI2Q_US_AUG22_P5087 (platform MHI2Q, region US, brand AU)' "$T/log" || fail us "train not read"
 has carplay_hook.jar && [ ! -e "$U/$JARS/carplay_hook_cn.jar" ] || fail us "want only carplay_hook.jar"
 grep -q DONE "$T/log" || fail us "no DONE"
 cmp -s "$U/mnt/app/eso/bin/apps/smartphone_integrator" "$ROOT/deploy/smartphone_integrator/smartphone_integrator" &&
@@ -92,9 +93,22 @@ has carplay_hook_cn.jar && [ ! -e "$U/$JARS/carplay_hook.jar" ] || fail cn "want
 unit; run "cat $T/jp" || fail jp "install failed"
 has carplay_hook.jar && [ ! -e "$U/$JARS/carplay_hook_cn.jar" ] || fail jp "JP: want carplay_hook.jar"
 
-unit; run "cat $T/kr" || fail unknown "install failed"
-[ ! -e "$U/$JARS/carplay_hook.jar" ] && [ ! -e "$U/$JARS/carplay_hook_cn.jar" ] || fail unknown "a jar stayed on an unverified region"
-grep -q 'no Java patch is installed' "$T/log" || fail unknown "no warning"
+# an unverified train (an older US one, or KR): the first run only warns, the second installs
+for f in old kr; do
+    unit; cp -R "$U" "$T/before"
+    run "cat $T/$f" && fail $f "installer did not stop on an unverified train"
+    grep -q 'IS NOT VERIFIED WITH THIS PATCH' "$T/log" && grep -q 'RUN THE INSTALL AGAIN' "$T/log" || fail $f "no warning"
+    rm "$U/tmp/carplay_unverified_fw_ok" || fail $f "no marker"
+    diff -r "$T/before" "$U" > /dev/null || fail $f "the unit was changed"
+    rm -rf "$T/before"; : > "$U/tmp/carplay_unverified_fw_ok"
+    run "cat $T/$f" || fail $f "second run failed"
+    grep -q 'not verified - installing anyway' "$T/log" && grep -q DONE "$T/log" || fail $f "second run did not install"
+    case $f in
+    old) has carplay_hook.jar && [ ! -e "$U/$JARS/carplay_hook_cn.jar" ] || fail old "US: want carplay_hook.jar" ;;
+    kr)  [ ! -e "$U/$JARS/carplay_hook.jar" ] && [ ! -e "$U/$JARS/carplay_hook_cn.jar" ] || fail kr "a jar stayed on an unverified region"
+         grep -q 'no Java patch is installed' "$T/log" || fail kr "no Java warning" ;;
+    esac
+done
 
 for brand in vw po none; do
     unit; cp -R "$U" "$T/before"
@@ -106,4 +120,4 @@ for brand in vw po none; do
     rm -rf "$T/before"
 done
 
-echo "installer end-to-end: US/JP -> carplay_hook.jar, CN -> carplay_hook_cn.jar, SI patched in place on US and CN, NCM lua line-patched (stock/old fence/unknown), deva always replaced, other jar removed, other region -> none, VW/Porsche/no E2P refused untouched, 5.1 only on an external amp ($SH) PASS"
+echo "installer end-to-end: US/JP -> carplay_hook.jar, CN -> carplay_hook_cn.jar, SI patched in place on US and CN, NCM lua line-patched (stock/old fence/unknown), deva always replaced, other jar removed, unverified train refused untouched then installed on the second run, other region -> none, VW/Porsche/no E2P refused untouched, 5.1 only on an external amp ($SH) PASS"

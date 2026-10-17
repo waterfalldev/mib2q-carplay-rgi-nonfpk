@@ -115,6 +115,18 @@ java_jar() {
     esac
 }
 
+# The firmware this release was verified on.  Much older trains of the same region can keep
+# the HMI on the Audi logo after the reboot (issue #24 on US P4171, #50 on US P4246).  An
+# unverified train is refused once with a loud warning; a second run in the same power
+# cycle (marker in /tmp, which is RAM) installs anyway.
+train_verified() {
+    case $TRAIN in
+        MHI2Q_US_AUG22_P5087|MHI2Q_ER_AUG22_P5092|MHI2Q_JP_AUG22_P1017|MHI2Q_CN_AUG22_K1004) return 0 ;;
+    esac
+    return 1
+}
+OLD_FW_MARK=/tmp/carplay_unverified_fw_ok
+
 backup_once() { [ -e "$2" ] || cp -p "$1" "$2" || { echo "FAILED backup $2"; return 1; }; }
 
 # List every payload file into $2.  Normally from manifest.txt (written by
@@ -456,6 +468,42 @@ install)
     if [ "$(train_field 1)" != MHI2Q ] || [ "$brand" != AU ]; then
         echo "FAILED: this patch is for Audi MHI2Q units only - nothing was changed"
         rm -f "$LIST"; exit 1
+    fi
+    if ! train_verified; then
+        if [ ! -f "$OLD_FW_MARK" ]; then
+            : > "$OLD_FW_MARK"
+            cat <<EOF
+
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+WARNING: FIRMWARE $TRAIN
+IS NOT VERIFIED WITH THIS PATCH!
+
+UPDATE THE HEAD UNIT TO THE LATEST
+FIRMWARE FOR YOUR REGION FIRST:
+  MHI2Q_US_AUG22_P5087 (MU1316)
+  MHI2Q_ER_AUG22_P5092 (MU1329)
+  MHI2Q_CN_AUG22_K1004 (MU1003)
+  MHI2Q_JP_AUG22_P1017 (MU1017)
+
+ON OLDER FIRMWARE THE MMI CAN STAY
+ON THE AUDI LOGO AFTER THE REBOOT.
+
+NOTHING WAS CHANGED.
+
+IF YOU ARE SURE: RUN THE INSTALL AGAIN.
+GOOD LUCK!
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+
+EOF
+            rm -f "$LIST"; exit 1
+        fi
+        echo "  WARN firmware $TRAIN is not verified - installing anyway (second run)"
     fi
     JAVA_JAR=$(java_jar)
     if [ -n "$JAVA_JAR" ]; then echo "  Java: $JAVA_JAR"; else

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Firmware gates of the M.I.B. installer:
 #  - java_jar(): E2P region US/ER/JP -> carplay_hook.jar, CN -> carplay_hook_cn.jar, else none;
+#  - train_verified(): only the trains this release was verified on;
 #  - read_train()/train_field(): the E2P train (modifyE2P r 3A0 19, bytes spaced or not)
 #    decodes to text and splits into platform/region/brand/version;
 #  - read_amp(): the amplifier coding byte (modifyE2P r FC 1) -> external / internal / unknown.
@@ -9,7 +10,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SRC=$ROOT/install_MoreIncredibleBash/mod/custom.sh
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 { echo 'set -u'
-  sed -n '/^java_jar()/,/^}/p;/^e2p_bytes()/,/^}/p;/^E2P_READ=/p;/^read_train()/,/^}/p;/^train_field()/,/^}/p;/^E2P_AMP_READ=/p;/^read_amp()/,/^}/p' "$SRC"
+  sed -n '/^java_jar()/,/^}/p;/^train_verified()/,/^}/p;/^e2p_bytes()/,/^}/p;/^E2P_READ=/p;/^read_train()/,/^}/p;/^train_field()/,/^}/p;/^E2P_AMP_READ=/p;/^read_amp()/,/^}/p' "$SRC"
 } > "$T/f.sh"
 fail() { echo "FAIL ($1): $2"; exit 1; }
 shells=
@@ -20,6 +21,13 @@ for sh in $shells; do
         train=${case%%:*}; want=${case#*:}
         got=$("$sh" -c ". $T/f.sh; TRAIN=$train; java_jar")
         [ "$got" = "$want" ] || fail "$sh" "train '$train' -> '$got', want '$want'"
+    done
+    for case in MHI2Q_US_AUG22_P5087:y MHI2Q_ER_AUG22_P5092:y MHI2Q_JP_AUG22_P1017:y MHI2Q_CN_AUG22_K1004:y \
+                MHI2Q_US_AUG22_P4246:n MHI2Q_US_AUG22_P4171:n MHI2Q_ER_AUG22_P4170:n MHI2Q_US_AUG22_P508:n \
+                MHI2Q_ER_AUG22_P50921:n MHI2Q_KR_AUG22_P5000:n :n; do
+        train=${case%:*}; want=${case##*:}
+        got=$("$sh" -c ". $T/f.sh; TRAIN=$train; train_verified && echo y || echo n")
+        [ "$got" = "$want" ] || fail "$sh" "train_verified '$train' -> '$got', want '$want'"
     done
 
 
@@ -42,4 +50,4 @@ for sh in $shells; do
         [ "$got" = "$want" ] || fail "$sh" "amp '$line' -> '$got', want '$want'"
     done
 done
-echo "Firmware gates (Java variant by E2P region, E2P train parse, amplifier coding):$shells PASS"
+echo "Firmware gates (Java variant by E2P region, verified trains, E2P train parse, amplifier coding):$shells PASS"
