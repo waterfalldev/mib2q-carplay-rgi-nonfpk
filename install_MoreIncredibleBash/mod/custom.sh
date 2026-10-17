@@ -552,6 +552,9 @@ EOF
     patch_dio
     patch_lang
     sync
+    echo "Making sure it is saved (20 s)..."
+    sleep "${CARPLAY_SAVE_WAIT:-20}"   # host tests set 0
+    sync
     echo "DONE (install). Reboot the HU to load."
     ;;
 uninstall)
@@ -580,6 +583,9 @@ uninstall)
     done
     # renderers' GL program-binary cache (common/gl_program_cache.h)
     rm -rf /mnt/persist/var/app/luka_carplay_altscreen /mnt/persist/var/app/luka_carplay_maneuver
+    sync
+    echo "Making sure it is saved (20 s)..."
+    sleep "${CARPLAY_SAVE_WAIT:-20}"   # host tests set 0
     sync
     echo "DONE (uninstall). Reboot the HU."
     ;;

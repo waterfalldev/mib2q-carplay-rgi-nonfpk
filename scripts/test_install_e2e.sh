@@ -44,7 +44,7 @@ unit() {   # unit [stock SI file] [stock deva size]: a fresh fake unit, BOTH jar
     sed -e "s#/mnt/#$U/mnt/#g" -e "s#dest=/\${f\#./}#dest=$U/\${f\#./}#" -e "/carlife_active/!s#/tmp/#$U/tmp/#g" "$ROOT/install_MoreIncredibleBash/mod/custom.sh" > "$T/mod/custom.sh"
     grep -q "dest=$U/" "$T/mod/custom.sh" || { echo "FAIL: harness could not redirect the install root"; exit 1; }
 }
-run() { CARPLAY_MICROPYTHON=$MP E2P_READ="$1" E2P_AMP_READ="${2:-echo 0x000000fc 02}" "$SH" "$T/mod/custom.sh" install > "$T/log" 2>&1; }
+run() { CARPLAY_SAVE_WAIT=0 CARPLAY_MICROPYTHON=$MP E2P_READ="$1" E2P_AMP_READ="${2:-echo 0x000000fc 02}" "$SH" "$T/mod/custom.sh" install > "$T/log" 2>&1; }
 spatial() { grep '^export AUDIO_SPATIAL=' "$U/mnt/app/root/hooks/carplay_startup.sh"; }
 has() { [ -f "$U/$JARS/$1" ] && ! grep -qx old "$U/$JARS/$1"; }
 

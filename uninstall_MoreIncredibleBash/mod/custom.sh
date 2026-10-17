@@ -63,4 +63,7 @@ done
 rm -rf /mnt/persist/var/app/luka_carplay_altscreen /mnt/persist/var/app/luka_carplay_maneuver
 
 sync
+echo "Making sure it is saved (20 s)..."
+sleep "${CARPLAY_SAVE_WAIT:-20}"   # host tests set 0
+sync
 echo "DONE (uninstall). Reboot the HU."
